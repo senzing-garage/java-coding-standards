@@ -1,0 +1,30 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "barrycaceres",
+    "CCLA",
+    "CODEOWNER",
+    "cooldown",
+    "esbenp",
+    "hange",
+    "ICLA",
+    "ignorefile",
+    "kernelsam",
+    "SENZ",
+    "Senzing",
+    "stackoverflow"
+  ],
+  "ignorePaths": [
+    ".git/**",
+    ".project",
+    ".claude/**",
+    "**/test/**",
+    "target/**",
+    "CHANGELOG.md",
+    "Makefile",
+    "pom.xml",
+    "checkstyle.xml",
+    "java-formatter.xml"
+  ]
+}
