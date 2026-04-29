@@ -15,14 +15,12 @@
   - [jscpd configuration]
   - Example:
 
-      ```json
-      {
-      "ignore": [
-          "**/*.example,**/example2*.yaml"
-      ],
+    ```json
+    {
+      "ignore": ["**/*.example,**/example2*.yaml"],
       "threshold": 10
-      }
-      ```
+    }
+    ```
 
 ## .yaml-lint.yml
 
@@ -31,7 +29,7 @@
 - [yaml-lint]
   - [yaml-lint configuration]
 
-[.checkov.yaml]:  .checkov.yaml
+[.checkov.yaml]: .checkov.yaml
 [.jscpd.json]: .jscpd.json
 [.yaml-lint.yml]: .yaml-lint.yml
 [checkov configuration]: https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html
