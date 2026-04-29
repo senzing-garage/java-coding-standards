@@ -1,4 +1,0 @@
-quiet: true
-skip-check:
-  - CKV_DOCKER_7
-  - CKV_SECRET_4
