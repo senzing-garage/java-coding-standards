@@ -85,18 +85,37 @@ def test_exits_zero_on_no_changes(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == before
 
 
-def test_forwards_help_flag(tmp_path: Path) -> None:
-    """`--help` is forwarded to each script — first script's help wins."""
+def test_forwards_flags_to_every_script(tmp_path: Path) -> None:
+    """`--help` is forwarded to every sub-script.
+
+    Each sub-script's argparse handles `--help` by printing its usage
+    and calling sys.exit(0). Because format_file.py runs each script
+    as a separate subprocess (not via direct import), a SystemExit in
+    one script does not terminate the orchestrator — it sees only the
+    subprocess's exit code, which is 0, and continues to the next.
+    The combined stdout therefore contains usage output from ALL five
+    scripts, not just the first.
+
+    If format_file.py is ever refactored to use direct imports, this
+    test correctly catches the regression: the first script's
+    sys.exit(0) would terminate the orchestrator, and subsequent
+    scripts' usage strings would be missing from stdout.
+    """
     result = subprocess.run(
         [sys.executable, str(SCRIPTS_DIR / "format_file.py"), "--help"],
         capture_output=True,
         text=True,
     )
-    # First script (fix_allman_braces) prints its help and exits 0; the
-    # orchestrator continues with subsequent scripts which also print
-    # help and exit 0. Final exit code from orchestrator is 0.
     assert result.returncode == 0
-    assert "fix_allman_braces" in result.stdout
+    # Each script's prog= is its filename minus extension; verify all
+    # five appear in the combined help output.
+    for script in format_file.SCRIPT_ORDER:
+        prog = script.removesuffix(".py")
+        assert prog in result.stdout, (
+            f"Expected '{prog}' usage in help output but it was missing. "
+            f"This usually means format_file.py stopped before reaching "
+            f"all five scripts.\nstdout:\n{result.stdout}"
+        )
 
 
 def test_baseline_excludes_protect_fixtures(tmp_path: Path) -> None:

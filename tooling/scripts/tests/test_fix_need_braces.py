@@ -26,6 +26,7 @@ from conftest import fixture_cases
     ids=lambda c: c.name,
 )
 def test_fixture(case: Path, tmp_path: Path) -> None:
+    """Run process_file on input.java; assert output matches expected.java."""
     input_text = (case / "input.java").read_text(encoding="utf-8")
     expected_text = (case / "expected.java").read_text(encoding="utf-8")
 
