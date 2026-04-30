@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "Drop-in entry for the consumer project's .mcp.json. Replace",
+    "{{PROJECT_NAME}} with the project's directory name (e.g.",
+    "'senzing-commons') so the registered server name follows the",
+    "convention <project>-faq."
+  ],
+  "mcpServers": {
+    "{{PROJECT_NAME}}-faq": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--script",
+        ".java-coding-standards/mcp/faq_server.py",
+        "--server-name={{PROJECT_NAME}}-faq",
+        "--faqs-dir=.claude/faqs",
+        "--shared-faqs-dir=.java-coding-standards/docs/faqs"
+      ]
+    }
+  }
+}

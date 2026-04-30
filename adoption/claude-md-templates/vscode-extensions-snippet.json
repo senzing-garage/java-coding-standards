@@ -1,0 +1,13 @@
+{
+  "_comment": [
+    "Recommended extensions for the consumer project's",
+    ".vscode/extensions.json. redhat.java consumes the formatter",
+    "profile referenced by java.format.settings.url.",
+    "emeraldwalk.runonsave is only needed when the user opts in to",
+    "format-on-save during adoption — omit it if they declined."
+  ],
+  "recommendations": [
+    "redhat.java",
+    "emeraldwalk.runonsave"
+  ]
+}

@@ -1,0 +1,35 @@
+<!--
+  Drop-in jacoco coverage profile.
+
+  Pairs with the surefire <argLine>@{argLine} ...</argLine> + empty
+  top-level <argLine> property pattern (see surefire-snippet.xml) so
+  the JaCoCo agent flags reach the test JVM via late-bound argLine
+  resolution. Run with `mvn -Pjacoco test` to produce coverage in
+  target/site/jacoco/.
+-->
+<profile>
+  <id>jacoco</id>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>0.8.14</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>test</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</profile>
