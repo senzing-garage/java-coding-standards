@@ -4,6 +4,7 @@
   "words": [
     "ACMR",
     "Allman",
+    "argparse",
     "barrycaceres",
     "CCLA",
     "CODEOWNER",
@@ -31,6 +32,7 @@
     "Senzing",
     "spotbugs",
     "stackoverflow",
+    "stdlib",
     "switchstatements",
     "systemstubs",
     "virtualenv",
