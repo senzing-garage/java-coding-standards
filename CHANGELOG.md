@@ -29,6 +29,43 @@ and this project adheres to [Semantic Versioning].
   `verification-checklist.md`.
 - `SECURITY.md` documenting the maintained invariants.
 - `README.md` with the consumer-adoption quickstart.
+- `tooling/scripts/tests/` — pytest suite (190 tests) for the bulk-
+  format scripts: per-script fixture-driven cases, helper unit
+  tests, idempotency cross-cut, and orchestrator tests. 45 fixture
+  pairs across the five scripts. Required to pass before merge via
+  `.github/workflows/pytest.yaml` (Python 3.10–3.13 × ubuntu-latest
+  + macos-latest matrix).
+- `tooling/scripts/_cli.py` `BASELINE_EXCLUDES` — always-applied
+  exclusion patterns covering `tooling/scripts/tests/fixtures/**`
+  and `target/**`. Fixtures must stay deliberately non-compliant;
+  without these, auto-format hooks running `format_file.py`
+  silently rewrite fixture inputs.
+- `CONTRIBUTING.md` "Testing" section documenting how to run the
+  suite, the test layout, and how to add new fixtures.
+
+### Changed
+
+- `tooling/scripts/_cli.py` `_excluded()` — leading-`**/` patterns
+  now also match at path depth zero (gitignore-style approximation),
+  so `**/fixtures/**` matches a top-level `fixtures/foo.java`.
+- `tooling/scripts/fix_allman_braces.py` — corrected wrong-indent
+  Allman split on wrapped control-flow conditions and method
+  parameter lists. Replaced the `'(' in stripped` heuristic with a
+  paren-balance check, added `find_wrap_opener_indent()` for
+  paren-balance walk-back through nested wraps, and added a Case 5
+  cleanup pass that re-aligns previously-buggy outputs from older
+  script versions.
+- `adoption/adopt-standards-prompt.md` — Step 7 (.gitignore) is no
+  longer a strict no-op: it adds no new rules but mandates
+  `git check-ignore -v` against each created path and `!` exception
+  lines for any matches. Step 13 documents that the orchestrator
+  smoke test will produce a non-zero diff for projects coming from
+  older script vintages, with a second-pass idempotency gate.
+- `adoption/claude-md-templates/claude-hooks-snippet.json` — the
+  SessionStart freshness fetch uses `git -c http.lowSpeedLimit=1000
+  http.lowSpeedTime=3 fetch` so it aborts after 3 s in slow or
+  unreliable network conditions instead of hanging on a degraded
+  connection.
 
 ## [0.0.0] - 2026-04-29
 

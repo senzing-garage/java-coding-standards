@@ -31,17 +31,9 @@ DEFAULT_SRC_DIRS: tuple[str, ...] = (
     "src/demo/java",
 )
 
-# Baseline exclusion patterns that always apply, regardless of what
-# the caller passes via --exclude or --exclude-from. These protect
-# directories whose contents are intentionally non-compliant or are
-# managed outside the source tree:
-#
-# - tooling/scripts/tests/fixtures/**: the test corpus for the
-#   bulk-format scripts themselves. Fixtures must stay deliberately
-#   non-compliant so tests can verify the script transforms them
-#   correctly. Auto-format hooks (PostToolUse, runonsave) running
-#   format_file.py against fixtures would silently corrupt them.
-# - target/**: Maven build output.
+# Always-applied excludes. Fixtures must stay deliberately
+# non-compliant; auto-format hooks running format_file.py would
+# corrupt them otherwise. target/** is build output.
 BASELINE_EXCLUDES: tuple[str, ...] = (
     "**/tooling/scripts/tests/fixtures/**",
     "**/target/**",
@@ -99,22 +91,10 @@ def parse_args(prog: str, description: str) -> argparse.Namespace:
 
 
 def _excluded(path: Path, patterns: list[str]) -> bool:
-    """Return True if path matches any of the supplied glob patterns.
-
-    Patterns are matched with fnmatch against the posix-form path, with
-    one extension: for any pattern starting with `**/`, the same pattern
-    with the leading `**/` stripped is also tried. This lets
-    `**/fixtures/**` match a top-level `fixtures/foo.java` (which plain
-    fnmatch would reject because `**/` requires at least one preceding
-    segment).
-
-    Note: this does NOT implement full gitignore semantics. In
-    particular, `**` appearing in the middle of a pattern (e.g.
-    `foo/**/bar.java`) is NOT specially handled — fnmatch treats it as
-    plain `*` matching across path separators, which is usually fine
-    but not strictly gitignore-equivalent. If the project starts using
-    middle-`**` patterns, consider switching to the `pathspec` package
-    for true gitignore semantics.
+    """Approximates gitignore semantics: leading `**/` is also tried
+    stripped, so `**/foo/**` matches `foo/...` (which fnmatch alone
+    rejects). Middle-`**` (e.g. `foo/**/bar`) is not special-cased —
+    switch to `pathspec` if that becomes needed.
     """
     posix = path.as_posix()
     for pat in patterns:

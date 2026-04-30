@@ -125,15 +125,15 @@ class TestFindWrapOpenerIndent:
             "    {\n",
             "        try (Connection c = open();\n",
             "             Statement s = c.createStatement();\n",
-            "             ResultSet r = s.executeQuery(\n"
+            "             ResultSet r = s.executeQuery(\n",
             "                 \"SELECT 1\")) {\n",
             "        }\n",
             "    }\n",
             "}\n",
         ]
-        # Index 6 is the deeply-nested closing line.
+        # Index 7 is the deeply-nested closing line.
         result = fix_allman_braces.find_wrap_opener_indent(
-            lines, 6, "                 "
+            lines, 7, "                 "
         )
         assert result == "        "
 
