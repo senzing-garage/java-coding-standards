@@ -541,8 +541,26 @@ git submodule status                          # clean .java-coding-standards/
 mvn -Pcheckstyle validate                     # BUILD SUCCESS
 mvn test                                      # all tests pass
 python3 .java-coding-standards/tooling/scripts/format_file.py
-                                              # 0 modifications expected
 ```
+
+The orchestrator's expected output depends on the project's
+history with the format scripts:
+
+- **Project never ran any version of these scripts**, or last ran
+  them at the same SHA the submodule is now pinned to: 0
+  modifications. The codebase is already in steady-state
+  compliance and subsequent runs are no-ops.
+- **Project ran an older version of the scripts in the past**
+  (e.g. the older copies at `.claude/scripts/` migrated away in
+  step 10): some files may be modified by the orchestrator on
+  this first post-adoption run. The bulk-format scripts evolve
+  over time — most notably, `fix_allman_braces.py` was corrected
+  to handle wrapped-condition Allman splits, and Case 5 of that
+  script automatically re-aligns previously-buggy outputs left
+  behind by older script versions. Treat the resulting diff as
+  expected work product: review it, commit it as a follow-up
+  "format compliance" commit, and confirm a second orchestrator
+  run reports 0 modifications (idempotency).
 
 Restart Claude Code at the end of the session so the FAQ MCP server
 re-indexes; verify by calling

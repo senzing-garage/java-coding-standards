@@ -96,6 +96,38 @@ def find_base_indent(lines, line_idx, current_indent):
     return current_indent
 
 
+_STRING_LITERAL_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_CHAR_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+
+
+def find_wrap_opener_indent(lines, start_idx, default_indent):
+    """Walk back from start_idx tracking paren balance.
+
+    Returns the indent of the line where cumulative paren balance
+    (counting from start_idx's '(' and ')' inclusive) first reaches
+    <= 0 — i.e., the line that opens the construct whose closing
+    ')' lies on or before start_idx. String and character literals
+    are stripped before counting so parens inside strings don't
+    affect the balance.
+
+    Falls back to default_indent if no opener is found.
+    """
+    balance = 0
+    for j in range(start_idx, -1, -1):
+        ln = lines[j]
+        s = ln.strip()
+        if not s or s.startswith('//') or s.startswith('*'):
+            continue
+        code = _STRING_LITERAL_RE.sub('', ln)
+        code = _CHAR_LITERAL_RE.sub('', code)
+        balance += code.count(')') - code.count('(')
+        if balance <= 0:
+            line_no_nl = ln.rstrip('\n').rstrip('\r')
+            return line_no_nl[:len(line_no_nl)
+                              - len(line_no_nl.lstrip())]
+    return default_indent
+
+
 def process_file(filepath):
     """Process a single Java file."""
     path = Path(filepath)
@@ -156,8 +188,12 @@ def process_file(filepath):
             if m:
                 method_part = m.group(1)  # "...foo()"
                 throws_part = m.group(2)  # "throws Exception"
-                # Find base indent
-                if '(' in method_part.strip():
+                # Balanced parens => header line; unbalanced
+                # (more ')' than '(') => continuation of a wrap
+                # opened on a previous line.
+                method_part_stripped = method_part.strip()
+                if (method_part_stripped.count('(')
+                        >= method_part_stripped.count(')')):
                     brace_indent = indent
                 else:
                     brace_indent = find_base_indent(
@@ -170,13 +206,21 @@ def process_file(filepath):
                 changed = True
                 continue
 
-        # Case 3: Method/constructor ending with ') {'
+        # Case 3: Method/constructor or wrapped control-flow
+        # condition ending with ') {'.
         elif stripped.endswith(') {'):
             needs_allman = True
-            if '(' in stripped:
+            # Balanced parens on this line => method/constructor
+            # header (the '(' opens here too); use this line's
+            # indent. Unbalanced (more ')' than '(') => the
+            # opening '(' is on a previous line, so we're closing
+            # a wrapped condition or wrapped parameter list — walk
+            # back via paren balance to find the construct opener
+            # and align the brace there.
+            if stripped.count('(') >= stripped.count(')'):
                 brace_indent = indent
             else:
-                brace_indent = find_base_indent(
+                brace_indent = find_wrap_opener_indent(
                     lines, i, indent)
 
         # Case 4: Throws on a continuation line ending with '{'
@@ -185,6 +229,51 @@ def process_file(filepath):
                       right_stripped):
             needs_allman = True
             brace_indent = find_base_indent(lines, i, indent)
+
+        # Case 5: Standalone '{' line — re-align to the wrap-
+        # opening line's indent if it's currently sitting at the
+        # continuation indent of a wrapped condition. Cleans up
+        # buggy output from earlier versions of this script that
+        # placed the brace at the continuation indent of the line
+        # that closes a wrapped condition or parameter list.
+        elif stripped == '{':
+            prev_idx = None
+            for j in range(i - 1, -1, -1):
+                ps = lines[j].strip()
+                if (ps and not ps.startswith('//')
+                        and not ps.startswith('*')):
+                    prev_idx = j
+                    break
+            if prev_idx is None:
+                new_lines.append(line)
+                continue
+            prev_line = lines[prev_idx].rstrip('\n').rstrip('\r')
+            prev_stripped = prev_line.strip()
+            # Only act when the prev line closes a wrap (ends
+            # with ')' AND has more ')' than '(') AND the brace
+            # is at indent >= the prev line's indent. The latter
+            # excludes legitimate cases like multi-line method
+            # declarations whose brace correctly sits at a
+            # smaller indent than the closing-paren line.
+            if not prev_stripped.endswith(')'):
+                new_lines.append(line)
+                continue
+            if prev_stripped.count('(') >= prev_stripped.count(')'):
+                new_lines.append(line)
+                continue
+            prev_indent = prev_line[:len(prev_line)
+                                    - len(prev_line.lstrip())]
+            if len(indent) < len(prev_indent):
+                new_lines.append(line)
+                continue
+            correct_indent = find_wrap_opener_indent(
+                lines, prev_idx, prev_indent)
+            if correct_indent == indent:
+                new_lines.append(line)
+                continue
+            new_lines.append(correct_indent + '{\n')
+            changed = True
+            continue
 
         if needs_allman:
             content = right_stripped.rstrip()
