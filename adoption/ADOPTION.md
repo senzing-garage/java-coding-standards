@@ -54,7 +54,7 @@ of what gets wired up. Briefly:
 | 4    | Add `<project>-faq` MCP server entry to `.mcp.json`                                       |
 | 5    | Configure `.vscode/` (settings, tasks, extensions, keybinding hint, hooks, slash command) |
 | 6    | `.vscode/cspell.json` — no-op (out of scope)                                              |
-| 7    | `.gitignore` — no-op (out of scope)                                                       |
+| 7    | `.gitignore` — no new rules added; reconcile existing rules that would hide created files |
 | 8    | GitHub workflows — no-op (owned by senzing-factory)                                       |
 | 9    | Merge three sections into `.claude/CLAUDE.md`                                             |
 | 10   | Migrate any pre-existing local copies of standards artifacts                              |
