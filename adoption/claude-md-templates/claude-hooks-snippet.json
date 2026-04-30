@@ -10,9 +10,9 @@
     "",
     "The SessionStart fetch uses git's http.lowSpeedLimit /",
     "http.lowSpeedTime to abort if the transfer stalls below 1 KB/s",
-    "for 3 seconds, bounding session-start latency in slow-network",
-    "or partially-firewalled environments. Offline failures stay",
-    "silent via the trailing 2>/dev/null || true."
+    "for 3 seconds, bounding session-start latency in slow or",
+    "unreliable network conditions. Offline failures stay silent",
+    "via the trailing 2>/dev/null || true."
   ],
   "hooks": {
     "PostToolUse": [
