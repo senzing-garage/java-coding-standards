@@ -25,8 +25,8 @@ def process_file(filepath):
 
     while i < len(lines):
         line = lines[i]
-        rstripped = line.rstrip('\n').rstrip('\r')
-        stripped = rstripped.strip()
+        right_stripped = line.rstrip('\n').rstrip('\r')
+        stripped = right_stripped.strip()
 
         # Detect a @tag line inside a Javadoc comment.
         # @return has NO parameter name — its description starts right
@@ -35,13 +35,13 @@ def process_file(filepath):
         # a parameter name.
         tag_match = re.match(
             r'^(\s*)\*\s+(@return\s+)(.*)',
-            rstripped)
+            right_stripped)
         if not tag_match:
             # Pattern: " * @param name description" or
             #          " * @throws Type description"
             tag_match = re.match(
                 r'^(\s*)\*\s+(@(?:param|throws)\s+\S+\s+)(.*)',
-                rstripped)
+                right_stripped)
 
         if not tag_match:
             new_lines.append(line)
@@ -65,8 +65,8 @@ def process_file(filepath):
 
         # Collect continuation lines (indented past the tag)
         while i < len(lines):
-            next_rstripped = lines[i].rstrip('\n').rstrip('\r')
-            next_stripped = next_rstripped.strip()
+            next_right_stripped = lines[i].rstrip('\n').rstrip('\r')
+            next_stripped = next_right_stripped.strip()
 
             # Stop at blank comment lines, new tags, or end of
             # comment

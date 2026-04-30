@@ -130,7 +130,7 @@ which silences both. The `@{argLine}` late-bound reference (paired with an empty
 
 ## Tests that don't use system-stubs
 
-A small number of older tests redirect `System.out` / `System.err` with raw `System.setOut(new PrintStream(baos))` plus a try/finally restore. That style predates system-stubs, is fine to leave alone for fully-synchronous redirects, and avoids the byte-buddy dependency on a per-test basis. **All other rules above still apply** — `@Execution(SAME_THREAD)` and the appropriate `@ResourceLock` annotations are mandatory because they protect against concurrent JVM-wide stream redirects regardless of which redirect mechanism is used.
+A small number of older tests redirect `System.out` / `System.err` with raw `System.setOut(new PrintStream(buffer))` plus a try/finally restore. That style predates system-stubs, is fine to leave alone for fully-synchronous redirects, and avoids the byte-buddy dependency on a per-test basis. **All other rules above still apply** — `@Execution(SAME_THREAD)` and the appropriate `@ResourceLock` annotations are mandatory because they protect against concurrent JVM-wide stream redirects regardless of which redirect mechanism is used.
 
 When **adding** a new test, prefer system-stubs over raw `setOut`/`setErr` for consistency. Raw redirection is grandfathered, not recommended.
 

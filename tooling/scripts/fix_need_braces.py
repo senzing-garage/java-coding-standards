@@ -368,12 +368,13 @@ def process_file(path):
                                 and not e_body_s.startswith('if(')):
                             e_header = (f"else if "
                                         f"({m_else_if.group('cond')})")
-                            ereplace, econsumed = collapse_or_brace_block(
-                                lines, next_idx, e_body_idx,
-                                parent_indent, e_header)
-                            if ereplace is not None:
-                                else_replacement = ereplace
-                                else_consumed = econsumed
+                            new_replacement, new_consumed = (
+                                collapse_or_brace_block(
+                                    lines, next_idx, e_body_idx,
+                                    parent_indent, e_header))
+                            if new_replacement is not None:
+                                else_replacement = new_replacement
+                                else_consumed = new_consumed
             elif m_else and m_else.group('indent') == parent_indent:
                 e_body_idx = find_next_code_line(lines, next_idx + 1)
                 if e_body_idx < n:
@@ -383,12 +384,13 @@ def process_file(path):
                             and not e_body_s.endswith('{')
                             and not e_body_s.startswith('if ')
                             and not e_body_s.startswith('if(')):
-                        ereplace, econsumed = collapse_or_brace_block(
-                            lines, next_idx, e_body_idx,
-                            parent_indent, 'else')
-                        if ereplace is not None:
-                            else_replacement = ereplace
-                            else_consumed = econsumed
+                        new_replacement, new_consumed = (
+                            collapse_or_brace_block(
+                                lines, next_idx, e_body_idx,
+                                parent_indent, 'else'))
+                        if new_replacement is not None:
+                            else_replacement = new_replacement
+                            else_consumed = new_consumed
 
         # If we matched an if/else pair: always brace both branches.
         # Single-line (no-brace) form is only allowed for a standalone

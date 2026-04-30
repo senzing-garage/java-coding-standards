@@ -119,8 +119,8 @@ def process_file(filepath):
 
     while i < len(original_lines):
         line = original_lines[i]
-        rstripped = line.rstrip('\n').rstrip('\r')
-        stripped = rstripped.strip()
+        right_stripped = line.rstrip('\n').rstrip('\r')
+        stripped = right_stripped.strip()
 
         # Track <pre>...</pre> blocks — never reflow inside
         if '<pre>' in stripped:
@@ -138,7 +138,7 @@ def process_file(filepath):
             continue
 
         # Determine the prefix (indentation + '* ')
-        indent = rstripped[:rstripped.index('*')]
+        indent = right_stripped[:right_stripped.index('*')]
         prefix = indent + '* '
 
         # Collect consecutive prose lines into a paragraph

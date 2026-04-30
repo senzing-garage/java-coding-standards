@@ -42,7 +42,7 @@ the FAQ:
   multiple lines, the opening brace goes on its own line (Allman) to
   visually separate condition from body.
 - **Method parameters** (priority order): single line if it fits; otherwise
-  paren-aligned with types/names columnized; otherwise next-line
+  paren-aligned with types/names aligned in columns; otherwise next-line
   double-indented.
 - **`throws` clauses** go on their own line, single-indented.
 - **Continuation indentation**: 8 spaces (double indent).

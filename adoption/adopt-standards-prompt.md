@@ -238,7 +238,7 @@ Skip this step entirely.
 
 ## Step 7 — `.gitignore`: no-op
 
-The standards adoption introduces no files that need gitignoring:
+The standards adoption introduces no files that need to be added to .gitignore:
 
 - `.java-coding-standards/` is **tracked** via `.gitmodules`.
 - The extension-point files (`checkstyle-suppressions-local.xml` from
@@ -425,7 +425,7 @@ Ask the user:
 If yes:
 
 1. **Source-analysis pass.** Read:
-   - `README.md` (and `README.adoc` / `docs/*.md` if present) for
+   - `README.md` (and any `docs/*.md` if present) for
      project overview, build commands, usage examples.
    - `pom.xml` for build commands, key dependencies, plugin
      configuration, JDK version.

@@ -111,8 +111,8 @@ def process_file(path):
 
     while i < len(original_lines):
         line = original_lines[i]
-        rstripped = line.rstrip('\n').rstrip('\r')
-        stripped = rstripped.strip()
+        right_stripped = line.rstrip('\n').rstrip('\r')
+        stripped = right_stripped.strip()
 
         if stripped.startswith('/**'):
             in_javadoc = True
@@ -136,7 +136,7 @@ def process_file(path):
             continue
 
         # Determine the prefix (indentation + '* ')
-        indent = rstripped[:rstripped.index('*')]
+        indent = right_stripped[:right_stripped.index('*')]
         prefix = indent + '* '
         raw_after_star = stripped[2:] if stripped.startswith('* ') else ''
 

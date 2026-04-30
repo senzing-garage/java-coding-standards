@@ -48,12 +48,12 @@ explicit, documented exception:
 
 - **Dependency injection via PEP 723 metadata.** A compromised
   standards repo could rewrite `dependencies = [...]` to pull a
-  typo-squatted or backdoored package. Mitigation: invariant 2
+  typo-squatted or compromised package. Mitigation: invariant 2
   (exact version pin) constrains what `uv` will install.
 
 - **Shell injection via path substitution.** VSCode's `${file}` and
   Claude Code's `tool_input.file_path` can contain shell
-  metacharacters if a maliciously-named Java file is ever opened or
+  special characters if a maliciously-named Java file is ever opened or
   edited. Mitigations: VSCode tasks use array-style `args` (no shell
   parsing); the Claude `PostToolUse` hook command quotes the path
   read from JSON; Python scripts treat paths as `pathlib.Path` and

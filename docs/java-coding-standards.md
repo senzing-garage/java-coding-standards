@@ -804,7 +804,7 @@ Reflows `@param`, `@return`, and `@throws` tag descriptions.
 
 #### 4. fix_need_braces.py — Short-circuit if collapse / if-else bracing
 
-Fixes brace placement for `if` / `else` patterns. Behaviour depends
+Fixes brace placement for `if` / `else` patterns. Behavior depends
 on (a) whether an `else` is present and (b) whether the body is a
 short-circuit control-flow statement.
 

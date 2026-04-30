@@ -140,7 +140,7 @@ class _BM25Index:
     def __init__(self) -> None:
         self.docs: list[_Document] = []
         self.df: dict[str, int] = {}
-        self.avgdl: float = 0.0
+        self.avg_doc_length: float = 0.0
 
     def add(self, doc: _Document) -> None:
         self.docs.append(doc)
@@ -149,7 +149,7 @@ class _BM25Index:
 
     def finalize(self) -> None:
         if self.docs:
-            self.avgdl = sum(d.length for d in self.docs) / len(self.docs)
+            self.avg_doc_length = sum(d.length for d in self.docs) / len(self.docs)
 
     def search(
         self,
@@ -176,7 +176,7 @@ class _BM25Index:
                     continue
                 numerator = tf * (_K1 + 1.0)
                 denominator = tf + _K1 * (
-                    1.0 - _B + _B * doc.length / max(self.avgdl, 1.0)
+                    1.0 - _B + _B * doc.length / max(self.avg_doc_length, 1.0)
                 )
                 score += idf * numerator / denominator
             if score > 0:

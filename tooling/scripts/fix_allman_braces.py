@@ -87,9 +87,9 @@ def find_base_indent(lines, line_idx, current_indent):
                 or prev_stripped.startswith('@'):
             continue
 
-        prev_rstripped = prev.rstrip('\n').rstrip('\r')
-        prev_indent = prev_rstripped[:len(prev_rstripped)
-                                     - len(prev_rstripped.lstrip())]
+        prev_right_stripped = prev.rstrip('\n').rstrip('\r')
+        prev_indent = prev_right_stripped[:len(prev_right_stripped)
+                                     - len(prev_right_stripped.lstrip())]
         if len(prev_indent) < current_indent_len:
             return prev_indent
 
@@ -106,8 +106,8 @@ def process_file(filepath):
     in_block_comment = False
 
     for i, line in enumerate(lines):
-        rstripped = line.rstrip('\n').rstrip('\r')
-        stripped = rstripped.strip()
+        right_stripped = line.rstrip('\n').rstrip('\r')
+        stripped = right_stripped.strip()
 
         if '/*' in stripped and '*/' not in stripped:
             in_block_comment = True
@@ -120,12 +120,12 @@ def process_file(filepath):
             continue
 
         # Only process lines ending with ' {' or '\t{'
-        if not rstripped.endswith(' {') \
-                and not rstripped.endswith('\t{'):
+        if not right_stripped.endswith(' {') \
+                and not right_stripped.endswith('\t{'):
             new_lines.append(line)
             continue
 
-        indent = rstripped[:len(rstripped) - len(rstripped.lstrip())]
+        indent = right_stripped[:len(right_stripped) - len(right_stripped.lstrip())]
 
         # Skip control flow and special blocks
         if is_control_flow_or_special(stripped):
@@ -152,7 +152,7 @@ def process_file(filepath):
             needs_allman = True
             # Extract everything before 'throws'
             m = re.search(r'^(.*\))\s+(throws\s+.+?)\s*\{$',
-                          rstripped)
+                          right_stripped)
             if m:
                 method_part = m.group(1)  # "...foo()"
                 throws_part = m.group(2)  # "throws Exception"
@@ -182,12 +182,12 @@ def process_file(filepath):
         # Case 4: Throws on a continuation line ending with '{'
         # e.g. line is "        throws SQLException {"
         elif re.match(r'^\s*throws\s+[\w.,\s<>\[\]]+\{$',
-                      rstripped):
+                      right_stripped):
             needs_allman = True
             brace_indent = find_base_indent(lines, i, indent)
 
         if needs_allman:
-            content = rstripped.rstrip()
+            content = right_stripped.rstrip()
             if content.endswith(' {'):
                 content = content[:-2].rstrip()
             elif content.endswith('\t{'):
