@@ -6,7 +6,13 @@
     "(omit if declined).",
     "",
     "All commands reference ${CLAUDE_PROJECT_DIR} so they work",
-    "regardless of where Claude Code was invoked from."
+    "regardless of where Claude Code was invoked from.",
+    "",
+    "The SessionStart fetch uses git's http.lowSpeedLimit /",
+    "http.lowSpeedTime to abort if the transfer stalls below 1 KB/s",
+    "for 3 seconds, bounding session-start latency in slow or",
+    "unreliable network conditions. Offline failures stay silent",
+    "via the trailing 2>/dev/null || true."
   ],
   "hooks": {
     "PostToolUse": [
@@ -35,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'cd \"${CLAUDE_PROJECT_DIR}/.java-coding-standards\" 2>/dev/null && git fetch -q origin main 2>/dev/null && [[ $(git rev-list --count HEAD..origin/main) -gt 0 ]] && echo \"NOTE: .java-coding-standards is $(git rev-list --count HEAD..origin/main) commits behind upstream/main. Run /init-java to refresh.\" || true'"
+            "command": "bash -c 'cd \"${CLAUDE_PROJECT_DIR}/.java-coding-standards\" 2>/dev/null && git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=3 fetch -q origin main 2>/dev/null && [[ $(git rev-list --count HEAD..origin/main) -gt 0 ]] && echo \"NOTE: .java-coding-standards is $(git rev-list --count HEAD..origin/main) commits behind upstream/main. Run /init-java to refresh.\" || true'"
           }
         ]
       }
