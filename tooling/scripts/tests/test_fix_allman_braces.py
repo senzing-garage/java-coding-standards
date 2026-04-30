@@ -15,12 +15,13 @@ test_helpers.py.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 
-import fix_allman_braces  # noqa: E402  (path injected by conftest)
+# fix_allman_braces and the other scripts are importable because
+# conftest.py prepends tooling/scripts/ to sys.path at collection time.
+import fix_allman_braces
 from conftest import fixture_cases
 
 

@@ -28,12 +28,12 @@ def fixtures_dir(category: str) -> Path:
 
 
 def fixture_cases(category: str) -> list[Path]:
-    """Yield each fixture-case directory under the given category.
+    """Return each fixture-case directory under the given category.
 
     A fixture case is a directory containing `input.java` and
-    `expected.java` files. Returned in sorted order so test ids
-    are stable across runs. Hidden directories (e.g. `.pytest_cache`
-    that pytest may create here) are skipped.
+    `expected.java` files. Sorted so test ids are stable across runs.
+    Hidden directories (e.g. `.pytest_cache` that pytest may create
+    here) are skipped.
     """
     base = fixtures_dir(category)
     if not base.is_dir():

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-import fix_javadoc_reflow  # noqa: E402  (path injected by conftest)
+import fix_javadoc_reflow
 from conftest import fixture_cases
 
 

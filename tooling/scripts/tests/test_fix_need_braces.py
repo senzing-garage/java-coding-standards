@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-import fix_need_braces  # noqa: E402
+import fix_need_braces
 from conftest import fixture_cases
 
 

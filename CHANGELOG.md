@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning].
 - `README.md` with the consumer-adoption quickstart.
 - `tooling/scripts/tests/` — pytest suite (190 tests) for the bulk-
   format scripts: per-script fixture-driven cases, helper unit
-  tests, idempotency cross-cut, and orchestrator tests. 45 fixture
+  tests, idempotency cross-cut, and orchestrator tests. 43 fixture
   pairs across the five scripts. Required to pass before merge via
   `.github/workflows/pytest.yaml` (Python 3.10–3.13 × ubuntu-latest
   + macos-latest matrix).

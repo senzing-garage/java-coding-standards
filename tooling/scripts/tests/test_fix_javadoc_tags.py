@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import fix_javadoc_tags  # noqa: E402
+import fix_javadoc_tags
 from conftest import fixture_cases
 
 

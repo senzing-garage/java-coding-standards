@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import format_file  # noqa: E402
+import format_file
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
