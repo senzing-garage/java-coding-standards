@@ -46,26 +46,26 @@ to bootstrap:
 The prompt (`adopt-standards-prompt.md`) is the canonical specification
 of what gets wired up. Briefly:
 
-| Step | What it does |
-|---|---|
-| 1 | Detect project shape (single/multi-module, JDK version, existing artifacts) |
-| 2 | Add the `.java-coding-standards/` submodule |
-| 3 | Update `pom.xml` profiles (checkstyle, jacoco, spotbugs, surefire) |
-| 4 | Add `<project>-faq` MCP server entry to `.mcp.json` |
-| 5 | Configure `.vscode/` (settings, tasks, extensions, keybinding hint, hooks, slash command) |
-| 6 | `.vscode/cspell.json` — no-op (out of scope) |
-| 7 | `.gitignore` — no-op (out of scope) |
-| 8 | GitHub workflows — no-op (owned by senzing-factory) |
-| 9 | Merge three sections into `.claude/CLAUDE.md` |
-| 10 | Migrate any pre-existing local copies of standards artifacts |
-| 11 | **Interactive**: identify generated-file exclusions |
-| 12 | **Interactive opt-in**: draft starter project-specific FAQs |
-| 13 | Run `mvn -Pcheckstyle validate`, `mvn test`, format-script smoke |
-| 14 | Summarize what changed |
+| Step | What it does                                                                              |
+| ---- | ----------------------------------------------------------------------------------------- |
+| 1    | Detect project shape (single/multi-module, JDK version, existing artifacts)               |
+| 2    | Add the `.java-coding-standards/` submodule                                               |
+| 3    | Update `pom.xml` profiles (checkstyle, jacoco, spotbugs, surefire)                        |
+| 4    | Add `<project>-faq` MCP server entry to `.mcp.json`                                       |
+| 5    | Configure `.vscode/` (settings, tasks, extensions, keybinding hint, hooks, slash command) |
+| 6    | `.vscode/cspell.json` — no-op (out of scope)                                              |
+| 7    | `.gitignore` — no-op (out of scope)                                                       |
+| 8    | GitHub workflows — no-op (owned by senzing-factory)                                       |
+| 9    | Merge three sections into `.claude/CLAUDE.md`                                             |
+| 10   | Migrate any pre-existing local copies of standards artifacts                              |
+| 11   | **Interactive**: identify generated-file exclusions                                       |
+| 12   | **Interactive opt-in**: draft starter project-specific FAQs                               |
+| 13   | Run `mvn -Pcheckstyle validate`, `mvn test`, format-script smoke                          |
+| 14   | Summarize what changed                                                                    |
 
 ### What you'll be asked
 
-Three interactive checkpoints:
+Four interactive checkpoints:
 
 1. **Format-on-save**: enable the `emeraldwalk.runonsave` extension
    to reformat Java files on every save? (Alternative: keybinding-only.)
@@ -93,7 +93,7 @@ keybinding, `emeraldwalk.runonsave` if opted in, Claude Code
   (`mcp==1.27.0`) in `mcp/faq_server.py`'s PEP 723 metadata so `uv`
   can't pull a typo-squatted replacement.
 - **`emeraldwalk.runonsave`**: a third-party VSCode extension. We add
-  it as a *recommendation* (not auto-install), and the format-on-save
+  it as a _recommendation_ (not auto-install), and the format-on-save
   opt-in checkpoint mentions the trust assumption explicitly. You can
   decline.
 
@@ -136,10 +136,13 @@ keybinding + Claude-hook flows. Sample:
 ```bash
 # .git/hooks/pre-commit
 #!/bin/bash
-staged=$(git diff --cached --name-only --diff-filter=ACMR | grep '\.java$')
-if [ -n "$staged" ]; then
-  python3 .java-coding-standards/tooling/scripts/format_file.py $staged
-  git add $staged
+# Use NUL-delimited paths so filenames with spaces or newlines work.
+mapfile -d '' -t staged < <(
+  git diff --cached --name-only --diff-filter=ACMR -z | grep -z '\.java$'
+)
+if [ ${#staged[@]} -gt 0 ]; then
+  python3 .java-coding-standards/tooling/scripts/format_file.py "${staged[@]}"
+  git add "${staged[@]}"
 fi
 ```
 

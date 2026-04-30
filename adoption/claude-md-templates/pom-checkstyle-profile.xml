@@ -1,14 +1,16 @@
 <!--
   Drop-in checkstyle profile for adopting projects.
 
-  Layered <suppressionsLocation>: the shared
+  Layered suppressions: the shared
   senzing-checkstyle-suppressions.xml ships in the standards-repo
   submodule; the project-local checkstyle-suppressions-local.xml is
   optional and lives next to the pom — it carries project-specific
   suppressions like generated-file carve-outs.
 
-  If the project has no checkstyle-suppressions-local.xml,
-  delete the second <suppressionsLocation> line.
+  maven-checkstyle-plugin's <suppressionsLocation> takes a
+  comma-separated list of paths; both files are consulted in
+  order. If the project has no checkstyle-suppressions-local.xml,
+  remove the second path (and the comma) from the value below.
 -->
 <profile>
   <id>checkstyle</id>
@@ -24,8 +26,7 @@
           <consoleOutput>true</consoleOutput>
           <failsOnError>true</failsOnError>
           <linkXRef>false</linkXRef>
-          <suppressionsLocation>${project.basedir}/.java-coding-standards/checkstyle/senzing-checkstyle-suppressions.xml</suppressionsLocation>
-          <suppressionsLocation>${project.basedir}/checkstyle-suppressions-local.xml</suppressionsLocation>
+          <suppressionsLocation>${project.basedir}/.java-coding-standards/checkstyle/senzing-checkstyle-suppressions.xml,${project.basedir}/checkstyle-suppressions-local.xml</suppressionsLocation>
         </configuration>
         <executions>
           <execution>

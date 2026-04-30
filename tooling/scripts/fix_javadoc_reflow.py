@@ -15,7 +15,6 @@ NOT touch:
 - The opening '/**' and closing '*/' lines
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -43,16 +42,14 @@ def is_prose_line(stripped):
 
 
 def is_tag_continuation(stripped):
-    """Return True if this looks like a continuation of a @tag."""
+    """Return True if this looks like a continuation of a @tag.
+
+    Tag continuation lines are indented with extra spaces after the
+    '* ' prefix.
+    """
     if not stripped.startswith('* '):
         return False
-    content = stripped[2:].strip()
-    # Tag continuation lines are indented with extra spaces
-    # after the '* ' prefix
-    raw_after_star = stripped[2:] if stripped.startswith('* ') else ''
-    if raw_after_star.startswith('  '):
-        return True
-    return False
+    return stripped[2:].startswith('  ')
 
 
 def reflow_paragraph(lines, prefix):
@@ -151,8 +148,8 @@ def process_file(filepath):
         i += 1
 
         while i < len(original_lines):
-            l = original_lines[i].rstrip('\n').rstrip('\r')
-            s = l.strip()
+            raw_line = original_lines[i].rstrip('\n').rstrip('\r')
+            s = raw_line.strip()
 
             if is_prose_line(s) and not is_tag_continuation(s):
                 text = s[2:].strip()

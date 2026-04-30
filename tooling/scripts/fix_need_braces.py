@@ -403,21 +403,24 @@ def process_file(path):
             if_body_stmt = lines[if_body_idx].strip()
             e_body_indent = line_indent(lines[e_body_idx])
             e_body_stmt = lines[e_body_idx].strip()
-            e_header = ('else if (' + (m_else_if.group('cond')
-                                       if (m_else_if and
-                                           m_else_if.group('kw')
-                                           == 'else if')
-                                       else '') + ')'
-                        if (m_else_if and
-                            m_else_if.group('kw') == 'else if')
-                        else 'else')
-            if_replacement = [
-                f"{parent_indent}{if_header} {{\n",
-                f"{if_body_indent}{if_body_stmt}\n",
-                f"{parent_indent}}} {e_header} {{\n",
-                f"{e_body_indent}{e_body_stmt}\n",
-                f"{parent_indent}}}\n",
-            ]
+            if m_else_if and m_else_if.group('kw') == 'else if':
+                e_header = f"else if ({m_else_if.group('cond')})"
+            else:
+                e_header = 'else'
+            # Preserve any blank/comment lines between the if header
+            # and its body, and between the else header and its body,
+            # so the combined rebuild doesn't silently drop them.
+            if_interleaved = lines[i + 1:body_idx]
+            e_interleaved = lines[next_idx + 1:e_body_idx]
+            if_replacement = (
+                [f"{parent_indent}{if_header} {{\n"]
+                + list(if_interleaved)
+                + [f"{if_body_indent}{if_body_stmt}\n"]
+                + [f"{parent_indent}}} {e_header} {{\n"]
+                + list(e_interleaved)
+                + [f"{e_body_indent}{e_body_stmt}\n"]
+                + [f"{parent_indent}}}\n"]
+            )
             # Combined replacement; clear else_replacement so we
             # don't double-emit.
             out.extend(if_replacement)

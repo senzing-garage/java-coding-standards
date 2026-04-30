@@ -16,6 +16,10 @@ MAX_LINE = 80
 
 
 def process_file(filepath):
+    """Reflow @param/@return/@throws descriptions in a Java file.
+
+    Returns True if the file was rewritten, False otherwise.
+    """
     path = Path(filepath)
     lines = path.read_text(encoding='utf-8').splitlines(True)
 
@@ -151,8 +155,7 @@ def process_file(filepath):
             result_lines.append(cont_prefix + current + '\n')
 
         # Check if we actually changed anything
-        orig_count = 1 + len(texts) - 1  # first + continuations
-        if len(result_lines) != orig_count:
+        if len(result_lines) != len(texts):
             changed = True
         else:
             for j, rl in enumerate(result_lines):

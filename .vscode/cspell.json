@@ -19,6 +19,7 @@
     "ignorefile",
     "jacoco",
     "kernelsam",
+    "mapfile",
     "pathlib",
     "Pcheckstyle",
     "Pjacoco",

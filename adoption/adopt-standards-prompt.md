@@ -62,16 +62,25 @@ the user to confirm if it doesn't follow Senzing conventions.
 ## Step 2 — Add the submodule
 
 Add the standards repo as a submodule mounted at `.java-coding-standards/`.
-Pin to the latest released tag.
+Pin to the latest released tag — look up the current value with:
+
+```bash
+git ls-remote --tags https://github.com/senzing-garage/java-coding-standards.git \
+  | awk '{print $2}' | sed 's,.*/,,' | sort -V | tail -1
+```
+
+Then add the submodule and check out that tag:
 
 ```bash
 git submodule add \
   https://github.com/senzing-garage/java-coding-standards.git \
   .java-coding-standards
 git submodule update --init
-cd .java-coding-standards && git checkout v1.0.0 && cd ..
+cd .java-coding-standards && git checkout <latest-tag> && cd ..
 git add .gitmodules .java-coding-standards
 ```
+
+(Substitute `<latest-tag>` with the value from the lookup above.)
 
 **During the standards repo's local-bootstrap window** (before the
 GitHub repo exists), substitute the `file://` URL of the local clone:
@@ -93,10 +102,12 @@ Update or add three profiles using the templates at
 `.java-coding-standards/adoption/claude-md-templates/`:
 
 - `pom-checkstyle-profile.xml` — replaces any existing `checkstyle`
-  profile. Both `<configLocation>` and the layered `<suppressionsLocation>`
-  point at the submodule. The second `<suppressionsLocation>` references
-  `${project.basedir}/checkstyle-suppressions-local.xml`; if step 11
-  produces no project-specific suppressions, **delete that line**
+  profile. `<configLocation>` points at the shared config in the
+  submodule; `<suppressionsLocation>` is a comma-separated list of
+  two paths — the shared base in the submodule plus the optional
+  project-local `${project.basedir}/checkstyle-suppressions-local.xml`.
+  If step 11 produces no project-specific suppressions, **remove the
+  second path (and the leading comma)** from `<suppressionsLocation>`
   (otherwise checkstyle errors that the file doesn't exist).
 - `pom-jacoco-profile.xml` — adds the `jacoco` profile if missing.
   Preserves any pre-existing `jacoco` profile config the project had,
@@ -212,12 +223,13 @@ into `.claude/settings.json`:
 - **Opt-in hook**: `SessionStart` (prints a one-line nudge if the
   submodule is behind upstream main). Ask the user via
   `AskUserQuestion`:
+
   > Enable submodule-freshness nudges? On session start, if the
   > standards submodule is behind upstream, Claude Code will print a
   > one-line reminder to run `/init-java` to refresh.
   >
   > Options: **Yes** / **No**
-  
+
   Include only if yes.
 
 If `.claude/settings.json` already has `hooks` for any of these events,
@@ -281,6 +293,7 @@ Create one with:
 
 1. A `# CLAUDE.md` header
 2. A "## Project Overview" stub the user fills in:
+
    ```markdown
    ## Project Overview
 
@@ -288,6 +301,7 @@ Create one with:
         load-bearing conventions Claude should know up front. The /init
         adoption flow created this stub; replace it with real content. -->
    ```
+
 3. The three sections from the template ("Java Coding Standards", "FAQ
    MCP Server", "Testing Configuration"), placeholders substituted.
 

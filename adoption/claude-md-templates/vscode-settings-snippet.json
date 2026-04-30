@@ -19,7 +19,7 @@
     "commands": [
       {
         "match": "\\.java$",
-        "cmd": "python3 ${workspaceFolder}/.java-coding-standards/tooling/scripts/format_file.py ${file}"
+        "cmd": "python3 \"${workspaceFolder}/.java-coding-standards/tooling/scripts/format_file.py\" \"${file}\""
       }
     ]
   }
