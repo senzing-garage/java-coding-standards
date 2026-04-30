@@ -108,10 +108,34 @@ Confirm `PostToolUse`, `Stop`, and (if opted in) `SessionStart` arrays
 exist with commands referencing `${CLAUDE_PROJECT_DIR}` and the
 submodule path.
 
-### `.gitignore` and `.github/workflows/` were not touched
+### `.github/workflows/` was not touched
 
-Confirm `git diff --stat` for these files is empty. The adoption flow
-treats both as out of scope.
+Confirm `git diff --stat .github/workflows/` is empty. CI workflows
+are owned by senzing-factory; the adoption flow treats them as out
+of scope.
+
+### `.gitignore` does not silently hide any of the prompt's new files
+
+Run `git check-ignore -v` on each path the prompt creates and
+confirm none is reported as ignored:
+
+```bash
+git check-ignore -v \
+  .vscode/tasks.json \
+  .vscode/extensions.json \
+  .claude/settings.json \
+  .claude/commands/init-java.md \
+  || echo "OK — no files ignored"
+```
+
+If any path reports a match, step 7 of the adoption prompt missed
+adding the corresponding `!` exception. Fix the gitignore and
+re-run `git add` against the affected files.
+
+`git diff --stat .gitignore` may be non-empty if step 7 added `!`
+exceptions to allowlist files under `.vscode/*` or `.claude/*`
+that the project's existing rules would otherwise hide. That diff
+is expected.
 
 ### Generated-file exclusions are in place
 

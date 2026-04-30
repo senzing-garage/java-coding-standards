@@ -248,17 +248,75 @@ to copy its `.vscode/cspell.json` as a starter and prune as needed.
 
 Skip this step entirely.
 
-## Step 7 — `.gitignore`: no-op
+## Step 7 — `.gitignore`: no new entries; reconcile silent ignores
 
-The standards adoption introduces no files that need to be added to .gitignore:
+The standards adoption itself introduces no files that need to be
+added to `.gitignore`:
 
 - `.java-coding-standards/` is **tracked** via `.gitmodules`.
 - The extension-point files (`checkstyle-suppressions-local.xml` from
-  step 11, `.java-coding-standards-excludes` if you decide to write one)
-  are **committed**, not ignored.
+  step 11, `.java-coding-standards-excludes` if you decide to write
+  one) are **committed**, not ignored.
+- Generic Java/Maven entries (`target/`, `.flattened-pom.xml`,
+  `.idea/`, etc.) are project-template concerns and out of scope.
 
-Generic Java/Maven entries (`target/`, `.flattened-pom.xml`, `.idea/`,
-etc.) are project-template concerns. Skip this step entirely.
+However — and this is **mandatory** — the prompt **must** verify
+that the project's existing `.gitignore` does not silently hide any
+of the files steps 4, 5, and 9 create. Common project gitignores
+include broad patterns like `.vscode/*` or `.claude/*` that exempt a
+hand-curated allowlist; without intervention, `git add` silently
+drops the new files and they never reach the PR.
+
+### What to check
+
+For each file the prompt creates (or modifies, if the modification
+is on an untracked file), run `git check-ignore -v <path>` to see
+whether an existing rule matches:
+
+- `.vscode/tasks.json` — created in step 5
+- `.vscode/extensions.json` — created in step 5
+- `.claude/settings.json` — created (or merged into) in step 5
+- `.claude/commands/init-java.md` — installed in step 5
+- `.vscode/settings.json` — modified in step 5 (only relevant if it
+  was previously untracked due to an ignore rule)
+
+If `git check-ignore` reports a match for any of these, the file
+is being silently dropped.
+
+### How to fix
+
+Add an `!` exception line to `.gitignore` for each affected path,
+placed below the matching ignore rule. For example, if the project
+has:
+
+```gitignore
+.vscode/*
+!.vscode/cspell.json
+!.vscode/settings.json
+```
+
+…and the prompt is creating `.vscode/tasks.json` and
+`.vscode/extensions.json`, append:
+
+```gitignore
+!.vscode/extensions.json
+!.vscode/tasks.json
+```
+
+After adding exceptions, re-run `git check-ignore -v <path>` on
+each affected file. The output should now reference the negation
+line (`!.vscode/tasks.json`) instead of the original ignore rule.
+
+Show the user the `.gitignore` diff before saving, especially if
+the project's existing gitignore has many rules — appended `!`
+exceptions can interact unexpectedly with later rules in the same
+file (a later `.vscode/*` would re-ignore them). When in doubt,
+place the `!` exceptions in the same block as the ignore rule
+that matched.
+
+If `git check-ignore` reports no matches for any of these paths,
+this step is a no-op. The verification is mandatory; the
+modification is conditional.
 
 ## Step 8 — GitHub workflows: no-op
 
