@@ -31,6 +31,14 @@ DEFAULT_SRC_DIRS: tuple[str, ...] = (
     "src/demo/java",
 )
 
+# Always-applied excludes. Fixtures must stay deliberately
+# non-compliant; auto-format hooks running format_file.py would
+# corrupt them otherwise. target/** is build output.
+BASELINE_EXCLUDES: tuple[str, ...] = (
+    "**/tooling/scripts/tests/fixtures/**",
+    "**/target/**",
+)
+
 
 def parse_args(prog: str, description: str) -> argparse.Namespace:
     """Build the standard argument parser shared across all bulk scripts."""
@@ -83,8 +91,18 @@ def parse_args(prog: str, description: str) -> argparse.Namespace:
 
 
 def _excluded(path: Path, patterns: list[str]) -> bool:
+    """Approximates gitignore semantics: leading `**/` is also tried
+    stripped, so `**/foo/**` matches `foo/...` (which fnmatch alone
+    rejects). Middle-`**` (e.g. `foo/**/bar`) is not special-cased —
+    switch to `pathspec` if that becomes needed.
+    """
     posix = path.as_posix()
-    return any(fnmatch.fnmatch(posix, pat) for pat in patterns)
+    for pat in patterns:
+        if fnmatch.fnmatch(posix, pat):
+            return True
+        if pat.startswith("**/") and fnmatch.fnmatch(posix, pat[3:]):
+            return True
+    return False
 
 
 def _load_exclude_file(path: Path) -> list[str]:
@@ -99,8 +117,14 @@ def _load_exclude_file(path: Path) -> list[str]:
 
 
 def iter_target_files(args: argparse.Namespace) -> Iterator[Path]:
-    """Yield Java files to process, applying exclusion rules."""
-    excludes = list(args.exclude)
+    """Yield Java files to process, applying exclusion rules.
+
+    The BASELINE_EXCLUDES patterns are always applied first so test
+    fixtures and build outputs are never silently rewritten.
+    Caller-supplied --exclude / --exclude-from patterns layer on top.
+    """
+    excludes = list(BASELINE_EXCLUDES)
+    excludes.extend(args.exclude)
     if args.exclude_from is not None:
         excludes.extend(_load_exclude_file(args.exclude_from))
 

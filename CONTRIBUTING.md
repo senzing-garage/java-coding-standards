@@ -108,7 +108,88 @@ TODO:
 
 ### Testing
 
-TODO:
+The Python format scripts under `tooling/scripts/` (the five
+`fix_*.py` scripts plus the `format_file.py` orchestrator and the
+shared `_cli.py` helper) ship with a pytest suite at
+`tooling/scripts/tests/`. The suite is **required** — the
+`pytest.yaml` GitHub Actions workflow runs on every push and pull
+request, and PRs cannot merge to `main` while it is failing.
+
+#### Running tests locally
+
+From the standards-repo root:
+
+```bash
+pip install -r tooling/scripts/tests/requirements.txt
+pytest tooling/scripts/tests/ --verbose
+```
+
+Or via uv (no virtualenv setup needed):
+
+```bash
+uv run --with pytest pytest tooling/scripts/tests/ --verbose
+```
+
+#### Test structure
+
+The suite combines two layers:
+
+- **Fixture-driven integration tests** (one per `fix_*.py` script
+  plus one for `format_file.py`). Each fixture is a directory
+  under `tooling/scripts/tests/fixtures/<script>/` containing
+  `input.java` (the source to be transformed) and `expected.java`
+  (the desired output). The test parametrizes over directories,
+  so adding a new test case is just dropping in a new directory —
+  no Python code change.
+- **Helper unit tests** in `test_helpers.py` exercise individual
+  pure functions like `find_wrap_opener_indent`,
+  `is_control_flow_or_special`, `_cli._excluded`, and friends.
+  When a fixture-driven test fails, helper unit tests narrow the
+  diagnosis to a specific function.
+- **Idempotency cross-cutting test** (`test_idempotency.py`)
+  verifies, for every fixture across every script, that running
+  the script against `expected.java` produces no further change,
+  and that running the script twice on `input.java` produces the
+  same output as a single pass. This catches non-converging
+  transformations and inter-script interference.
+
+#### Adding a new fixture
+
+1. Pick the relevant `tooling/scripts/tests/fixtures/<script>/`
+   directory.
+2. Create a numbered subdirectory describing the case (e.g.
+   `12_wrapped_for_with_string_arg/`). The numeric prefix keeps
+   test ordering stable; the descriptive name surfaces in pytest
+   output.
+3. Author `input.java` (the deliberately non-compliant source) and
+   `expected.java` (the desired output) by hand. The
+   `BASELINE_EXCLUDES` in `_cli.py` protects the entire fixtures
+   tree from auto-format hooks (`runonsave`, `PostToolUse`) that
+   would otherwise silently rewrite your inputs.
+4. Run `pytest tooling/scripts/tests/ -v` and confirm the new
+   case passes.
+
+If the script's actual output differs from your hand-authored
+`expected.java`, decide whether the script needs a fix or your
+expectation was wrong, then update accordingly. The idempotency
+test will catch any expected.java that isn't a fixed point.
+
+#### When the format scripts evolve
+
+When you change one of the `fix_*.py` scripts, the existing
+fixture corpus exercises the script against ~50 real cases. Two
+likely scenarios:
+
+- **Tightening a rule**: existing fixtures stay valid; add new
+  fixtures for the cases the tightened rule handles.
+- **Refactoring without behavior change**: the test suite must
+  continue to pass with no fixture updates. If it doesn't, either
+  the refactor changed behavior or a fixture was overly tied to
+  implementation details.
+
+For helper-function-level changes, prefer adding a new test case
+in `test_helpers.py` over a new fixture — fixture tests are
+slower and harder to diagnose at function granularity.
 
 ### Pull Requests
 
