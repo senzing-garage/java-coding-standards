@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "Drop-in hooks block for the consumer project's",
+    ".claude/settings.json. The PostToolUse and Stop hooks are",
+    "mandatory; SessionStart is gated on user opt-in during adoption",
+    "(omit if declined).",
+    "",
+    "All commands reference ${CLAUDE_PROJECT_DIR} so they work",
+    "regardless of where Claude Code was invoked from."
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'jq -r \".tool_input.file_path\" | { read p; [[ \"$p\" == *.java ]] && python3 \"${CLAUDE_PROJECT_DIR}/.java-coding-standards/tooling/scripts/format_file.py\" \"$p\"; }'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR}\" && mvn -Pcheckstyle validate -q 2>&1 | grep -E '(ERROR|WARN)' || true"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'cd \"${CLAUDE_PROJECT_DIR}/.java-coding-standards\" 2>/dev/null && git fetch -q origin main 2>/dev/null && [[ $(git rev-list --count HEAD..origin/main) -gt 0 ]] && echo \"NOTE: .java-coding-standards is $(git rev-list --count HEAD..origin/main) commits behind upstream/main. Run /init-java to refresh.\" || true'"
+          }
+        ]
+      }
+    ]
+  }
+}

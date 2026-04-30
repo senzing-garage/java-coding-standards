@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Keys to merge into the consumer project's .vscode/settings.json.",
+    "The [java]-scoped editor.formatOnSave override disables the",
+    "built-in JDT formatter on save (it cannot enforce all standards",
+    "rules); rely on the format keybinding or, if opted in, the",
+    "emeraldwalk.runonsave block below.",
+    "",
+    "If the user opts in to format-on-save during adoption, also",
+    "include the emeraldwalk.runonsave block. If the user declines,",
+    "omit just that block — the [java] override and the",
+    "java.format.settings.url stay regardless."
+  ],
+  "java.format.settings.url": ".java-coding-standards/tooling/ide/java-formatter.xml",
+  "[java]": {
+    "editor.formatOnSave": false
+  },
+  "emeraldwalk.runonsave": {
+    "commands": [
+      {
+        "match": "\\.java$",
+        "cmd": "python3 ${workspaceFolder}/.java-coding-standards/tooling/scripts/format_file.py ${file}"
+      }
+    ]
+  }
+}

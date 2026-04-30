@@ -1,0 +1,19 @@
+// User-level keybinding (must be added by hand — VSCode does not
+// support workspace-scope keybindings).
+//
+// Open VSCode's Keyboard Shortcuts JSON via:
+//     Cmd+Shift+P → "Open Keyboard Shortcuts (JSON)"
+//
+// Append the entry below. Adjust the "key" if Ctrl+Alt+S conflicts
+// with another binding on your platform.
+//
+// The "when" clause confines the binding to the Java editor so it
+// doesn't fire in other languages.
+[
+  {
+    "key": "ctrl+alt+s",
+    "command": "workbench.action.tasks.runTask",
+    "args": "Format and reload Java file (Senzing standards)",
+    "when": "editorLangId == java"
+  }
+]

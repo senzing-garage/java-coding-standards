@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+
+<!DOCTYPE suppressions PUBLIC
+        "-//Puppy Crawl//DTD Suppressions 1.0//EN"
+        "http://www.puppycrawl.com/dtds/suppressions_1_0.dtd">
+
+<suppressions>
+  <suppress checks="FinalParameters" files="."/>
+  <suppress checks="RegexpSingleline" files="."/>
+  <suppress checks="AvoidStarImport" files="."/>
+  <suppress checks="HiddenField" files="."/>
+  <suppress checks="ParameterNumber" files="."/>
+  <suppress checks="MagicNumber" files="."/>
+  <suppress checks="AvoidNestedBlocks" files="."/>
+  <suppress checks="MethodLength" files="."/>
+  <suppress checks="FileLength" files="."/>
+  <suppress checks="NoWhitespaceAfter" files="."/>
+  <suppress checks="Indentation" files="."/>
+</suppressions>

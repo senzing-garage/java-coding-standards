@@ -1,0 +1,29 @@
+<!--
+  Surefire <argLine> + matching empty top-level <argLine> property.
+
+  This pattern is required when the project uses
+  `system-stubs-jupiter` (which transitively pulls in byte-buddy-agent)
+  to silence the JDK 21+ "Java agent loaded dynamically" and
+  "Sharing is only supported for boot loader classes" warnings.
+
+  The @{argLine} late-bound reference lets the jacoco profile's
+  prepare-agent contribution prepend its agent flags via the
+  argLine property without overwriting the surefire-supplied flags.
+
+  See the testing/system-stubs-and-output-capture FAQ for full
+  rationale.
+-->
+
+<!-- Add to <properties> at the top of pom.xml: -->
+<properties>
+  <!-- Declared empty so the surefire `<argLine>@{argLine} ...</argLine>`
+       late-bound reference always resolves. The jacoco profile's
+       prepare-agent goal overwrites this with the JaCoCo agent flags
+       during tests run under -Pjacoco. -->
+  <argLine></argLine>
+</properties>
+
+<!-- Add to maven-surefire-plugin <configuration>: -->
+<configuration>
+  <argLine>@{argLine} -XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
+</configuration>
