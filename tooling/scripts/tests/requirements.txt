@@ -1,0 +1,10 @@
+# Test-only dependencies for tooling/scripts/tests/.
+#
+# Install locally with:
+#     pip install -r tooling/scripts/tests/requirements.txt
+# Run with:
+#     pytest tooling/scripts/tests/
+#
+# CI installs this same file in the pytest workflow.
+
+pytest>=8.0

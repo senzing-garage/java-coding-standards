@@ -24,6 +24,8 @@
     "Pcheckstyle",
     "Pjacoco",
     "Pspotbugs",
+    "pytest",
+    "reflowable",
     "runonsave",
     "SENZ",
     "Senzing",
@@ -31,6 +33,7 @@
     "stackoverflow",
     "switchstatements",
     "systemstubs",
+    "virtualenv",
     "webcompere",
     "Xshare",
     "xstream"
