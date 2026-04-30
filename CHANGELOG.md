@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog], [markdownlint],
 and this project adheres to [Semantic Versioning].
 
-## [Unreleased]
+## [0.1.0] - 2026-04-30
+
+First substantive release. The `[0.0.0]` entry below was the
+senzing-garage repository-creation placeholder; this release ships
+the actual standards content, tooling, FAQ server, adoption
+playbook, and pytest suite.
 
 ### Added
 - Initial directory layout: `checkstyle/`, `docs/`, `tooling/`, `mcp/`,

@@ -115,9 +115,14 @@ synthetic placeholders).
 
 ## Versioning
 
-Tags follow semver (`v1.0.0`, `v1.1.0`, etc.). Consumer projects pin
-to a tag SHA. Bumps are submitted as PRs in consumer projects so the
-diff is visible to reviewers and never silently rolled in CI.
+Tags follow semver. Pre-1.0 (`v0.x.y`) the API surface is still
+stabilizing — minor versions may carry meaningful behavioral changes
+to scripts and templates. Once a `v1.0.0` is cut, semver guarantees
+apply normally.
+
+Consumer projects pin to a tag SHA. Bumps are submitted as PRs in
+consumer projects so the diff is visible to reviewers and never
+silently rolled in CI.
 
 ## License
 
