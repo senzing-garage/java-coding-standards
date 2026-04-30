@@ -35,13 +35,18 @@ mvn test
 Expected: all tests pass. Adoption should not change test outcomes —
 if tests fail, something's wrong with the configuration migration.
 
-### 4. Bulk-format scripts find no work
+### 4. Bulk-format scripts converge to idempotent
 
 ```bash
 python3 .java-coding-standards/tooling/scripts/format_file.py
 ```
 
-Expected output (one line per script):
+The expected output depends on the project's history with the
+format scripts:
+
+**Project never ran any version of these scripts, or last ran
+them at the same SHA the submodule is now pinned to**: zero
+modifications on the first run. One line per script:
 
 ```
 Processed N files, modified 0 files.
@@ -51,9 +56,22 @@ Processed N files, modified 0.
 Processed N files, modified 0, 0 short-circuit fixes applied.
 ```
 
-If any modifications appear, the project's existing source had
-non-compliant code that the new tooling caught. Inspect the diff
-before committing.
+**Project ran an older version of the scripts in the past**
+(common during Phase 3+ migrations of repos that shipped their
+own copies under `.claude/scripts/` before the standards repo
+existed): some files may be modified on the first post-adoption
+run. The scripts evolve over time — most notably,
+`fix_allman_braces.py` was corrected to handle wrapped-condition
+Allman splits and now contains a Case 5 cleanup that re-aligns
+previously-buggy outputs from older script versions. Review the
+resulting diff, commit it as a separate "format compliance"
+commit, and confirm a **second** orchestrator run reports 0
+modifications across all five scripts (this is the idempotency
+gate — the codebase is in steady-state compliance only when a
+fresh pass is a no-op).
+
+If any modifications appear that don't match either expected
+pattern, inspect the diff before committing.
 
 ### 5. FAQ MCP server starts and indexes both shared and project-local FAQs
 
