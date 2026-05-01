@@ -137,9 +137,20 @@ def main() -> int:
     # the path list will be empty and the JDT call is a no-op.
     try:
         target_paths = _resolve_target_paths(forwarded_args)
-    except SystemExit:
-        # argparse may sys.exit on certain inputs; let the underlying
-        # script handle whatever the user passed and report.
+    except SystemExit as exc:
+        # argparse exits with code 0 on --help; treat that as a clean
+        # passthrough (the underlying scripts will print their own
+        # usage and exit). Any other code indicates a real argparse
+        # failure (missing required arg, type-conversion error, etc.) —
+        # warn so the skipped JDT pass doesn't go unnoticed, but still
+        # let the underlying scripts run so their error reporting
+        # surfaces too.
+        if exc.code not in (0, None):
+            print(
+                f"WARNING: path resolution exited {exc.code}; "
+                f"skipping JDT pass.",
+                file=sys.stderr,
+            )
         target_paths = []
 
     failures: list[tuple[str, int]] = []

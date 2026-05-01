@@ -43,13 +43,11 @@ def _require_jdt_jar() -> None:
     if shutil.which("java") is None:
         pytest.skip(
             "JDK is required for orchestrator tests; install JDK 17+",
-            allow_module_level=True,
         )
     if not JDT_JAR.is_file():
         pytest.skip(
             f"jdt-formatter.jar not found at {JDT_JAR}; run "
             f"'mvn package' in tooling/jdt-formatter/ first",
-            allow_module_level=True,
         )
 
 

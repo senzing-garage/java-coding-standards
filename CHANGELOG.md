@@ -7,13 +7,14 @@ and this project adheres to [Semantic Versioning].
 
 ## [0.2.0] - 2026-04-30
 
-**Note:** This release closes the longstanding gap that the bulk-
-format Python scripts didn't actually format Java code — only
-brace placement, javadoc reflow, and short-circuit `if` rules. A
-file with mis-indented code or over-80-character lines passed
-through the orchestrator unchanged, leaving developers to chase
-those issues by hand or via VS Code's built-in formatter (which
-itself was disabled due to brace-placement conflicts).
+**Note:** This release closes the longstanding gap that the
+bulk-format Python scripts didn't actually format Java code —
+only brace placement, javadoc reflow, and short-circuit `if`
+rules. A file with mis-indented code or lines longer than 80
+characters passed through the orchestrator unchanged, leaving
+developers to chase those issues by hand or via VS Code's
+built-in formatter (which itself was disabled due to
+brace-placement conflicts).
 
 The orchestrator is now a true single-command formatter. Running
 `format_file.py path/to/File.java` produces a file that satisfies
@@ -116,12 +117,12 @@ playbook, and pytest suite.
   `verification-checklist.md`.
 - `SECURITY.md` documenting the maintained invariants.
 - `README.md` with the consumer-adoption quickstart.
-- `tooling/scripts/tests/` — pytest suite (190 tests) for the bulk-
-  format scripts: per-script fixture-driven cases, helper unit
-  tests, idempotency cross-cut, and orchestrator tests. 43 fixture
-  pairs across the five scripts. Required to pass before merge via
-  `.github/workflows/pytest.yaml` (Python 3.10–3.13 × ubuntu-latest
-  + macos-latest matrix).
+- `tooling/scripts/tests/` — pytest suite (190 tests) for the
+  bulk-format scripts: per-script fixture-driven cases, helper
+  unit tests, idempotency cross-cut, and orchestrator tests.
+  43 fixture pairs across the five scripts. Required to pass
+  before merge via `.github/workflows/pytest.yaml` (Python
+  3.10–3.13 × ubuntu-latest + macos-latest matrix).
 - `tooling/scripts/_cli.py` `BASELINE_EXCLUDES` — always-applied
   exclusion patterns covering `tooling/scripts/tests/fixtures/**`
   and `target/**`. Fixtures must stay deliberately non-compliant;
