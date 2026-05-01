@@ -29,9 +29,15 @@ concurrency:
 
 jobs:
   rebuild:
+    # `github.actor` is spoofable on re-runs (zizmor bot-conditions check),
+    # so for pull_request events we read the actual PR author from
+    # `github.event.pull_request.user.login`. For workflow_dispatch the
+    # only way to trigger the run is to actually click the button, so
+    # `github.event_name` is sufficient on its own.
     if: |
       github.event_name == 'workflow_dispatch'
-      || github.actor == 'dependabot[bot]'
+      || (github.event_name == 'pull_request'
+          && github.event.pull_request.user.login == 'dependabot[bot]')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR branch
@@ -60,13 +66,14 @@ jobs:
              tooling/jdt-formatter/jdt-formatter.jar
 
       - name: Smoke-test the JAR
+        # Use a single-line redirect rather than a heredoc; YAML's `|`
+        # block scalar would otherwise prepend the indent of this run
+        # block to the heredoc contents, polluting the test input with
+        # leading whitespace JDT then has to normalize away.
         run: |
-          # Format a deliberately mis-formatted file; expect non-zero
-          # diff; expect exit 0.
           mkdir -p /tmp/smoke
-          cat > /tmp/smoke/Foo.java <<'EOF'
-          public class Foo {public  void  m( ){if(x==null)return;}}
-          EOF
+          printf '%s\n' 'public class Foo {public  void  m( ){if(x==null)return;}}' \
+            > /tmp/smoke/Foo.java
           java -jar tooling/jdt-formatter/jdt-formatter.jar \
                tooling/ide/java-formatter.xml /tmp/smoke/Foo.java
           test -s /tmp/smoke/Foo.java

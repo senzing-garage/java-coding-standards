@@ -32,7 +32,6 @@ Exit code: 0 on success, non-zero if any pass failed.
 
 from __future__ import annotations
 
-import argparse
 import shutil
 import subprocess
 import sys
@@ -59,24 +58,34 @@ def _resolve_target_paths(forwarded_args: list[str]) -> list[Path]:
     here so we can call JDT against the file list directly. Mirrors
     `_cli.iter_target_files` semantics (positional paths + --src-dirs
     fallback + --exclude / --exclude-from filtering).
+
+    Reuses `_cli.build_parser` so the parser definition stays in one
+    place — adding a flag in _cli.py picks up here automatically.
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _cli  # noqa: E402
+    import _cli
 
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("paths", nargs="*", type=Path)
-    parser.add_argument("--src-dirs", nargs="+", default=list(_cli.DEFAULT_SRC_DIRS))
-    parser.add_argument("--exclude", action="append", default=[])
-    parser.add_argument("--exclude-from", type=Path, default=None)
-    # Tolerate unknown flags (e.g. --help) so they pass through cleanly.
+    parser = _cli.build_parser(prog="format_file", description="")
+    # Tolerate unknown flags (e.g. --help) so they pass through cleanly
+    # to the per-script invocations later.
     args, _ = parser.parse_known_args(forwarded_args)
     return list(_cli.iter_target_files(args))
 
 
+# Cap on paths-per-JVM-invocation. With paths averaging ~80 chars,
+# 500 leaves ~80 KB on the command line — well under the typical
+# Linux ARG_MAX (~2 MB) and macOS (~256 KB) limits, with comfortable
+# headroom for the env block. Bulk passes against very large
+# codebases will run JDT in multiple JVM invocations; each cold
+# start is ~1 s amortized over 500 files.
+_JDT_BATCH_SIZE = 500
+
+
 def run_jdt_pass(paths: list[Path]) -> int:
-    """Run the Eclipse JDT formatter against `paths` in a single JVM
-    invocation. Returns the formatter's exit code. Skipped (returns 0)
-    if the path list is empty or `java` is not on PATH.
+    """Run the Eclipse JDT formatter against `paths`. Returns 0 on
+    success or the first non-zero exit code if any batch fails. The
+    path list is chunked at `_JDT_BATCH_SIZE` to keep each JVM
+    invocation's command line well under typical OS ARG_MAX limits.
     """
     if not paths:
         return 0
@@ -101,15 +110,20 @@ def run_jdt_pass(paths: list[Path]) -> int:
         )
         return 2
 
-    cmd = [
-        "java",
-        "-jar",
-        str(_JDT_JAR),
-        str(_JDT_PROFILE),
-        *(str(p) for p in paths),
-    ]
-    result = subprocess.run(cmd)
-    return result.returncode
+    first_failure = 0
+    for i in range(0, len(paths), _JDT_BATCH_SIZE):
+        batch = paths[i:i + _JDT_BATCH_SIZE]
+        cmd = [
+            "java",
+            "-jar",
+            str(_JDT_JAR),
+            str(_JDT_PROFILE),
+            *(str(p) for p in batch),
+        ]
+        result = subprocess.run(cmd)
+        if result.returncode != 0 and first_failure == 0:
+            first_failure = result.returncode
+    return first_failure
 
 
 def main() -> int:

@@ -40,9 +40,9 @@ runonsave, Claude Code PostToolUse hook, CI pre-commit).
   input.java/expected.java pairs).
 - `.github/workflows/rebuild-jdt-formatter-jar.yaml` — CI
   workflow that rebuilds `jdt-formatter.jar` when Dependabot
-  opens a PR against `tooling/jdt-formatter/pom.xml`. Force-
-  pushes the rebuilt JAR onto the Dependabot branch so the PR
-  diff shows pom.xml + JAR atomically.
+  opens a PR against `tooling/jdt-formatter/pom.xml`, commits
+  the rebuilt JAR, and pushes it back onto the Dependabot
+  branch so the PR diff shows pom.xml + JAR atomically.
 
 ### Changed
 

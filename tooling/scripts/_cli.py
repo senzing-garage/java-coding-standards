@@ -40,8 +40,14 @@ BASELINE_EXCLUDES: tuple[str, ...] = (
 )
 
 
-def parse_args(prog: str, description: str) -> argparse.Namespace:
-    """Build the standard argument parser shared across all bulk scripts."""
+def build_parser(prog: str, description: str) -> argparse.ArgumentParser:
+    """Build the standard argument parser shared across all bulk scripts.
+
+    Each `fix_*.py` calls this and then `parse_args()`. The orchestrator
+    also calls it directly so it can use `parse_known_args()` (to
+    tolerate flags meant for the underlying scripts) without duplicating
+    the argument definitions here.
+    """
     parser = argparse.ArgumentParser(prog=prog, description=description)
     parser.add_argument(
         "paths",
@@ -87,7 +93,13 @@ def parse_args(prog: str, description: str) -> argparse.Namespace:
             ".java-coding-standards-excludes file."
         ),
     )
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(prog: str, description: str) -> argparse.Namespace:
+    """Build the parser and parse sys.argv. Wrapper around build_parser()
+    for the fix_*.py scripts."""
+    return build_parser(prog, description).parse_args()
 
 
 def _excluded(path: Path, patterns: list[str]) -> bool:
