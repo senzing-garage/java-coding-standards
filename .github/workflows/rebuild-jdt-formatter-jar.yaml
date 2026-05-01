@@ -29,11 +29,11 @@ concurrency:
 
 jobs:
   rebuild:
-    # `github.actor` is spoofable on re-runs (zizmor bot-conditions check),
-    # so for pull_request events we read the actual PR author from
-    # `github.event.pull_request.user.login`. For workflow_dispatch the
-    # only way to trigger the run is to actually click the button, so
-    # `github.event_name` is sufficient on its own.
+    # `github.actor` can be spoofed on workflow re-runs (flagged by the
+    # zizmor bot-conditions audit), so for pull_request events we read
+    # the actual PR author from `github.event.pull_request.user.login`.
+    # For workflow_dispatch the only way to trigger the run is to click
+    # the button, so `github.event_name` is sufficient on its own.
     if: |
       github.event_name == 'workflow_dispatch'
       || (github.event_name == 'pull_request'

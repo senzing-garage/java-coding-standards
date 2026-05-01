@@ -39,7 +39,8 @@
     "virtualenv",
     "webcompere",
     "Xshare",
-    "xstream"
+    "xstream",
+    "zizmor"
   ],
   "ignorePaths": [
     ".git/**",
