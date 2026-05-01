@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
-"""Orchestrator: run all five bulk-format scripts against a single file (or
-a small set of files) in canonical order.
+"""Orchestrator: run JDT formatter then the five Python override scripts
+in canonical order against one or more Java files.
+
+The pipeline:
+
+    JDT formatter (general-purpose Java formatting)
+        ↓
+    fix_allman_braces.py  — Allman brace placement override
+    fix_javadoc_reflow.py
+    fix_javadoc_inline_tags.py
+    fix_javadoc_tags.py
+    fix_need_braces.py    — short-circuit if rules
+
+JDT handles the bulk of the standard (indent, line wrap, alignment,
+continuation-indent, ternary tiers, operator-on-continuation). The
+five Python scripts override the rules JDT can't express in a single
+profile (Allman braces for type/method but same-line for control flow),
+plus rules our standards add beyond what JDT or checkstyle catch
+(no-orphan-words javadoc reflow, short-circuit if collapse, etc.).
 
 Used by:
-- VSCode `Format Java file to Senzing standards` task (single-file reformat
-  on a keybinding).
-- Claude Code `PostToolUse` hook (auto-format every Edit/Write/MultiEdit).
-- `emeraldwalk.runonsave` extension (format-on-save).
+- VSCode `Format Java file to Senzing standards` task.
+- VSCode `emeraldwalk.runonsave` extension (format-on-save).
+- Claude Code `PostToolUse` hook (auto-format every Edit/Write).
+- CLI / pre-commit / CI.
 
-Each underlying script supports the same `--src-dirs` / `--exclude` /
-positional-paths CLI surface (see `_cli.py`). This orchestrator forwards
-positional paths and exclusion args; if no paths are passed, each script
-falls back to its bulk-pass default (walk src/main/java, src/test/java,
-src/demo/java) — i.e. running `format_file.py` with no args is equivalent
-to running each fix_*.py with no args, in order.
+Same input → same output, regardless of caller.
 
-Exit code: 0 on success, non-zero if any underlying script failed.
+Exit code: 0 on success, non-zero if any pass failed.
 """
 
 from __future__ import annotations
 
+import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,12 +46,95 @@ SCRIPT_ORDER: tuple[str, ...] = (
     "fix_need_braces.py",
 )
 
+# Path to the JDT formatter shim, relative to the standards-repo root.
+# format_file.py lives at tooling/scripts/; the JAR + profile sit two
+# directories up.
+_STANDARDS_ROOT = Path(__file__).resolve().parent.parent.parent
+_JDT_JAR = _STANDARDS_ROOT / "tooling" / "jdt-formatter" / "jdt-formatter.jar"
+_JDT_PROFILE = _STANDARDS_ROOT / "tooling" / "ide" / "java-formatter.xml"
+
+
+def _resolve_target_paths(forwarded_args: list[str]) -> list[Path]:
+    """Same path resolution the underlying scripts use, but extracted
+    here so we can call JDT against the file list directly. Mirrors
+    `_cli.iter_target_files` semantics (positional paths + --src-dirs
+    fallback + --exclude / --exclude-from filtering).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _cli  # noqa: E402
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("paths", nargs="*", type=Path)
+    parser.add_argument("--src-dirs", nargs="+", default=list(_cli.DEFAULT_SRC_DIRS))
+    parser.add_argument("--exclude", action="append", default=[])
+    parser.add_argument("--exclude-from", type=Path, default=None)
+    # Tolerate unknown flags (e.g. --help) so they pass through cleanly.
+    args, _ = parser.parse_known_args(forwarded_args)
+    return list(_cli.iter_target_files(args))
+
+
+def run_jdt_pass(paths: list[Path]) -> int:
+    """Run the Eclipse JDT formatter against `paths` in a single JVM
+    invocation. Returns the formatter's exit code. Skipped (returns 0)
+    if the path list is empty or `java` is not on PATH.
+    """
+    if not paths:
+        return 0
+    if not _JDT_JAR.is_file():
+        print(
+            f"ERROR: JDT formatter JAR not found at {_JDT_JAR}",
+            file=sys.stderr,
+        )
+        return 2
+    if not _JDT_PROFILE.is_file():
+        print(
+            f"ERROR: JDT formatter profile not found at {_JDT_PROFILE}",
+            file=sys.stderr,
+        )
+        return 2
+    if shutil.which("java") is None:
+        print(
+            "ERROR: 'java' not found on PATH; required to run the JDT "
+            "formatter pass. Install JDK 17+ or remove this script "
+            "invocation from your hooks.",
+            file=sys.stderr,
+        )
+        return 2
+
+    cmd = [
+        "java",
+        "-jar",
+        str(_JDT_JAR),
+        str(_JDT_PROFILE),
+        *(str(p) for p in paths),
+    ]
+    result = subprocess.run(cmd)
+    return result.returncode
+
 
 def main() -> int:
     here = Path(__file__).resolve().parent
     forwarded_args = sys.argv[1:]
 
+    # Stage 1: JDT pass against resolved paths.
+    # We resolve paths Python-side so JDT only sees real .java files
+    # (and so we honor BASELINE_EXCLUDES, --exclude, etc. before
+    # invoking the JVM). For pure --help passthrough or non-path args
+    # the path list will be empty and the JDT call is a no-op.
+    try:
+        target_paths = _resolve_target_paths(forwarded_args)
+    except SystemExit:
+        # argparse may sys.exit on certain inputs; let the underlying
+        # script handle whatever the user passed and report.
+        target_paths = []
+
     failures: list[tuple[str, int]] = []
+    if target_paths:
+        rc = run_jdt_pass(target_paths)
+        if rc != 0:
+            failures.append(("jdt-formatter", rc))
+
+    # Stage 2: existing Python override scripts in canonical order.
     for script in SCRIPT_ORDER:
         script_path = here / script
         if not script_path.is_file():

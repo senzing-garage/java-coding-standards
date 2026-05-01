@@ -1,0 +1,85 @@
+name: rebuild jdt-formatter.jar
+
+# When Dependabot opens a PR bumping org.eclipse.jdt.core (or any other
+# Maven dependency under tooling/jdt-formatter/pom.xml), the committed
+# tooling/jdt-formatter/jdt-formatter.jar becomes stale. This workflow
+# rebuilds the fat JAR and force-pushes it back onto the Dependabot
+# branch so the PR diff shows pom.xml + jdt-formatter.jar atomically.
+#
+# Triggers:
+#   - Pull requests opened by dependabot[bot] that touch the
+#     formatter pom.
+#   - Manual dispatch (for re-running after a maintainer hand-edits
+#     the pom).
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - "tooling/jdt-formatter/pom.xml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: rebuild-jar-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    if: |
+      github.event_name == 'workflow_dispatch'
+      || github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Build fat JAR
+        run: |
+          cd tooling/jdt-formatter
+          mvn -B -q package
+
+      - name: Copy JAR into committed location
+        run: |
+          cp tooling/jdt-formatter/target/jdt-formatter.jar \
+             tooling/jdt-formatter/jdt-formatter.jar
+
+      - name: Smoke-test the JAR
+        run: |
+          # Format a deliberately mis-formatted file; expect non-zero
+          # diff; expect exit 0.
+          mkdir -p /tmp/smoke
+          cat > /tmp/smoke/Foo.java <<'EOF'
+          public class Foo {public  void  m( ){if(x==null)return;}}
+          EOF
+          java -jar tooling/jdt-formatter/jdt-formatter.jar \
+               tooling/ide/java-formatter.xml /tmp/smoke/Foo.java
+          test -s /tmp/smoke/Foo.java
+          grep -q "public class Foo" /tmp/smoke/Foo.java
+
+      - name: Commit rebuilt JAR if changed
+        run: |
+          if git diff --quiet tooling/jdt-formatter/jdt-formatter.jar; then
+            echo "JAR unchanged after rebuild; nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tooling/jdt-formatter/jdt-formatter.jar
+          git commit -m "Rebuild jdt-formatter.jar after Maven dep bump"
+          git push

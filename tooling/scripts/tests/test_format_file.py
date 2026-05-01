@@ -33,7 +33,8 @@ def test_canonical_script_order() -> None:
 def test_runs_all_scripts_against_single_file(tmp_path: Path) -> None:
     """Single-file mode: orchestrator forwards path to each script."""
     target = tmp_path / "Source.java"
-    # Buggy Allman + collapsible short-circuit if + reflowable javadoc.
+    # Same-line braces, a collapsible short-circuit if, and a javadoc
+    # paragraph with an orphan continuation that should reflow.
     target.write_text(
         "/**\n"
         " * The number of milliseconds to sleep between checks on the\n"
