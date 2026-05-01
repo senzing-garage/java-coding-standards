@@ -32,7 +32,16 @@ from conftest import fixture_cases
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 STANDARDS_ROOT = SCRIPTS_DIR.parent.parent
-JDT_JAR = STANDARDS_ROOT / "tooling" / "jdt-formatter" / "jdt-formatter.jar"
+# The JAR is no longer committed; CI rebuilds it via `mvn package`
+# before running pytest, which leaves it at this path. Local
+# developers can do the same once. format_file.py's own resolution
+# also handles cache + release-download + mvn-fallback paths;
+# this fixture's pre-check keeps the failure mode crisp when none
+# of the above produced a usable JAR.
+LOCAL_BUILD_JAR = (
+    STANDARDS_ROOT
+    / "tooling" / "jdt-formatter" / "target" / "jdt-formatter.jar"
+)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -44,10 +53,11 @@ def _require_jdt_jar() -> None:
         pytest.skip(
             "JDK is required for orchestrator tests; install JDK 17+",
         )
-    if not JDT_JAR.is_file():
+    if not LOCAL_BUILD_JAR.is_file():
         pytest.skip(
-            f"jdt-formatter.jar not found at {JDT_JAR}; run "
-            f"'mvn package' in tooling/jdt-formatter/ first",
+            f"locally-built JAR not found at {LOCAL_BUILD_JAR}; run "
+            f"'mvn package' in tooling/jdt-formatter/ first (CI does "
+            f"this automatically before pytest)",
         )
 
 

@@ -31,14 +31,19 @@ tooling/
                                              consumed by both jdt-formatter
                                              (CLI) and redhat.java (IDE)
     jdt-formatter/                        — thin Java CLI wrapping the
-                                             Eclipse JDT formatter
+                                             Eclipse JDT formatter.
+                                             The fat JAR is NOT
+                                             committed; it's published
+                                             as a GitHub Release asset
+                                             per release tag, with a
+                                             SHA-256 sidecar.
+                                             format_file.py downloads
+                                             on first use and caches.
         pom.xml                           — depends on
                                              org.eclipse.jdt:org.eclipse
                                              .jdt.core; tracked by
                                              Dependabot (21-day cooldown)
         src/main/java/.../JdtFormatter.java
-        jdt-formatter.jar                 — committed fat JAR (~14 MB);
-                                             rebuilt by CI on Maven dep bump
     scripts/                              — orchestrator + override scripts
         _cli.py                           — shared argparse + iter helpers
         format_file.py                    — orchestrator: runs JDT pass

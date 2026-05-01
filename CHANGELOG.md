@@ -26,24 +26,25 @@ runonsave, Claude Code PostToolUse hook, CI pre-commit).
 - `tooling/jdt-formatter/` — small Java CLI shim around the
   Eclipse JDT formatter (`org.eclipse.jdt:org.eclipse.jdt.core
   3.42.0`). Reads the existing `tooling/ide/java-formatter.xml`
-  profile and formats Java files in place. Built as a fat JAR
-  (`jdt-formatter.jar`) via `mvn package`; the committed JAR
-  ships with the repo so consumers don't need a one-time build
-  step on first use.
+  profile and formats Java files in place. Source-only — the
+  built fat JAR is published as a GitHub Release asset (see
+  Release-asset distribution below) and never committed.
 - `tooling/scripts/tests/test_format_file_jdt_pipeline.py` — new
-  pytest module with 9 fixtures × 4 cases covering the
-  orchestrator's combined JDT-then-scripts behavior, including
-  the four user-reported failure modes (over-indented brace,
-  long line, bad spacing, missing braces around assignment-style
-  if body) and a baseline-excludes protection check.
+  pytest module covering the orchestrator's combined
+  JDT-then-scripts behavior, including the user-reported failure
+  modes (over-indented brace, long line, bad spacing, missing
+  braces around assignment-style if body) and a baseline-excludes
+  protection check.
+- `tooling/scripts/tests/test_jar_resolution.py` — unit tests for
+  the JAR resolution helpers (cache hit, SHA-256 verification,
+  download failure cleanup, version parsing).
 - `tooling/scripts/tests/fixtures/orchestrator/` — fixture corpus
-  for the pipeline tests (4 cases, byte-comparable
-  input.java/expected.java pairs).
-- `.github/workflows/rebuild-jdt-formatter-jar.yaml` — CI
-  workflow that rebuilds `jdt-formatter.jar` when Dependabot
-  opens a PR against `tooling/jdt-formatter/pom.xml`, commits
-  the rebuilt JAR, and pushes it back onto the Dependabot
-  branch so the PR diff shows pom.xml + JAR atomically.
+  for the pipeline tests (byte-comparable input.java/expected.java
+  pairs).
+- `.github/workflows/release.yaml` — on `v*` tag push, builds the
+  JDT formatter JAR, computes its SHA-256, and publishes both as
+  attachments on a GitHub Release. Triggered by the maintainer
+  cutting a tag; no auto-commit of binaries.
 
 ### Changed
 
@@ -55,6 +56,12 @@ runonsave, Claude Code PostToolUse hook, CI pre-commit).
   (overrides: Allman brace placement, javadoc no-orphan reflow,
   short-circuit `if` rules). The five scripts are unchanged in
   behavior; their 190-test corpus is unchanged.
+- `tooling/scripts/format_file.py` — JAR resolution: tries (1) a
+  local Maven build at `tooling/jdt-formatter/target/jdt-formatter.jar`,
+  (2) a cached download, (3) download from the matching GitHub
+  Release with SHA-256 verification, (4) a Maven build-from-source
+  fallback. Cache directory honors `XDG_CACHE_HOME` and a project-
+  specific `SENZING_STANDARDS_CACHE_DIR` env var.
 - `adoption/claude-md-templates/vscode-settings-snippet.json` —
   comment block clarifies the rationale for keeping
   `[java].editor.formatOnSave: false`: redhat.java's built-in
@@ -62,31 +69,70 @@ runonsave, Claude Code PostToolUse hook, CI pre-commit).
   emeraldwalk.runonsave invoking the orchestrator. The
   orchestrator runs JDT once internally with the right ordering.
 - `.github/workflows/pytest.yaml` — adds a JDK 17 setup step and
-  rebuilds `jdt-formatter.jar` from source before invoking
-  pytest. Locks the source-and-JAR consistency on every CI run.
+  builds `jdt-formatter.jar` from source before invoking pytest,
+  populating the local-build resolution path the suite expects.
 - `.github/dependabot.yml` — Maven `directory` retargeted from
   `/` (no manifest) to `/tooling/jdt-formatter`. Dependabot now
   tracks `org.eclipse.jdt:org.eclipse.jdt.core` with the
   standard 21-day cooldown.
+
+### Removed
+
+- `tooling/jdt-formatter/jdt-formatter.jar` — the previously-
+  committed binary. JARs are no longer in git history; they live
+  on GitHub Releases. Addresses the supply-chain concern that
+  Dependabot bumps were auto-committing opaque (un-reviewable)
+  binary content.
+- `.github/workflows/rebuild-jdt-formatter-jar.yaml` — no longer
+  needed; the JAR isn't committed, so there's nothing to keep in
+  sync on a Dependabot PR. The release workflow handles JAR
+  publishing on demand.
+
+### Release-asset distribution
+
+The JDT formatter JAR is published as a GitHub Release asset
+rather than committed to git. For each `v*` tag:
+
+- `release.yaml` builds the JAR from source under
+  `tooling/jdt-formatter/`.
+- Computes a SHA-256 digest, written to a `.sha256` sidecar.
+- Creates the GitHub Release and attaches both
+  `jdt-formatter.jar` and `jdt-formatter.jar.sha256`.
+
+`format_file.py` downloads the JAR (and sidecar) from the release
+matching the version pinned in `tooling/jdt-formatter/pom.xml`,
+verifies the SHA-256, and caches the result under
+`~/.cache/senzing-java-coding-standards/`. Subsequent invocations
+are zero-network. Override the cache location with
+`SENZING_STANDARDS_CACHE_DIR`; override the release URL base with
+`SENZING_STANDARDS_RELEASE_BASE` (for forks or air-gapped mirrors).
+
+Why this matters: a compromised Maven dependency picked up by a
+Dependabot bump used to be auto-committed as opaque binary
+content with no human review. Now Dependabot bumps update only
+`pom.xml` (text, reviewable) and the JAR is rebuilt deterministically
+when a maintainer cuts a release tag.
 
 ### Migration
 
 Consumer projects bumping their submodule pin to this release
 will, on next `format_file.py` invocation:
 
-1. Pick up the JDT pass automatically — no consumer action
-   required.
-2. Produce a one-time format-compliance diff for any source that
-   wasn't previously fully compliant (especially indent, line
-   wrap, alignment). Commit as a follow-up "format compliance"
-   pass.
-3. Subsequent runs are idempotent (verified by the new
-   pipeline test corpus).
+1. Download the JAR from `https://github.com/senzing-garage/java-coding-standards/releases/download/v0.2.0/jdt-formatter.jar`
+   (one-time per machine; cached afterward).
+2. Pick up the JDT pass automatically — no further consumer
+   action required.
+3. Produce a one-time format-compliance diff for any source
+   that wasn't previously fully compliant (especially indent,
+   line wrap, alignment). Commit as a follow-up "format
+   compliance" pass.
+4. Subsequent runs are idempotent (verified by the pipeline
+   test corpus).
 
-The JAR is committed in the submodule, so no first-use Maven
-build is required on developer machines. JDK 17+ is required
-to invoke `java -jar`; consumer projects already require it for
-their Maven build.
+JDK 17+ is required (already required for any consumer's Maven
+build). For air-gapped environments, run `mvn package` once in
+`tooling/jdt-formatter/` to populate the local build path; the
+orchestrator finds it before attempting the download.
 
 ## [0.1.0] - 2026-04-30
 

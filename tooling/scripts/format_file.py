@@ -32,9 +32,14 @@ Exit code: 0 on success, non-zero if any pass failed.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 SCRIPT_ORDER: tuple[str, ...] = (
@@ -45,12 +50,155 @@ SCRIPT_ORDER: tuple[str, ...] = (
     "fix_need_braces.py",
 )
 
-# Path to the JDT formatter shim, relative to the standards-repo root.
-# format_file.py lives at tooling/scripts/; the JAR + profile sit two
-# directories up.
+# format_file.py lives at tooling/scripts/; the formatter module +
+# profile sit two directories up.
 _STANDARDS_ROOT = Path(__file__).resolve().parent.parent.parent
-_JDT_JAR = _STANDARDS_ROOT / "tooling" / "jdt-formatter" / "jdt-formatter.jar"
 _JDT_PROFILE = _STANDARDS_ROOT / "tooling" / "ide" / "java-formatter.xml"
+_JDT_DIR = _STANDARDS_ROOT / "tooling" / "jdt-formatter"
+_JDT_POM = _JDT_DIR / "pom.xml"
+_JDT_LOCAL_BUILD = _JDT_DIR / "target" / "jdt-formatter.jar"
+
+# GitHub Releases hosting the JAR + SHA-256 sidecar. Override via
+# env var for forks or air-gapped mirrors.
+_RELEASE_BASE = os.environ.get(
+    "SENZING_STANDARDS_RELEASE_BASE",
+    "https://github.com/senzing-garage/java-coding-standards/releases/download",
+)
+
+
+def _read_pom_version() -> str | None:
+    """Return the <version> element from the JDT formatter pom.xml,
+    or None if the pom is missing or fails to read. The version drives
+    the GitHub Release URL the JAR is downloaded from.
+    """
+    if not _JDT_POM.is_file():
+        return None
+    try:
+        text = _JDT_POM.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    # The project version is the first <version>...</version> element.
+    # <modelVersion>...</modelVersion> uses a different tag name and
+    # doesn't match. Subsequent <version> elements are dependency
+    # versions (e.g. `<version>${jdt.version}</version>`) — ignore
+    # them; we only want the project's own version.
+    match = re.search(r"<version>([^<]+)</version>", text)
+    return match.group(1).strip() if match else None
+
+
+def _cache_dir() -> Path:
+    """Where downloaded JARs live. Honors XDG_CACHE_HOME and a project-
+    specific override env var so air-gapped sites can pre-populate.
+    """
+    override = os.environ.get("SENZING_STANDARDS_CACHE_DIR")
+    if override:
+        return Path(override)
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".cache"
+    return base / "senzing-java-coding-standards"
+
+
+def _download(url: str, dest: Path) -> None:
+    """Download `url` to `dest` atomically. Raises on HTTP errors."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        with open(tmp, "wb") as out:
+            shutil.copyfileobj(resp, out)
+    tmp.replace(dest)
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _build_from_source() -> Path | None:
+    """Run `mvn package` in the formatter module to produce the JAR
+    locally. Returns the JAR path on success, None on failure or if
+    Maven is not available. Used as the bootstrap path before the
+    first release exists, and as the offline fallback.
+    """
+    if shutil.which("mvn") is None:
+        return None
+    if not _JDT_POM.is_file():
+        return None
+    try:
+        subprocess.run(
+            ["mvn", "-B", "-q", "package"],
+            cwd=_JDT_DIR,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    return _JDT_LOCAL_BUILD if _JDT_LOCAL_BUILD.is_file() else None
+
+
+def _resolve_jar() -> Path | None:
+    """Locate the JDT formatter JAR. Resolution order:
+
+    1. Local Maven build at `tooling/jdt-formatter/target/jdt-formatter.jar`.
+       Used by CI (which runs `mvn package` before pytest) and by
+       developers who built locally for testing.
+    2. Cached download at
+       `<cache>/jdt-formatter-v<version>.jar`. Used after the first
+       download from the matching GitHub Release.
+    3. Download from
+       `<release-base>/v<version>/jdt-formatter.jar`. The release
+       also publishes `jdt-formatter.jar.sha256`; we download both
+       and verify the JAR matches before caching.
+    4. Build from source via `mvn package` (bootstrap before the
+       first release; offline fallback when downloads fail).
+
+    Returns the path to the resolved JAR, or None if all paths fail.
+    """
+    # 1. Local Maven build.
+    if _JDT_LOCAL_BUILD.is_file():
+        return _JDT_LOCAL_BUILD
+
+    version = _read_pom_version()
+    if version is None:
+        return _build_from_source()
+
+    # 2. Cache hit.
+    cache_path = _cache_dir() / f"jdt-formatter-v{version}.jar"
+    if cache_path.is_file():
+        return cache_path
+
+    # 3. Download from release.
+    base = f"{_RELEASE_BASE.rstrip('/')}/v{version}"
+    jar_url = f"{base}/jdt-formatter.jar"
+    sha_url = f"{base}/jdt-formatter.jar.sha256"
+    try:
+        sha_path = cache_path.with_suffix(cache_path.suffix + ".sha256")
+        _download(sha_url, sha_path)
+        _download(jar_url, cache_path)
+        expected = sha_path.read_text(encoding="utf-8").split()[0].lower()
+        actual = _sha256(cache_path)
+        if expected != actual:
+            print(
+                f"ERROR: SHA-256 mismatch for {jar_url}\n"
+                f"  expected: {expected}\n"
+                f"  actual:   {actual}",
+                file=sys.stderr,
+            )
+            cache_path.unlink(missing_ok=True)
+            sha_path.unlink(missing_ok=True)
+            return None
+        return cache_path
+    except urllib.error.URLError as exc:
+        print(
+            f"WARNING: could not download JDT formatter JAR from "
+            f"{jar_url}: {exc}. Falling back to local source build.",
+            file=sys.stderr,
+        )
+        cache_path.unlink(missing_ok=True)
+
+    # 4. Build from source.
+    return _build_from_source()
 
 
 def _resolve_target_paths(forwarded_args: list[str]) -> list[Path]:
@@ -89,12 +237,6 @@ def run_jdt_pass(paths: list[Path]) -> int:
     """
     if not paths:
         return 0
-    if not _JDT_JAR.is_file():
-        print(
-            f"ERROR: JDT formatter JAR not found at {_JDT_JAR}",
-            file=sys.stderr,
-        )
-        return 2
     if not _JDT_PROFILE.is_file():
         print(
             f"ERROR: JDT formatter profile not found at {_JDT_PROFILE}",
@@ -110,13 +252,26 @@ def run_jdt_pass(paths: list[Path]) -> int:
         )
         return 2
 
+    jar_path = _resolve_jar()
+    if jar_path is None:
+        print(
+            "ERROR: JDT formatter JAR could not be located. Tried, in "
+            "order: tooling/jdt-formatter/target/jdt-formatter.jar, "
+            "the local cache, the GitHub Release for the version pinned "
+            "in pom.xml, and a fallback `mvn package` build. Install "
+            "Maven (or `cd tooling/jdt-formatter && mvn package` once) "
+            "if you're working offline.",
+            file=sys.stderr,
+        )
+        return 2
+
     first_failure = 0
     for i in range(0, len(paths), _JDT_BATCH_SIZE):
         batch = paths[i:i + _JDT_BATCH_SIZE]
         cmd = [
             "java",
             "-jar",
-            str(_JDT_JAR),
+            str(jar_path),
             str(_JDT_PROFILE),
             *(str(p) for p in batch),
         ]
