@@ -20,6 +20,6 @@ updates:
       - "barrycaceres"
     cooldown:
       default-days: 21
-    directory: "/"
+    directory: "/tooling/jdt-formatter"
     schedule:
       interval: "daily"

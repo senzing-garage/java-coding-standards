@@ -38,14 +38,42 @@ The standards repo ships two checkstyle config files; consumer projects referenc
 
 Project-specific suppressions (e.g. for auto-generated files) layer in via a project-local `checkstyle-suppressions-local.xml` next to the project's `pom.xml` — passed to checkstyle alongside the shared base via the multi-value `<suppressionsLocation>` syntax.
 
-### VSCode Formatter
-- `.java-coding-standards/tooling/ide/java-formatter.xml` — Eclipse JDT formatter profile (Allman for methods/types, same-line for blocks). Consumer's `.vscode/settings.json` references it via `"java.format.settings.url"`.
-- `.vscode/settings.json` — `editor.formatOnSave` disabled for the `[java]` scope (the JDT formatter cannot fully enforce these standards; rely on the orchestrator script instead).
-- **Limitation**: the VSCode/JDT formatter cannot enforce per-block-type brace placement (cannot have Allman for methods AND same-line for if/for in the same file). The bulk-fix scripts cover what the JDT profile cannot.
+### Formatter pipeline
 
-### Automation Scripts
+The orchestrator (`tooling/scripts/format_file.py`) runs a two-stage pipeline:
 
-Five Python scripts in the shared `.java-coding-standards/tooling/scripts/` directory automate bulk formatting fixes. Run from project root:
+```
+JDT formatter pass (general Java formatting)
+    ↓
+fix_allman_braces.py        ─┐
+fix_javadoc_reflow.py        │  override scripts —
+fix_javadoc_inline_tags.py   │  applied AFTER JDT
+fix_javadoc_tags.py          │
+fix_need_braces.py          ─┘
+```
+
+**Stage 1 — JDT formatter.** `tooling/jdt-formatter/jdt-formatter.jar` is a thin wrapper around the Eclipse JDT formatter, configured via `tooling/ide/java-formatter.xml`. JDT handles indent, line wrap, continuation indent, ternary tiers, operator-on-continuation positioning, parameter alignment, whitespace, and most other rules in `docs/java-coding-standards.md`. Requires JDK 17+ (already required for any consumer project's Maven build).
+
+**Stage 2 — Override scripts.** Five Python scripts apply rules JDT can't express in a single profile (per-block-type brace placement) plus rules our standards add beyond what JDT handles (no-orphan-words javadoc reflow; short-circuit `if` collapse; non-short-circuit `if` brace-add).
+
+The pipeline produces a fully compliant file regardless of caller — VS Code save, Claude Code edit hook, CLI, CI pre-commit. Same input, same output, everywhere.
+
+### VSCode integration
+
+- `.vscode/settings.json` — `[java].editor.formatOnSave: false` (we do NOT use redhat.java's built-in format-on-save). `emeraldwalk.runonsave` instead invokes `format_file.py` on Java save, which runs JDT plus the override scripts in one pass with the correct ordering.
+- `.java-coding-standards/tooling/ide/java-formatter.xml` — Eclipse JDT formatter profile, also referenced by `java.format.settings.url` so redhat.java's manual "Format Document" command uses the same JDT rules even when invoked outside the orchestrator.
+- Why not let redhat.java do format-on-save? Running redhat.java + emeraldwalk both on save would invoke JDT twice (redundant) and complicate ordering. Single orchestrator invocation is cleaner.
+
+### Running the pipeline
+
+End-to-end:
+
+```bash
+python3 .java-coding-standards/tooling/scripts/format_file.py        # bulk pass over src/main, src/test, src/demo
+python3 .java-coding-standards/tooling/scripts/format_file.py path/to/File.java   # single file
+```
+
+Or run individual override scripts (skips the JDT pass):
 
 ```bash
 python3 .java-coding-standards/tooling/scripts/fix_allman_braces.py
@@ -55,13 +83,15 @@ python3 .java-coding-standards/tooling/scripts/fix_javadoc_tags.py
 python3 .java-coding-standards/tooling/scripts/fix_need_braces.py
 ```
 
-- `fix_allman_braces.py` — moves opening braces to Allman style for class/interface/enum/method/constructor definitions; splits `throws` clauses onto their own line.
-- `fix_javadoc_reflow.py` — reflows plain Javadoc prose paragraphs (skips paragraphs that begin with `{@link}`/`<code>`/etc.).
-- `fix_javadoc_inline_tags.py` — reflows Javadoc paragraphs that contain inline tags (`{@link}`, `<code>`, etc.) but are still prose. Catches the cases `fix_javadoc_reflow.py` intentionally skips.
-- `fix_javadoc_tags.py` — reflows `@param`, `@return`, `@throws` tag descriptions.
-- `fix_need_braces.py` — fixes brace placement on `if` / `else` blocks. For a **standalone `if`** with a short-circuit body (`return`/`continue`/`break`/`throw`), collapses `if (cond)\n    body;` to a single line when it fits within 80 chars (Tier 1); otherwise braces are added (Tier 2). For non-short-circuit bodies (assignments, method calls), braces are always added — even on already-inline `if (cond) someVar = ...;` lines that checkstyle would otherwise allow. For `if`/`else` pairs, both branches are **always** braced — never single-lined, even when the bodies would fit.
+Override-script behavior summary:
 
-The scripts scan `src/main/java`, `src/test/java`, and `src/demo/java` if present. Use `--src-dirs` to override the default list and `--exclude` to skip globs (e.g. auto-generated files). For single-file reformatting (single-file mode), pass a file path as a positional argument; the orchestrator `format_file.py` runs all five scripts against that one file in canonical order.
+- `fix_allman_braces.py` — moves opening braces to Allman style for class/interface/enum/method/constructor definitions; splits `throws` clauses onto their own line. Includes a "Case 5" cleanup that re-aligns previously-buggy outputs from older script versions.
+- `fix_javadoc_reflow.py` — reflows plain Javadoc prose paragraphs (skips paragraphs that begin with `{@link}`/`<code>`/etc.).
+- `fix_javadoc_inline_tags.py` — reflows Javadoc paragraphs containing inline tags. Catches the cases `fix_javadoc_reflow.py` intentionally skips.
+- `fix_javadoc_tags.py` — reflows `@param`, `@return`, `@throws` tag descriptions.
+- `fix_need_braces.py` — fixes brace placement on `if` / `else` blocks. For a **standalone `if`** with a short-circuit body (`return`/`continue`/`break`/`throw`), collapses `if (cond)\n    body;` to a single line when it fits within 80 chars (Tier 1); otherwise braces are added (Tier 2). For non-short-circuit bodies (assignments, method calls), braces are always added — even on already-inline `if (cond) someVar = ...;` lines that checkstyle would otherwise allow. For `if`/`else` pairs, both branches are **always** braced.
+
+The scripts scan `src/main/java`, `src/test/java`, and `src/demo/java` if present. Use `--src-dirs` to override the default list and `--exclude` to skip globs (e.g. auto-generated files). For single-file mode, pass a file path as a positional argument.
 
 ### Full Reference
 

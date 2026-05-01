@@ -28,18 +28,31 @@ docs/
 
 tooling/
     ide/java-formatter.xml                — Eclipse JDT formatter profile
-                                             consumed by redhat.java
-                                             via java.format.settings.url
-    scripts/                              — bulk-format Python scripts
+                                             consumed by both jdt-formatter
+                                             (CLI) and redhat.java (IDE)
+    jdt-formatter/                        — thin Java CLI wrapping the
+                                             Eclipse JDT formatter.
+                                             The fat JAR is NOT
+                                             committed; it's published
+                                             as a GitHub Release asset
+                                             per release tag, with a
+                                             SHA-256 sidecar.
+                                             format_file.py downloads
+                                             on first use and caches.
+        pom.xml                           — depends on
+                                             org.eclipse.jdt:org.eclipse
+                                             .jdt.core; tracked by
+                                             Dependabot (21-day cooldown)
+        src/main/java/.../JdtFormatter.java
+    scripts/                              — orchestrator + override scripts
         _cli.py                           — shared argparse + iter helpers
-        fix_allman_braces.py
-        fix_javadoc_reflow.py
-        fix_javadoc_inline_tags.py
-        fix_javadoc_tags.py
-        fix_need_braces.py
-        format_file.py                    — orchestrator (single-file mode
-                                             for VSCode keybinding,
-                                             PostToolUse hook, etc.)
+        format_file.py                    — orchestrator: runs JDT pass
+                                             then five fix_*.py overrides
+        fix_allman_braces.py              — Allman brace placement override
+        fix_javadoc_reflow.py             — javadoc no-orphan reflow
+        fix_javadoc_inline_tags.py        — javadoc inline-tag reflow
+        fix_javadoc_tags.py               — @param/@return/@throws reflow
+        fix_need_braces.py                — short-circuit if rules
 
 mcp/
     faq_server.py                         — generic FAQ MCP server, invoked
