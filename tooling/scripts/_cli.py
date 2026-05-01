@@ -43,10 +43,10 @@ BASELINE_EXCLUDES: tuple[str, ...] = (
 def build_parser(prog: str, description: str) -> argparse.ArgumentParser:
     """Build the standard argument parser shared across all bulk scripts.
 
-    Each `fix_*.py` calls this and then `parse_args()`. The orchestrator
-    also calls it directly so it can use `parse_known_args()` (to
-    tolerate flags meant for the underlying scripts) without duplicating
-    the argument definitions here.
+    The `fix_*.py` scripts call `parse_args()`, which delegates here.
+    The orchestrator calls this directly so it can use
+    `parse_known_args()` (to tolerate flags meant for the underlying
+    scripts) without duplicating the argument definitions here.
     """
     parser = argparse.ArgumentParser(prog=prog, description=description)
     parser.add_argument(

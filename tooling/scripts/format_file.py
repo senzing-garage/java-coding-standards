@@ -196,6 +196,7 @@ def _resolve_jar() -> Path | None:
             file=sys.stderr,
         )
         cache_path.unlink(missing_ok=True)
+        sha_path.unlink(missing_ok=True)
 
     # 4. Build from source.
     return _build_from_source()
@@ -210,7 +211,9 @@ def _resolve_target_paths(forwarded_args: list[str]) -> list[Path]:
     Reuses `_cli.build_parser` so the parser definition stays in one
     place — adding a flag in _cli.py picks up here automatically.
     """
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
     import _cli
 
     parser = _cli.build_parser(prog="format_file", description="")

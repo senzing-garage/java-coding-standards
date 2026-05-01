@@ -25,7 +25,7 @@ runonsave, Claude Code PostToolUse hook, CI pre-commit).
 
 - `tooling/jdt-formatter/` — small Java CLI shim around the
   Eclipse JDT formatter (`org.eclipse.jdt:org.eclipse.jdt.core
-  3.42.0`). Reads the existing `tooling/ide/java-formatter.xml`
+3.42.0`). Reads the existing `tooling/ide/java-formatter.xml`
   profile and formats Java files in place. Source-only — the
   built fat JAR is published as a GitHub Release asset (see
   Release-asset distribution below) and never committed.
@@ -142,6 +142,7 @@ ships the actual standards content, tooling, FAQ server, adoption
 playbook, and pytest suite.
 
 ### Added
+
 - Initial directory layout: `checkstyle/`, `docs/`, `tooling/`, `mcp/`,
   `adoption/`.
 - Canonical `docs/java-coding-standards.md` (912-line standards doc).
@@ -197,7 +198,7 @@ playbook, and pytest suite.
   older script vintages, with a second-pass idempotency gate.
 - `adoption/claude-md-templates/claude-hooks-snippet.json` — the
   SessionStart freshness fetch uses `git -c http.lowSpeedLimit=1000
-  http.lowSpeedTime=3 fetch` so it aborts after 3 s in slow or
+http.lowSpeedTime=3 fetch` so it aborts after 3 s in slow or
   unreliable network conditions instead of hanging on a degraded
   connection.
 

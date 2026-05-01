@@ -119,9 +119,13 @@ def test_resolve_jar_verifies_sha_on_download(
     result = format_file._resolve_jar()
     assert result is None
     # Bad cache must be cleaned up so subsequent calls don't see it.
+    # Both the JAR and its sidecar are removed so a retry doesn't trust
+    # the now-orphaned hash file.
     version = format_file._read_pom_version()
     cache_path = cache_dir / f"jdt-formatter-v{version}.jar"
+    sha_path = cache_dir / f"jdt-formatter-v{version}.jar.sha256"
     assert not cache_path.exists()
+    assert not sha_path.exists()
 
 
 def test_resolve_jar_accepts_matching_sha(
