@@ -11,12 +11,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to release (e.g. v0.2.0). Must already exist."
-        required: true
-        type: string
 
 permissions: {}
 
@@ -24,19 +18,13 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # Required to create the GitHub Release.
+      contents: write # Required to create the GitHub Release.
     timeout-minutes: 10
     steps:
       - name: Determine release tag
         id: tag
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "value=$INPUT_TAG" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tag
         uses: actions/checkout@v6
@@ -49,7 +37,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: maven
 
       - name: Build fat JAR
         run: |
@@ -82,9 +69,9 @@ jobs:
           TAG: ${{ steps.tag.outputs.value }}
           SHA: ${{ steps.sha.outputs.value }}
         run: |
-          # If a release already exists for this tag (e.g. a previous
-          # workflow_dispatch run), upload assets to it; otherwise
-          # create a new release.
+          # If a release already exists for this tag (e.g. an earlier
+          # run created the release but failed before asset upload),
+          # upload assets to it; otherwise create a new release.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; uploading assets."
             gh release upload "$TAG" \
