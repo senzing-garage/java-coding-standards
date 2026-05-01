@@ -24,10 +24,11 @@ runonsave, Claude Code PostToolUse hook, CI pre-commit).
 ### Added
 
 - `tooling/jdt-formatter/` — small Java CLI shim around the
-  Eclipse JDT formatter (`org.eclipse.jdt:org.eclipse.jdt.core
-3.42.0`). Reads the existing `tooling/ide/java-formatter.xml`
-  profile and formats Java files in place. Source-only — the
-  built fat JAR is published as a GitHub Release asset (see
+  Eclipse JDT formatter
+  (`org.eclipse.jdt:org.eclipse.jdt.core 3.42.0`).
+  Reads the existing `tooling/ide/java-formatter.xml` profile
+  and formats Java files in place. Source-only — the built fat
+  JAR is published as a GitHub Release asset (see
   Release-asset distribution below) and never committed.
 - `tooling/scripts/tests/test_format_file_jdt_pipeline.py` — new
   pytest module covering the orchestrator's combined
@@ -197,10 +198,10 @@ playbook, and pytest suite.
   smoke test will produce a non-zero diff for projects coming from
   older script vintages, with a second-pass idempotency gate.
 - `adoption/claude-md-templates/claude-hooks-snippet.json` — the
-  SessionStart freshness fetch uses `git -c http.lowSpeedLimit=1000
-http.lowSpeedTime=3 fetch` so it aborts after 3 s in slow or
-  unreliable network conditions instead of hanging on a degraded
-  connection.
+  SessionStart freshness fetch runs
+  `git -c http.lowSpeedLimit=1000 http.lowSpeedTime=3 fetch`,
+  so it aborts after 3 s in slow or unreliable network conditions
+  instead of hanging on a degraded connection.
 
 ## [0.0.0] - 2026-04-29
 
