@@ -29,9 +29,11 @@ jobs:
     steps:
       - name: Determine release tag
         id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "value=$INPUT_TAG" >> "$GITHUB_OUTPUT"
           else
             echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
@@ -90,14 +92,19 @@ jobs:
               tooling/jdt-formatter/target/jdt-formatter.jar.sha256 \
               --clobber
           else
+            notes_file=$(mktemp)
+            cat > "$notes_file" <<EOF
+          JDT formatter JAR for senzing-garage/java-coding-standards $TAG.
+
+          SHA-256: \`$SHA\`
+
+          The JAR is downloaded by \`format_file.py\` on first use and cached
+          locally. See CHANGELOG.md for the version's release notes.
+          EOF
             gh release create "$TAG" \
               tooling/jdt-formatter/target/jdt-formatter.jar \
               tooling/jdt-formatter/target/jdt-formatter.jar.sha256 \
               --title "$TAG" \
-              --notes "JDT formatter JAR for senzing-garage/java-coding-standards $TAG.
-
-SHA-256: \`$SHA\`
-
-The JAR is downloaded by \`format_file.py\` on first use and cached
-locally. See CHANGELOG.md for the version's release notes."
+              --notes-file "$notes_file"
+            rm -f "$notes_file"
           fi
