@@ -226,7 +226,7 @@ def process_file(path):
         # form fits within MAX_LINE, collapse to Tier 1: `if (cond) stmt;`.
         # Otherwise leave the braced form as-is.
         m_braced = RE_IF_BRACED_OPEN.match(stripped_no_nl)
-        if m_braced and not s.startswith('}'):
+        if m_braced:
             br_indent = m_braced.group('indent')
             br_cond = m_braced.group('cond')
             # Only consider when the parens balance (defensive against
@@ -254,7 +254,6 @@ def process_file(path):
                         if (after_stripped == 'else'
                                 or after_stripped.startswith('else ')
                                 or after_stripped.startswith('else{')
-                                or after_stripped.startswith('else if')
                                 or after_stripped.startswith('}else')):
                             has_else = True
                     candidate = f"{br_indent}if ({br_cond}) {body_stripped}"
