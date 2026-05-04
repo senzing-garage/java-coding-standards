@@ -61,6 +61,15 @@ RE_BODY_STMT = re.compile(
 RE_IF_INLINE = re.compile(
     r'^(?P<indent>[ \t]*)if\s*\((?P<cond>.+)\)\s+(?P<body>\S.*;)\s*$'
 )
+# Match a `if (cond) {` header that opens a braced block on the
+# next line.
+RE_IF_BRACED_OPEN = re.compile(
+    r'^(?P<indent>[ \t]*)if\s*\((?P<cond>.+)\)\s*\{\s*$'
+)
+# Closing `}` on its own line (with optional trailing whitespace).
+RE_CLOSING_BRACE = re.compile(
+    r'^(?P<indent>[ \t]*)\}\s*$'
+)
 
 
 def line_indent(line):
@@ -208,6 +217,71 @@ def process_file(path):
             out.append(raw)
             i += 1
             continue
+
+        # Catch the braced standalone-if form
+        #   if (cond) {
+        #       short-circuit-stmt;
+        #   }
+        # When body is short-circuit, no else follows, and the brace-less
+        # form fits within MAX_LINE, collapse to Tier 1: `if (cond) stmt;`.
+        # Otherwise leave the braced form as-is.
+        m_braced = RE_IF_BRACED_OPEN.match(stripped_no_nl)
+        if m_braced:
+            br_indent = m_braced.group('indent')
+            br_cond = m_braced.group('cond')
+            # Only consider when the parens balance (defensive against
+            # complex conditions where the regex could pick the wrong
+            # closing paren).
+            if br_cond.count('(') == br_cond.count(')'):
+                body_idx = find_next_code_line(lines, i + 1)
+                close_idx = -1
+                if body_idx < n:
+                    close_idx = find_next_code_line(lines, body_idx + 1)
+                if 0 <= close_idx < n:
+                    body_line = lines[body_idx].rstrip('\n').rstrip('\r')
+                    body_stripped = body_line.strip()
+                    close_line = lines[close_idx].rstrip(
+                        '\n').rstrip('\r')
+                    m_close = RE_CLOSING_BRACE.match(close_line)
+                    body_indent_match = RE_LEADING_WS.match(body_line)
+                    body_indent = (body_indent_match.group(1)
+                                   if body_indent_match else '')
+                    # Lookahead for paired else after the closing brace.
+                    after_idx = find_next_code_line(lines, close_idx + 1)
+                    has_else = False
+                    if after_idx < n:
+                        after_stripped = lines[after_idx].strip()
+                        if (after_stripped == 'else'
+                                or after_stripped.startswith('else ')
+                                or after_stripped.startswith('else{')
+                                or after_stripped.startswith('}else')):
+                            has_else = True
+                    candidate = f"{br_indent}if ({br_cond}) {body_stripped}"
+                    # Conditions for Tier 1 collapse:
+                    #   - body is exactly one short-circuit statement
+                    #   - body line is more deeply indented than header
+                    #   - closing brace is at the same indent as header
+                    #   - no paired else
+                    #   - brace-less form fits within MAX_LINE
+                    #   - no interleaved comments/blanks (those would be
+                    #     lost when we drop to one line)
+                    interleaved_before_body = (
+                        lines[i + 1:body_idx])
+                    interleaved_after_body = (
+                        lines[body_idx + 1:close_idx])
+                    if (m_close
+                            and m_close.group('indent') == br_indent
+                            and len(body_indent) > len(br_indent)
+                            and body_stripped.endswith(';')
+                            and is_short_circuit_stmt(body_stripped)
+                            and not has_else
+                            and len(candidate) <= MAX_LINE
+                            and not interleaved_before_body
+                            and not interleaved_after_body):
+                        out.append(f"{candidate}\n")
+                        fixes += 1
+                        i = close_idx + 1
+                        continue
 
         # First-pass: catch already-inline `if (cond) body;` where body
         # is NOT a short-circuit control-flow statement. Brace it.

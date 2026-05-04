@@ -8,6 +8,172 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-05-04
+
+**Note:** This release fixes two orchestrator regressions that
+surfaced when adopting the standards in `sz-sdk-java`. Running
+`format_file.py` (bulk mode) against a codebase that **passes**
+`mvn -Pcheckstyle validate` was producing **123 checkstyle
+violations** across the same codebase — contradicting the
+orchestrator's "compliant in, compliant out" contract. Both root
+causes are inside the standards repo (the JDT profile and one
+override script); consumer projects need only bump the submodule
+pin.
+
+### Fixed
+
+- `tooling/ide/java-formatter.xml` — flipped four
+  `insert_new_line_before_*` keys (catch/else/finally/while) from
+  `insert` to `do not insert` so the JDT pass keeps `} catch`,
+  `} else`, `} finally`, and `} while` (in `do/while`) on the
+  same line as the closing brace. The shared
+  `senzing-checkstyle.xml` rule `RightCurly{option=same}`
+  requires same-line braces for `LITERAL_TRY`, `LITERAL_CATCH`,
+  `LITERAL_FINALLY`, `LITERAL_IF`, `LITERAL_ELSE`, and
+  `LITERAL_DO`. Before this fix, every try/catch and if/else
+  block the JDT pass touched produced a checkstyle violation.
+
+- `tooling/ide/java-formatter.xml` — flipped
+  `format_guardian_clause_on_one_line` from `true` to `false`.
+  With `true`, JDT was collapsing
+  `if (cond) {\n stmt;\n }` (a Tier 2 braced shape) to
+  `if (cond) { stmt; }` (a single-line braced shape that's
+  neither Tier 1 nor Tier 2 of the Senzing standard). The
+  override script `fix_need_braces.py` couldn't recognize the
+  collapsed shape, so the result stayed on disk. With `false`
+  JDT leaves the multi-line braced form alone, which the script
+  now picks up (see below) and converts to Tier 1.
+
+- `tooling/scripts/fix_need_braces.py` — added a new pass that
+  detects the multi-line braced
+  `if (cond) {\n stmt;\n }` shape and collapses to Tier 1
+  brace-less form `if (cond) stmt;` when:
+  - `stmt` is a short-circuit statement (`return`, `continue`,
+    `break`, `throw`),
+  - no `else` clause is paired with the `if`,
+  - the brace-less form fits within 80 characters,
+  - no comments or blank lines sit between the header, the body,
+    or the closing brace (those would be lost in the collapse —
+    the braced form is preserved when they're present).
+
+  Note: this script targets the multi-line braced shape that JDT
+  produces with `format_guardian_clause_on_one_line=false`. The
+  full orchestrator (`format_file.py`) is the supported entry
+  point for end-to-end formatting; running `fix_need_braces.py`
+  standalone against a file that contains a single-line braced
+  `if (cond) { stmt; }` will leave it unchanged.
+
+- `tooling/ide/java-formatter.xml` line 306 — typo fix for an
+  Eclipse JDT key. The previous spelling
+  `keep_imple_if_on_one_line` was unrecognized by JDT and
+  silently fell back to the default (which happened to match the
+  intended `false`, so the bug was harmless). Renamed to the
+  correct `keep_simple_if_on_one_line` so the value is actually
+  applied.
+
+### Changed
+
+- `tooling/jdt-formatter/pom.xml` — bumps the Eclipse JDT
+  dependency `org.eclipse.jdt:org.eclipse.jdt.core` from `3.42.0`
+  to `3.45.0`. Routine version bump to stay current on the
+  Eclipse 3.x line; no formatter behavior change observed (all 7
+  orchestrator pipeline fixtures produce byte-identical output
+  against the new dep).
+
+### Tests
+
+- `tooling/scripts/tests/fixtures/need_braces/` — 13 new
+  fixtures cover the new behavior:
+  - `10_braced_short_circuit_collapses_to_tier1` (return body)
+  - `11_braced_non_short_circuit_kept` (method-call and
+    assignment bodies stay braced)
+  - `12_braced_if_else_pair_kept` (paired `else` blocks the
+    collapse — both branches stay braced per the if/else rule)
+  - `13_braced_short_circuit_too_long_kept` (line would exceed
+    80 chars — stays braced)
+  - `14_braced_short_circuit_with_comment_kept` (comment between
+    header and body — stays braced to preserve the comment)
+  - `15`/`16`/`17_braced_short_circuit_*` — `continue`, `break`,
+    and `throw` body forms.
+  - `18_braced_else_if_chain_kept` (`if {…} else if {…}` ladder
+    — `m_close` correctly fails on `} else if (...) {` so neither
+    branch collapses).
+  - `19_braced_short_circuit_with_blank_line_kept` (blank line
+    between header and body — collapse aborts).
+  - `20_braced_short_circuit_trailing_comment_kept` (comment
+    between body and close brace — collapse aborts).
+  - `21_braced_short_circuit_nested_collapses` (nested braced
+    short-circuit — outer kept, inner collapses to Tier 1).
+  - `22_braced_short_circuit_with_paired_else_kept` (paired
+    `else` whose `if` body would otherwise be Tier-1-eligible,
+    in Allman form with `}` and `else` on separate lines — the
+    `has_else` lookahead blocks the collapse, both branches
+    stay braced. Fixture 12 covers the same case in the more
+    common same-line `} else {` shape; fixture 22 specifically
+    exercises the lookahead path that defends against legacy
+    or hand-edited Allman-style sources).
+- `tooling/scripts/tests/fixtures/orchestrator/` — three new
+  end-to-end pipeline fixtures:
+  - `05_keep_same_line_catch_else_finally`
+  - `06_keep_same_line_do_while`
+  - `07_braced_short_circuit_collapses`
+- Total test count rises from 208 (0.2.1) to 253. (Each
+  fixture is exercised by both its per-script test and the
+  `test_idempotency.py::test_double_pass_converges`
+  cross-script idempotency test, so each new need_braces
+  fixture adds two tests.)
+
+### Stylistic notes — investigated, deliberately not changed
+
+The original regression report flagged two further "lower
+priority, not failing checkstyle" stylistic differences. Both
+were investigated; neither has a one-line JDT profile fix that
+preserves the exact previous output without other regressions:
+
+- **Hand-tuned column alignment of related field assignments**
+  (`this.readWriteLock  = ...` / `this.instanceName   = ...`):
+  JDT collapses extra whitespace by default. Setting
+  `align_assignment_statements_on_columns=true` would auto-align
+  but applies a JDT-internal scheme to _every_ assignment block,
+  not just the ones the developer hand-tuned. The supported way
+  to preserve developer-tuned alignment is to wrap the block in
+  `// @formatter:off` … `// @formatter:on` (the profile already
+  has `use_on_off_tags=true`).
+
+- **Continuation-indent style change in long expressions and
+  string concatenation**: the `sz-sdk-java` source pre-fix used
+  4-space single-indent continuation, but the canonical
+  `docs/java-coding-standards.md` rule (line 314) is **8 spaces
+  (double indent)**. JDT applies the documented rule, so the
+  diff against the prior code is JDT _correcting_ pre-existing
+  non-compliance, not introducing regression. The corrected
+  indent does push some lines over 80 characters when the
+  literal text is too long; those need source-side fixes
+  (shorter strings or different break points), not profile
+  tuning.
+
+### Migration
+
+Adopting projects that pinned the standards submodule to
+`v0.2.1` and ran the bulk orchestrator should:
+
+1. Bump the submodule pin to `v0.2.2`.
+2. Re-run `python3 .java-coding-standards/tooling/scripts/format_file.py`
+   from the project root. Expect to see content changes from the
+   continuation-indent and Tier 1 collapse fixes, and from any
+   pre-existing source code that wasn't fully standards-compliant
+   already.
+3. Re-run `mvn -Pcheckstyle validate` from the project root.
+   Files that were correctable should pass; any remaining
+   violations are source-side issues to fix by hand (typically:
+   long string literals that no longer fit at 8-space
+   continuation indent).
+
+If you hit a `LineLength` violation that JDT can't fix
+automatically, shorten the literal, or wrap a deliberately-aligned
+block in `// @formatter:off` / `// @formatter:on` if preserving
+the layout matters more than a few characters of width.
+
 ## [0.2.1] - 2026-05-01
 
 **Note:** This is a small follow-up to 0.2.0 that fixes the
