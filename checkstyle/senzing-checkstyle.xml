@@ -23,6 +23,27 @@
         <property name="onCommentFormat" value="CSON"/>
     </module>
 
+    <!-- Shared baseline suppressions. Path is relative to the Maven
+         working directory (= project basedir at runtime). Adopting
+         projects mount this repo as a git submodule at the canonical
+         path .java-coding-standards/ — see the README and the
+         pom-checkstyle-profile.xml template. -->
+    <module name="SuppressionFilter">
+        <property name="file"
+                  value=".java-coding-standards/checkstyle/senzing-checkstyle-suppressions.xml"/>
+    </module>
+
+    <!-- Optional project-local suppressions. Same working-directory
+         resolution; the optional flag means projects without a local
+         file don't fail. Adopting projects that need project-specific
+         carve-outs (e.g. generated-file suppressions) commit a
+         checkstyle-suppressions-local.xml at their project root; the
+         adoption prompt's step 11 generates it interactively. -->
+    <module name="SuppressionFilter">
+        <property name="file" value="checkstyle-suppressions-local.xml"/>
+        <property name="optional" value="true"/>
+    </module>
+
     <module name="TreeWalker">
 
         <!-- Unused imports (Javadoc-only usage counts as used) -->
