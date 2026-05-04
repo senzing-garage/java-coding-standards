@@ -107,12 +107,16 @@ Update or add three profiles using the templates at
   `senzing-checkstyle.xml` declares two `<module name="SuppressionFilter">`
   entries internally — one for the shared baseline (always
   present) and one optional entry that picks up a project-local
-  `${project.basedir}/checkstyle-suppressions-local.xml` when it
-  exists (step 11 generates this file interactively). If an
-  existing project pom carries a `<suppressionsLocation>` line from
-  an earlier standards version (≤ 0.2.0), **delete that line** when
-  you replace the profile — leaving it in is harmless but
-  misleading, since the new mechanism subsumes it.
+  `checkstyle-suppressions-local.xml` at the project root when it
+  exists. (The path is resolved by checkstyle relative to the
+  Maven working directory; no Maven property substitution is
+  involved, so the value in the XML is a bare relative path
+  rather than `${project.basedir}/...`.) Step 11 generates this
+  file interactively. If an existing project pom carries a
+  `<suppressionsLocation>` line from an earlier standards version
+  (≤ 0.2.0), **delete that line** when you replace the profile —
+  leaving it in is harmless but misleading, since the new
+  mechanism subsumes it.
 - `pom-jacoco-profile.xml` — adds the `jacoco` profile if missing.
   Preserves any pre-existing `jacoco` profile config the project had,
   unless the user explicitly chose to overwrite.

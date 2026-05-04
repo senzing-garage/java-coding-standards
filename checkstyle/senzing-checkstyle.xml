@@ -23,11 +23,28 @@
         <property name="onCommentFormat" value="CSON"/>
     </module>
 
-    <!-- Shared baseline suppressions. Path is relative to the Maven
-         working directory (= project basedir at runtime). Adopting
-         projects mount this repo as a git submodule at the canonical
-         path .java-coding-standards/ — see the README and the
-         pom-checkstyle-profile.xml template. -->
+    <!-- Shared baseline suppressions. Path is resolved by checkstyle
+         relative to the Maven working directory (= project basedir at
+         runtime). Adopting projects mount this repo as a git submodule
+         at the canonical path .java-coding-standards/ — see README
+         and the pom-checkstyle-profile.xml template.
+
+         Deliberately NOT optional. If the path doesn't resolve
+         (typically: a broken submodule mount), checkstyle fails
+         loudly with a clear file-not-found error so the consumer
+         can fix their setup. The alternative — optional="true" —
+         would silently drop the shared baseline, letting checkstyle
+         flag rules the baseline normally suppresses; that's a worse
+         failure mode because it surfaces as confusing "spurious"
+         violations rather than a path error.
+
+         One consequence: checkstyle cannot be run from inside this
+         repo (e.g. against tooling/jdt-formatter/ Java source)
+         without separate wiring, since the .java-coding-standards/
+         path doesn't exist here. tooling/jdt-formatter/pom.xml
+         currently has no checkstyle profile, so this is hypothetical;
+         a future contributor adding one will need to point at a
+         different config or define a property override. -->
     <module name="SuppressionFilter">
         <property name="file"
                   value=".java-coding-standards/checkstyle/senzing-checkstyle-suppressions.xml"/>
