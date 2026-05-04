@@ -70,6 +70,14 @@ and this project adheres to
   - Filters out dereferenced annotated-tag refs
     (`refs/tags/X^{}`) that `ls-remote` emits alongside the
     primary refs, via `grep -v "\^{}$"`.
+  - Sanitizes the resolved `$latest` and `$current` tag names —
+    rejects (silently exits) if either contains characters
+    outside `[A-Za-z0-9._-]`. Defends against an attacker with
+    origin write access pushing a tag whose name contains
+    crafted text that would otherwise be rendered verbatim
+    into the model-relay message. Pure semver tags pass
+    through unchanged. Low-severity in practice (requires
+    repo write access) but the defense is cheap.
   - When the local pin is out of date, emits an explicit relay
     instruction to **stdout** beginning with
     `INSTRUCTION FOR ASSISTANT (from SessionStart hook): ...`

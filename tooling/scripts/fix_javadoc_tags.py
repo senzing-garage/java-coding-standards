@@ -97,17 +97,11 @@ def process_file(filepath):
 
             i += 1
 
-        # Check if reflowing is needed
+        # Check if reflowing is needed.
+        # Single-input case: if the line fits within MAX_LINE, emit
+        # as-is; otherwise fall through to the wrap logic so the
+        # output respects the 80-char ceiling.
         if len(texts) <= 1:
-            # Single line or empty.
-            # Fast path: reconstruct as-is when the line fits within
-            # MAX_LINE. When the single input line would exceed
-            # MAX_LINE (typically because JDT re-indented a tag line
-            # that fit at the old indent but no longer does at the
-            # new one), fall through to the multi-word wrap logic
-            # below so the line gets re-wrapped under the 80-char
-            # ceiling. Pre-0.2.5 the fast path emitted unchanged
-            # which left an off-by-one over-long line on disk.
             if not texts:
                 new_lines.append(
                     star_prefix + tag_prefix.rstrip() + '\n')
@@ -118,7 +112,6 @@ def process_file(filepath):
                 new_lines.append(
                     star_prefix + tag_prefix + texts[0] + '\n')
                 continue
-            # else: fall through to the wrap logic.
 
         # Join all words and reflow
         all_words = []
