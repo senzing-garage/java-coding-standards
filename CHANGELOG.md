@@ -71,6 +71,15 @@ pin.
   correct `keep_simple_if_on_one_line` so the value is actually
   applied.
 
+### Changed
+
+- `tooling/jdt-formatter/pom.xml` — bumps the Eclipse JDT
+  dependency `org.eclipse.jdt:org.eclipse.jdt.core` from `3.42.0`
+  to `3.45.0`. Routine version bump to stay current on the
+  Eclipse 3.x line; no formatter behavior change observed (all 7
+  orchestrator pipeline fixtures produce byte-identical output
+  against the new dep).
+
 ### Tests
 
 - `tooling/scripts/tests/fixtures/need_braces/` — 13 new
