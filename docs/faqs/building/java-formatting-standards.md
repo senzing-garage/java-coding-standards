@@ -1,6 +1,7 @@
 ## Java Formatting Standards
 
 ### Overview
+
 All non-generated Java source files must conform to the formatting rules defined in `.java-coding-standards/docs/java-coding-standards.md`. Consult it before writing or reformatting Java code.
 
 ### When generating new code
@@ -19,10 +20,11 @@ All non-generated Java source files must conform to the formatting rules defined
 After generation, run `mvn -Pcheckstyle validate` to confirm compliance. The bulk-fix scripts below are an aid for legacy code or batch updates — they are not a substitute for writing compliant code on the first pass.
 
 ### Key Rules
+
 - **80-character line limit** — enforced by checkstyle via `-Pcheckstyle`
 - **Allman braces** for class, interface, enum, method, and constructor definitions
 - **Same-line braces** for control flow: if/else, for, while, do, try/catch/finally, switch, synchronized, lambdas, array initializers, static initializers
-- **Continuation indentation**: 8 spaces (double indent)
+- **Continuation indentation**: +4 per wrap level (cumulating to 8 spaces of displacement for the typical double-wrap; see the full standards doc for the per-level rule)
 - **Operators on continuation lines**: break BEFORE `+`, `&&`, `||`, `?`, `:`, `.`
 - **CSOFF/CSON**: only for deliberately aligned multi-line output (aligned labels, SQL DDL, column-formatted diagnostics) — NOT a general escape hatch
 - **Javadoc**: reflow prose and @tag descriptions to fill lines near 80 chars; don't leave orphaned short words

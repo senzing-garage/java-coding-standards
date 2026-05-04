@@ -1,4 +1,5 @@
 <!-- markdownlint-disable MD013 -->
+
 # Java Coding Standards
 
 This document defines the Java formatting and coding style standards.
@@ -311,9 +312,21 @@ If the chain starts too far right for alignment to fit within
 
 ### General Continuation Indentation
 
-Continuation lines use **8 spaces** (double indent) from the base
-indentation of the statement, consistent with the VSCode formatter's
-`continuation_indentation` setting of 2 (2 x 4-space tab size = 8).
+The continuation indent is **+4 spaces (single indent) per wrap
+level**, applied cumulatively. So a first wrap lands at +4 from
+the statement base; a second wrap (e.g., an operator continuation
+inside an already-wrapped argument) lands at +8 from the statement
+base; and so on. Quick-reference summaries in this document and
+in the adoption-prompt CLAUDE.md template describe the rule as
+"8 spaces (double indent)" — that's the cumulative effect for
+operator continuations inside a wrapped argument list, which is
+the most common multi-level wrap pattern.
+
+The Eclipse JDT / VSCode formatter setting that controls the
+per-level value is `continuation_indentation`, set to **`1`**
+(`1 × 4-space indentation_size = 4 spaces` per wrap level). The
+cumulative effect across multi-level wraps is what produces the
+8-space displacement summarized elsewhere.
 
 ---
 
@@ -558,7 +571,9 @@ project rule above takes precedence.
 ## Indentation
 
 - Basic indentation: **4 spaces** (no tabs)
-- Continuation indentation: **8 spaces** (double indent)
+- Continuation indentation: **+4 per wrap level** (cumulating to
+  **8 spaces** of displacement for the typical double-wrap case
+  — see "General Continuation Indentation" for the full rule)
 - `case` indent relative to `switch`: **0 spaces** (left-aligned)
 - `throws` indent relative to method: **4 spaces** (single indent)
 - Double-indented parameters: **8 spaces** from method declaration
@@ -661,7 +676,9 @@ Opening brace always left-aligned with the method declaration start.
 LINE CONTINUATION:
 - Continued lines start with the connecting operator (+, &&, ||,
   ?, :, .)
-- Continuation indentation is 8 spaces (double indent)
+- Continuation indentation is +4 per wrap level, cumulating to
+  8 spaces of displacement on the typical double-wrap (see
+  "General Continuation Indentation")
 - For string concatenation, break at + operators
 - For ternary, break before ? and :
 - For boolean conditions, break before && and ||
@@ -906,7 +923,8 @@ Settings that ARE correctly configured:
 - `brace_position_for_switch`: `end_of_line` (same-line)
 - `brace_position_for_lambda_body`: `end_of_line` (same-line)
 - `brace_position_for_array_initializer`: `end_of_line` (same-line)
-- `continuation_indentation`: `2` (= 8 spaces with 4-space tab)
+- `continuation_indentation`: `1` (= 4 spaces per wrap level with
+  4-space tab; cumulates to +8 from base for double-wraps)
 - `keep_then_statement_on_same_line`: `true`
 - `indent_switchstatements_compare_to_switch`: `false`
 - `lineSplit`: `80`
