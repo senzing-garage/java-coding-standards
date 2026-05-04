@@ -8,6 +8,167 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-05-04
+
+**Note:** Two fixes in this release.
+
+1. **SessionStart hook redesign.** The 0.2.4 attempt at fixing
+   the freshness-nudge visibility (redirect `echo` to stderr)
+   does not actually work in practice. Empirically verified end-
+   to-end against the live origin: Claude Code does not surface
+   stderr from `SessionStart` hooks to the user's terminal
+   because `SessionStart` is a **non-blocking** hook event — for
+   non-blocking events, only stdout reaches the model (as
+   captured context) and stderr is dropped from a user-
+   visibility standpoint. There is no documented user-visible-
+   message channel for `SessionStart` direct-to-terminal at all.
+
+   0.2.5 replaces the broken stderr approach with a stdout-based
+   relay-instruction wrapper that the model surfaces to the user
+   reliably. The hook also switches the comparison target from
+   "behind upstream/main" to "behind latest released tag" via
+   `git ls-remote --tags origin`, which (a) eliminates the side
+   effect that the prior hook had on the local submodule clone
+   (the previous template did `git fetch origin main`, which
+   advances the local `origin/main` ref every session start) and
+   (b) stops nudging on unreleased commits sitting on `main`.
+
+2. **Javadoc reflow off-by-one.** `fix_javadoc_tags.py` had a
+   fast-path for single-line `@param` / `@return` / `@throws`
+   inputs that emitted them unchanged regardless of length. When
+   the JDT pass re-indented a tag line that fit at the old indent
+   but no longer does at the new one (typical when a 2-space-
+   indented codebase gets converted to 4-space indent), the
+   single-line input could land at 81+ chars and the fast-path
+   pass-through left it on disk. The fix closes the off-by-one
+   so single-line tag inputs that exceed 80 chars after JDT
+   re-indentation now reflow correctly under the 80-char ceiling.
+
+### Fixed
+
+- `adoption/claude-md-templates/claude-hooks-snippet.json` —
+  replaced the SessionStart hook command. New command:
+  - Uses `git ls-remote --tags origin` (read-only against origin)
+    instead of `git fetch -q origin main` (mutates the local
+    clone). Eliminates the per-session-start advance of the local
+    `refs/remotes/origin/main` ref.
+  - Compares the local pin against the latest released tag
+    (highest `sort -V`) at origin, not against `main` HEAD.
+    Stops nudging on unreleased commits.
+  - Resolves both "latest tag's commit SHA" and "current
+    commit's tag name (if any)" from the same `ls-remote`
+    output by matching `git rev-parse HEAD` against the
+    remote's tag→SHA table, with `^{}` suffixes stripped.
+    Importantly, this works on submodule clones whose local
+    refspec does not fetch tags (the default) —
+    `git tag --points-at HEAD` would have returned empty in
+    that common case, producing a false "current pin is
+    untagged" nudge even when HEAD was at the latest released
+    tag.
+    The SHA-against-remote-table approach is robust to any
+    local tag state.
+  - Filters out dereferenced annotated-tag refs
+    (`refs/tags/X^{}`) that `ls-remote` emits alongside the
+    primary refs, via `grep -v "\^{}$"`.
+  - When the local pin is out of date, emits an explicit relay
+    instruction to **stdout** beginning with
+    `INSTRUCTION FOR ASSISTANT (from SessionStart hook): ...`
+    that directs the model to surface a verbatim "Heads up:"
+    message to the user at the start of its first response.
+    Claude Code captures stdout from SessionStart hooks as
+    model context, so this is the documented user-visibility
+    channel that actually works for SessionStart.
+  - Each step uses `... || exit 0` to fall through silently on
+    failure (network down, submodule missing, no tags, etc.).
+  - The `_comment` block at the top of the snippet was rewritten
+    to document the new design and explain why stderr / `exit 2`
+    were tried in 0.2.4 and don't work.
+
+- `adoption/adopt-standards-prompt.md` Step 5 — rewrote the
+  SessionStart sub-step to describe the new model-relay-via-
+  stdout mechanism, the tag-based comparison target, and why
+  direct-to-terminal channels don't work for `SessionStart` in
+  Claude Code. Updated the migration sub-step to detect any
+  pre-0.2.5 hook by checking for any one of three git-plumbing
+  substrings: `git fetch -q origin main` (the legacy 0.2.0–0.2.4
+  read-write fetch), `git rev-list --count HEAD..origin/main`
+  (the legacy 0.2.0–0.2.4 upstream comparison), or
+  `git tag --points-at HEAD` (a draft-0.2.5 intermediate that
+  used local-tag lookup, broken on fresh submodule clones —
+  see the SHA-against-`ls-remote`-table fix above). All three
+  are eliminated in the final 0.2.5 hook, so any match flags
+  the hook for replacement. The path anchor
+  `.java-coding-standards` is also required to avoid
+  false-positive matches on user-customized hooks for unrelated
+  submodules.
+
+- `tooling/scripts/fix_javadoc_tags.py` — fixed the fast-path
+  for single-line `@tag` inputs. The script now checks whether
+  the reconstructed single-line output exceeds `MAX_LINE` (80);
+  if so, it falls through to the multi-word wrap logic instead
+  of emitting unchanged. The reflow logic itself was already
+  correct (uses `<= max_content` for boundary acceptance); the
+  fast path just bypassed it. Added an inline comment
+  explaining the failure mode the new check guards against.
+
+### Tests
+
+- `tooling/scripts/tests/fixtures/javadoc_tags/07_single_line_param_overshoots_eighty`
+  — new fixture reproducing the bug: a single-line `@param`
+  input at 81 chars. Expected output wraps the description with
+  the continuation aligned at the description-start column,
+  matching the multi-line shape `fix_javadoc_tags.py` produces
+  for already-wrapped `@param` blocks.
+- Total test count: 261 → 264 (one new fixture × per-script +
+  per-script-idempotency + cross-script-idempotency = 3 tests).
+
+### Migration
+
+Adopting projects pinned to `v0.2.0`–`v0.2.4` should:
+
+1. Bump the submodule pin to `v0.2.5`.
+2. **For the SessionStart hook**, update the command in
+   `.claude/settings.json`. Two paths:
+   - **Re-run `/init-java`** (recommended). The 0.2.5 adoption
+     prompt detects any pre-0.2.5 hook (matching any one of
+     `git fetch -q origin main`,
+     `git rev-list --count HEAD..origin/main`, or
+     `git tag --points-at HEAD`) and offers a one-step
+     replacement, preserving any other SessionStart entries.
+   - **Hand-patch.** Replace the `command` string in the
+     `SessionStart` hook with the value from the 0.2.5
+     `claude-hooks-snippet.json` template.
+3. **For the javadoc reflow fix**, re-run
+   `python3 .java-coding-standards/tooling/scripts/format_file.py`
+   from the project root. Expect a small targeted diff at sites
+   where a single-line `@param` / `@return` / `@throws` input
+   exceeded 80 chars after JDT re-indentation; those lines now
+   wrap correctly. No diff at sites that were already
+   well-wrapped or under 80 chars.
+4. Re-run `mvn -Pcheckstyle validate` from the project root.
+   Any remaining `LineLength` violations in javadoc tag
+   descriptions should clear; if any remain, they are
+   source-side issues unrelated to this fix.
+
+To verify the SessionStart fix end-to-end, with the submodule
+artificially one tag behind the latest origin tag:
+
+```bash
+cd .java-coding-standards
+git fetch --tags origin -q   # populate local tag refs (submodule
+                             # clones don't have them by default)
+git reset --hard <previous-tag> -q
+cd ..
+claude --continue
+```
+
+The model should surface a verbatim message in its first
+response: `Heads up: .java-coding-standards has a newer release
+available (X.Y.Z); current pin is X.Y.W. Run /init-java to
+refresh.` (where X.Y.Z is the latest released tag and X.Y.W is
+the previously-pinned tag, or `untagged` if HEAD points at an
+unreleased commit).
+
 ## [0.2.4] - 2026-05-04
 
 **Note:** Two fixes in this release:
@@ -242,7 +403,8 @@ Adopting projects pinned to `v0.2.2` should:
 ## [0.2.2] - 2026-05-04
 
 **Note:** This release fixes two orchestrator regressions that
-surfaced when adopting the standards in `sz-sdk-java`. Running
+surfaced when adopting the standards in a consumer project.
+Running
 `format_file.py` (bulk mode) against a codebase that **passes**
 `mvn -Pcheckstyle validate` was producing **123 checkstyle
 violations** across the same codebase — contradicting the
@@ -372,8 +534,8 @@ preserves the exact previous output without other regressions:
   has `use_on_off_tags=true`).
 
 - **Continuation-indent style change in long expressions and
-  string concatenation**: the `sz-sdk-java` source pre-fix used
-  4-space single-indent continuation, but the canonical
+  string concatenation**: the consumer project's source pre-fix
+  used 4-space single-indent continuation, but the canonical
   `docs/java-coding-standards.md` rule (line 314) is **8 spaces
   (double indent)**. JDT applies the documented rule, so the
   diff against the prior code is JDT _correcting_ pre-existing
@@ -414,7 +576,8 @@ effect. 0.2.0 wired both the shared baseline and the project-local
 file into `maven-checkstyle-plugin` 3.6.0 via a comma-separated
 `<suppressionsLocation>` value, but the plugin silently honored
 only the first path — generated-file carve-outs (e.g.
-`SzExceptionMapper.java` in `sz-sdk-java`) never engaged. The fix
+auto-generated wrapper classes in adopting projects) never
+engaged. The fix
 moves the wiring inside `senzing-checkstyle.xml` itself, where
 checkstyle loads the filters reliably.
 

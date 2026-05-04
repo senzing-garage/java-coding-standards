@@ -237,26 +237,35 @@ into `.claude/settings.json`:
 - **Mandatory hooks**: `PostToolUse` (auto-format every Edit/Write/
   MultiEdit) and `Stop` (final checkstyle pass when Claude is about to
   hand back to the user).
-- **Opt-in hook**: `SessionStart` (prints a one-line nudge if the
-  submodule is behind upstream main). Ask the user via
-  `AskUserQuestion`:
+- **Opt-in hook**: `SessionStart` (surfaces a one-line nudge when
+  the local submodule pin is older than the latest released tag at
+  origin). Ask the user via `AskUserQuestion`:
 
   > Enable submodule-freshness nudges? On session start, if the
-  > standards submodule is behind upstream, Claude Code will print a
-  > one-line reminder to run `/init-java` to refresh.
+  > standards submodule pin is older than the latest tagged release
+  > at origin, Claude Code will surface a one-line reminder to run
+  > `/init-java` to refresh.
   >
   > Options: **Yes** / **No**
 
   Include only if yes.
 
-  The nudge `echo` is redirected to **stderr** (`>&2`). This is
-  load-bearing: stdout from a `SessionStart` hook is captured as
-  additional context for the model and is **not** displayed to the
-  user, while stderr is shown in the user's terminal banner at
-  session start. Versions 0.2.0–0.2.3 of this template wrote the
-  nudge to stdout, which silently surfaced freshness reminders to
-  the model alone — the user never saw them. Do not remove the
-  `>&2` redirect when merging.
+  The hook compares the local submodule HEAD against the latest
+  released tag at origin via `git ls-remote --tags`, which queries
+  the remote without modifying the local clone. When out of date,
+  it emits an explicit relay instruction to **stdout** that Claude
+  Code captures as model context; the wrapper text directs the
+  model to surface the message verbatim to the user at the start
+  of its first response.
+
+  This is the documented user-visibility channel for `SessionStart`
+  hooks in Claude Code. Direct-to-terminal channels (`stderr`,
+  `exit 2`) were tried in 0.2.0–0.2.4 and produced no user-visible
+  output: SessionStart is a **non-blocking** hook event, so stderr
+  is not displayed in the user's terminal and `exit 2` has no
+  effect. The model-relay-via-stdout approach is what actually
+  works — verified end-to-end against the live origin in 0.2.5
+  development.
 
 If `.claude/settings.json` already has `hooks` for any of these events,
 merge entries into the existing arrays rather than replacing.
@@ -268,38 +277,54 @@ The template's `_comment` is documentation for adopters reading the
 snippet, not for consumers; if the user has their own commentary on
 their settings file, it stays.
 
-**Migration for projects that adopted under 0.2.0–0.2.3:** before
-merging the template, scan the existing `.claude/settings.json` for
-the buggy SessionStart command and offer to replace it. Detect
-pattern: a `hooks.SessionStart[*].hooks[*].command` matching **all
-three** of the following (intentionally narrow, to avoid false
-positives on user-customized hooks that happen to share one phrase):
+**Migration for projects with a pre-0.2.5 SessionStart hook:**
+before merging the template, scan the existing
+`.claude/settings.json` for any SessionStart hook that uses the
+known-broken plumbing this release replaces, and offer to replace
+it. Three plumbing variants need detection — the 0.2.0–0.2.3
+(stdout-bare) and 0.2.4 (stderr) public variants, plus a
+draft-0.2.5 intermediate that may exist in test installs from
+the 0.2.5 development cycle. Detect pattern: a
+`hooks.SessionStart[*].hooks[*].command` containing
+`.java-coding-standards` **AND** matching **any one** of the
+following git-plumbing substrings. The path anchor is required
+to avoid false positives on user-customized hooks for unrelated
+submodules that might happen to use the same git plumbing:
 
-1. Contains the substring `NOTE: .java-coding-standards is ` (the
-   nudge text — narrows to our specific freshness-check shape).
+1. Contains the substring `git fetch -q origin main` (the legacy
+   0.2.0–0.2.4 read-write upstream fetch — confirms it's the
+   pre-0.2.5 plumbing regardless of which output channel the
+   echo used).
 2. Contains the substring `git rev-list --count HEAD..origin/main`
-   (the upstream-comparison plumbing — confirms it's our hook and
-   not an unrelated user-customized command that happens to use the
-   same NOTE phrasing).
-3. Does **not** contain the substring `>&2` anywhere in the command
-   string (this is the actual missing-redirect signal, and is robust
-   to differently-quoted hand fixes a user may have already applied
-   in a non-canonical position).
+   (the legacy 0.2.0–0.2.4 upstream-comparison plumbing — same
+   purpose as above, catches any variant that shaped the fetch
+   differently while keeping the rev-list).
+3. Contains the substring `git tag --points-at HEAD` (the
+   draft-0.2.5 intermediate's local-tag-based `current` lookup —
+   replaced in 0.2.5-final by an `ls-remote`-output SHA match,
+   because submodule clones don't fetch tag refs by default and
+   the local-tag lookup returns empty in the common case,
+   producing a bogus "current pin is untagged" nudge). The
+   final 0.2.5 hook does **not** use this string.
 
-All three conditions must hold to flag the hook as buggy. When
-detected, ask the user via `AskUserQuestion`:
+Both conditions (the `.java-coding-standards` path anchor AND any
+one of the three git-plumbing substrings) must hold to flag the
+hook for replacement. When detected, ask the user via
+`AskUserQuestion`:
 
-> Found a SessionStart freshness-nudge hook from an earlier
-> standards version (0.2.0–0.2.3) that writes its message to
-> stdout — Claude Code captures stdout from SessionStart hooks as
-> model-only context, so the nudge has been invisible to you. Fix
-> by redirecting to stderr (recommended)?
+> Your `.claude/settings.json` contains a SessionStart hook from
+> a pre-0.2.5 version of these standards that does not produce
+> reliable user-visible nudges (0.2.0–0.2.3 wrote to stdout
+> which became model-only context; 0.2.4 wrote to stderr which
+> was dropped; an intermediate draft-0.2.5 used a local-tag
+> lookup that returns empty on fresh submodule clones). The
+> finalized 0.2.5 hook fixes all three failure modes. Replace?
 >
-> Options: **Yes — replace with the 0.2.4+ command** / **No —
-> leave as-is**
+> Options: **Yes — replace** (recommended) / **No — keep current**
 
-If yes, replace just the `command` string in place (preserve any
-other entries the user has in `SessionStart`).
+If yes, replace just the `command` string in place with the 0.2.5
+template value (preserve any other entries the user has in
+`SessionStart`).
 
 ## Step 6 — `.vscode/cspell.json`: no-op
 
@@ -535,13 +560,13 @@ project root:
 
 - **`checkstyle-suppressions-local.xml`** — one
   `<suppress checks="." files="REGEX"/>` entry per file. Use a regex
-  that anchors at the filename (e.g. `SzExceptionMapper\.java` matches
+  that anchors at the filename (e.g. `GeneratedFoo\.java` matches
   any path ending in that filename). **No pom wiring needed**: the
   shared `senzing-checkstyle.xml` declares an optional
   `<module name="SuppressionFilter">` that loads this file from the
   project root automatically when it exists.
 - **`.java-coding-standards-excludes`** — one gitignore-style glob per
-  line (e.g. `**/SzExceptionMapper.java`). Comments allowed. The
+  line (e.g. `**/GeneratedFoo.java`). Comments allowed. The
   bulk-format scripts read this file via `--exclude-from`.
 
 Both files are committed (not gitignored). Show the user what was
