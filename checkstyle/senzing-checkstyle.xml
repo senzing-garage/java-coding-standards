@@ -23,39 +23,21 @@
         <property name="onCommentFormat" value="CSON"/>
     </module>
 
-    <!-- Shared baseline suppressions. Path is resolved by checkstyle
-         relative to the Maven working directory (= project basedir at
-         runtime). Adopting projects mount this repo as a git submodule
-         at the canonical path .java-coding-standards/ — see README
-         and the pom-checkstyle-profile.xml template.
-
-         Deliberately NOT optional. If the path doesn't resolve
-         (typically: a broken submodule mount), checkstyle fails
-         loudly with a clear file-not-found error so the consumer
-         can fix their setup. The alternative — optional="true" —
-         would silently drop the shared baseline, letting checkstyle
-         flag rules the baseline normally suppresses; that's a worse
-         failure mode because it surfaces as confusing "spurious"
-         violations rather than a path error.
-
-         One consequence: checkstyle cannot be run from inside this
-         repo (e.g. against tooling/jdt-formatter/ Java source)
-         without separate wiring, since the .java-coding-standards/
-         path doesn't exist here. tooling/jdt-formatter/pom.xml
-         currently has no checkstyle profile, so this is hypothetical;
-         a future contributor adding one will need to point at a
-         different config or define a property override. -->
+    <!-- Shared baseline. Path resolves relative to the Maven working
+         directory (the project root from which mvn is invoked).
+         Deliberately NOT optional: a missing path is a broken
+         submodule mount, and failing loudly beats silently dropping
+         the baseline (which would surface as "spurious" violations
+         on rules the baseline normally suppresses). -->
     <module name="SuppressionFilter">
         <property name="file"
                   value=".java-coding-standards/checkstyle/senzing-checkstyle-suppressions.xml"/>
     </module>
 
-    <!-- Optional project-local suppressions. Same working-directory
-         resolution; the optional flag means projects without a local
-         file don't fail. Adopting projects that need project-specific
-         carve-outs (e.g. generated-file suppressions) commit a
-         checkstyle-suppressions-local.xml at their project root; the
-         adoption prompt's step 11 generates it interactively. -->
+    <!-- Optional project-local suppressions for project-specific
+         carve-outs (e.g. generated-file rules), committed at the
+         project root. Adoption-prompt step 11 generates this file
+         interactively. -->
     <module name="SuppressionFilter">
         <property name="file" value="checkstyle-suppressions-local.xml"/>
         <property name="optional" value="true"/>

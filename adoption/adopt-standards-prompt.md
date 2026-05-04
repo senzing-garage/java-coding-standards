@@ -117,6 +117,15 @@ Update or add three profiles using the templates at
   (≤ 0.2.0), **delete that line** when you replace the profile —
   leaving it in is harmless but misleading, since the new
   mechanism subsumes it.
+
+  **Multi-module note.** Both suppressions paths above resolve
+  relative to the Maven working directory (where `mvn` was
+  invoked, not the per-module `${project.basedir}`). For
+  multi-module projects, run `mvn -Pcheckstyle validate` from the
+  project root so both `.java-coding-standards/` and
+  `checkstyle-suppressions-local.xml` resolve correctly. Invoking
+  from a child module's directory will fail to find them.
+
 - `pom-jacoco-profile.xml` — adds the `jacoco` profile if missing.
   Preserves any pre-existing `jacoco` profile config the project had,
   unless the user explicitly chose to overwrite.

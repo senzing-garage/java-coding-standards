@@ -64,7 +64,9 @@ Adopting projects that pinned the standards submodule to
    their `pom.xml`. Leaving it in is harmless (the plugin
    parameter becomes a no-op once the embedded filters fire) but
    misleading.
-3. Re-run `mvn -Pcheckstyle validate`. Project-local
+3. Re-run `mvn -Pcheckstyle validate` **from the project root**
+   (not a sub-module directory — both suppressions paths now
+   resolve relative to the Maven working directory). Project-local
    `checkstyle-suppressions-local.xml` rules will engage for the
    first time — confirm no regressions surface (e.g. files that
    were silently checked at 0.2.0 because the project-local
