@@ -249,8 +249,56 @@ into `.claude/settings.json`:
 
   Include only if yes.
 
+  The nudge `echo` is redirected to **stderr** (`>&2`). This is
+  load-bearing: stdout from a `SessionStart` hook is captured as
+  additional context for the model and is **not** displayed to the
+  user, while stderr is shown in the user's terminal banner at
+  session start. Versions 0.2.0–0.2.3 of this template wrote the
+  nudge to stdout, which silently surfaced freshness reminders to
+  the model alone — the user never saw them. Do not remove the
+  `>&2` redirect when merging.
+
 If `.claude/settings.json` already has `hooks` for any of these events,
 merge entries into the existing arrays rather than replacing.
+Top-level `_comment` fields collide on a structural merge — when the
+existing `.claude/settings.json` already has its own `_comment`,
+**preserve the user's** rather than overwriting with the template's.
+The template's `_comment` is documentation for adopters reading the
+snippet, not for consumers; if the user has their own commentary on
+their settings file, it stays.
+
+**Migration for projects that adopted under 0.2.0–0.2.3:** before
+merging the template, scan the existing `.claude/settings.json` for
+the buggy SessionStart command and offer to replace it. Detect
+pattern: a `hooks.SessionStart[*].hooks[*].command` matching **all
+three** of the following (intentionally narrow, to avoid false
+positives on user-customized hooks that happen to share one phrase):
+
+1. Contains the substring `NOTE: .java-coding-standards is ` (the
+   nudge text — narrows to our specific freshness-check shape).
+2. Contains the substring `git rev-list --count HEAD..origin/main`
+   (the upstream-comparison plumbing — confirms it's our hook and
+   not an unrelated user-customized command that happens to use the
+   same NOTE phrasing).
+3. Does **not** contain the substring `>&2` anywhere in the command
+   string (this is the actual missing-redirect signal, and is robust
+   to differently-quoted hand fixes a user may have already applied
+   in a non-canonical position).
+
+All three conditions must hold to flag the hook as buggy. When
+detected, ask the user via `AskUserQuestion`:
+
+> Found a SessionStart freshness-nudge hook from an earlier
+> standards version (0.2.0–0.2.3) that writes its message to
+> stdout — Claude Code captures stdout from SessionStart hooks as
+> model-only context, so the nudge has been invisible to you. Fix
+> by redirecting to stderr (recommended)?
+>
+> Options: **Yes — replace with the 0.2.4+ command** / **No —
+> leave as-is**
+
+If yes, replace just the `command` string in place (preserve any
+other entries the user has in `SessionStart`).
 
 ## Step 6 — `.vscode/cspell.json`: no-op
 

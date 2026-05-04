@@ -8,6 +8,141 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-05-04
+
+**Note:** Two fixes in this release:
+
+1. **SessionStart hook visibility.** The `SessionStart` hook
+   shipped in `adoption/claude-md-templates/claude-hooks-snippet.json`
+   since 0.2.0 has been writing its "submodule is behind upstream"
+   nudge to stdout. Per the Claude Code hooks documentation,
+   stdout from a `SessionStart` hook is captured as additional
+   context for the model and is **not** shown to the user;
+   stderr is what appears in the user's terminal banner at
+   session start. Result: the freshness-nudge integration
+   described in the adoption prompt has been **non-functional
+   from the user's perspective** in every consumer project that
+   ran `/init-java` against 0.2.0–0.2.3 — the hook fired, the
+   model saw the message, the user (the intended audience) saw
+   nothing.
+
+2. **Remaining JDT LineLength regressions.** 0.2.3 fixed the
+   first-wrap over-indent on string-concat-in-method-call
+   patterns. A separate, longstanding JDT issue produced **52
+   `LineLength` violations** of three other shapes: assignments
+   to long string literals, class declarations with long
+   generic-parameter lists, and variable declarations with long
+   generic types. Each shape had a relevant
+   `org.eclipse.jdt.core.formatter.alignment_for_*` key set to
+   `0` (NO_ALIGNMENT — never wrap), so JDT joined the
+   pre-formatted source onto a single over-80 line at every
+   site. Plus `wrap_before_assignment_operator` was `false`,
+   which would put `=` at the end of the previous line on a
+   wrap rather than starting the continuation line per the
+   spec's "operator starts the continuation line" rule.
+
+### Fixed
+
+- `adoption/claude-md-templates/claude-hooks-snippet.json` — the
+  `SessionStart` hook's `echo` is now redirected to stderr
+  (`>&2`) so the nudge surfaces in the user's terminal at
+  session start. The `_comment` block at the top of the snippet
+  was extended to document the stdout/stderr distinction so
+  future maintainers don't regress the fix.
+- `adoption/adopt-standards-prompt.md` Step 5 (hooks merge) —
+  added a `### Migration` sub-step that scans an existing
+  `.claude/settings.json` for the buggy 0.2.0–0.2.3 SessionStart
+  command (matches "NOTE: .java-coding-standards is " without
+  the stderr redirect) and offers to replace it via
+  `AskUserQuestion`. Catches every consumer project on its next
+  `/init-java` refresh without requiring users to know the bug
+  existed. The accompanying SessionStart explanation now
+  documents why the redirect is load-bearing.
+- `tooling/ide/java-formatter.xml` — flipped four JDT keys to
+  let the formatter wrap long declarations at split points the
+  spec already permits:
+  - `alignment_for_assignment` 0 → 16: JDT will now wrap at the
+    `=` operator when an assignment exceeds 80 chars (covers
+    `static final String FOO = "long literal";` and
+    `Map<...> name = new ...<>();`).
+  - `alignment_for_type_parameters` 0 → 16: JDT will wrap inside
+    a class's `<...>` declaration when the type-parameter list
+    pushes the line past 80 chars.
+  - `alignment_for_type_arguments` 0 → 16: same for
+    type-argument lists on method calls and generic instantiations.
+  - `wrap_before_assignment_operator` false → true: when the
+    `=` wrap fires, the `=` starts the continuation line per
+    the spec's "operator starts the continuation line" rule.
+
+  Value 16 = M_FORCE (no other flags), which combined with
+  `continuation_indentation=1` (from 0.2.3) produces a +4
+  per-level wrap — matching the spec's continuation indent.
+
+### Tests
+
+- `tooling/scripts/tests/fixtures/orchestrator/09_long_assignment_wraps_at_eq`
+  — generic `static final String NAME = "long path...";` that
+  exceeds 80 chars; expected output wraps at `=` with `=`
+  starting the continuation line.
+- `tooling/scripts/tests/fixtures/orchestrator/10_long_generic_class_decl_wraps`
+  — generic class declaration with `<E extends ..., B extends ...>`
+  that exceeds 80; expected output wraps inside the angle
+  brackets at the comma between type parameters.
+- `tooling/scripts/tests/fixtures/orchestrator/11_long_generic_var_decl_wraps_at_eq`
+  — generic local variable declaration with nested generics
+  that exceeds 80; expected output wraps at `=`.
+- Total test count: 255 → 261 (three new fixtures × two
+  pipeline-test variants).
+
+### Migration
+
+Adopting projects pinned to `v0.2.0`–`v0.2.3` should:
+
+1. Bump the submodule pin to `v0.2.4`.
+2. **For the SessionStart hook**, update the command in
+   `.claude/settings.json`. Two paths:
+   - **Re-run `/init-java`** (recommended). The 0.2.4 adoption
+     prompt detects the missing `>&2` and offers to fix it in
+     place, preserving any other SessionStart entries.
+   - **Hand-patch.** In `.claude/settings.json`, locate the
+     SessionStart hook's `command` string and append `>&2`
+     immediately after the closing quote of the `echo`
+     argument (just before `|| true`):
+
+     ```diff
+     - && echo "NOTE: ... refresh." || true
+     + && echo "NOTE: ... refresh." >&2 || true
+     ```
+
+3. **For the JDT LineLength fix**, re-run
+   `python3 .java-coding-standards/tooling/scripts/format_file.py`
+   from the project root. Expect a small targeted diff at each
+   long-declaration site (assignments, generic class
+   declarations, generic variable declarations). The diff
+   should be review-friendly compared to 0.2.3's wider
+   continuation-indent reflow.
+4. Re-run `mvn -Pcheckstyle validate` from the project root.
+   `LineLength` violations from these three categories should
+   clear; any remaining violations (e.g., long string literals
+   inside `// CSOFF: LineLength` blocks, or items already
+   exempted by the `static final.*<.*>` ignore pattern) are
+   pre-existing and unaffected.
+
+To verify the SessionStart fix end-to-end, quit and resume
+Claude Code with the submodule artificially one commit behind
+upstream:
+
+```bash
+cd .java-coding-standards
+git reset --hard HEAD~1
+cd ..
+claude --continue
+```
+
+The nudge
+`NOTE: .java-coding-standards is 1 commits behind upstream/main. Run /init-java to refresh.`
+should appear in the terminal banner before the input prompt.
+
 ## [0.2.3] - 2026-05-04
 
 **Note:** Third orchestrator-regression fix in the 0.2.x series.
