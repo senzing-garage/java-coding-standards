@@ -103,12 +103,29 @@ Update or add three profiles using the templates at
 
 - `pom-checkstyle-profile.xml` — replaces any existing `checkstyle`
   profile. `<configLocation>` points at the shared config in the
-  submodule; `<suppressionsLocation>` is a comma-separated list of
-  two paths — the shared base in the submodule plus the optional
-  project-local `${project.basedir}/checkstyle-suppressions-local.xml`.
-  If step 11 produces no project-specific suppressions, **remove the
-  second path (and the leading comma)** from `<suppressionsLocation>`
-  (otherwise checkstyle errors that the file doesn't exist).
+  submodule. **No `<suppressionsLocation>` is needed**: the shared
+  `senzing-checkstyle.xml` declares two `<module name="SuppressionFilter">`
+  entries internally — one for the shared baseline (always
+  present) and one optional entry that picks up a project-local
+  `checkstyle-suppressions-local.xml` at the project root when it
+  exists. (The path is resolved by checkstyle relative to the
+  Maven working directory; no Maven property substitution is
+  involved, so the value in the XML is a bare relative path
+  rather than `${project.basedir}/...`.) Step 11 generates this
+  file interactively. If an existing project pom carries a
+  `<suppressionsLocation>` line from an earlier standards version
+  (≤ 0.2.0), **delete that line** when you replace the profile —
+  leaving it in is harmless but misleading, since the new
+  mechanism subsumes it.
+
+  **Multi-module note.** Both suppressions paths above resolve
+  relative to the Maven working directory (where `mvn` was
+  invoked, not the per-module `${project.basedir}`). For
+  multi-module projects, run `mvn -Pcheckstyle validate` from the
+  project root so both `.java-coding-standards/` and
+  `checkstyle-suppressions-local.xml` resolve correctly. Invoking
+  from a child module's directory will fail to find them.
+
 - `pom-jacoco-profile.xml` — adds the `jacoco` profile if missing.
   Preserves any pre-existing `jacoco` profile config the project had,
   unless the user explicitly chose to overwrite.
@@ -470,8 +487,10 @@ project root:
 - **`checkstyle-suppressions-local.xml`** — one
   `<suppress checks="." files="REGEX"/>` entry per file. Use a regex
   that anchors at the filename (e.g. `SzExceptionMapper\.java` matches
-  any path ending in that filename). Wire this file in via the second
-  `<suppressionsLocation>` entry in the pom from step 3.
+  any path ending in that filename). **No pom wiring needed**: the
+  shared `senzing-checkstyle.xml` declares an optional
+  `<module name="SuppressionFilter">` that loads this file from the
+  project root automatically when it exists.
 - **`.java-coding-standards-excludes`** — one gitignore-style glob per
   line (e.g. `**/SzExceptionMapper.java`). Comments allowed. The
   bulk-format scripts read this file via `--exclude-from`.

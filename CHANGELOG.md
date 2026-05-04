@@ -2,8 +2,79 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog], [markdownlint],
-and this project adheres to [Semantic Versioning].
+The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+[markdownlint](https://dlaa.me/markdownlint/),
+and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.2.1] - 2026-05-01
+
+**Note:** This is a small follow-up to 0.2.0 that fixes the
+layered-suppressions design so the project-local
+`checkstyle-suppressions-local.xml` extension point actually takes
+effect. 0.2.0 wired both the shared baseline and the project-local
+file into `maven-checkstyle-plugin` 3.6.0 via a comma-separated
+`<suppressionsLocation>` value, but the plugin silently honored
+only the first path — generated-file carve-outs (e.g.
+`SzExceptionMapper.java` in `sz-sdk-java`) never engaged. The fix
+moves the wiring inside `senzing-checkstyle.xml` itself, where
+checkstyle loads the filters reliably.
+
+### Fixed
+
+- `checkstyle/senzing-checkstyle.xml` now declares two
+  `<module name="SuppressionFilter">` entries directly. The first
+  loads the shared `senzing-checkstyle-suppressions.xml` via the
+  canonical submodule mount path
+  (`.java-coding-standards/checkstyle/senzing-checkstyle-suppressions.xml`),
+  resolved relative to the Maven working directory. The second
+  loads `checkstyle-suppressions-local.xml` from the project root
+  the same way, with `optional="true"` so projects without a
+  project-local file don't fail. (An earlier draft tried
+  `${samedir}` for the shared path, but
+  `maven-checkstyle-plugin` 3.6.0 does not auto-populate that
+  property in this configuration — the working-directory-relative
+  path is the reliable mechanism.)
+
+### Changed
+
+- `adoption/claude-md-templates/pom-checkstyle-profile.xml` no
+  longer sets `<suppressionsLocation>`. The consumer pom is
+  simpler — only `<configLocation>` is required. The header
+  comment documents the new mechanism and notes that this
+  supersedes the broken comma-separated wiring.
+- `adoption/adopt-standards-prompt.md` step 3 (pom wiring) and
+  step 11 (generated-file exclusions) updated to describe the new
+  flow: create `checkstyle-suppressions-local.xml` at the project
+  root and the shared config picks it up automatically — no pom
+  edit required. When replacing an older checkstyle profile,
+  delete any leftover `<suppressionsLocation>` line.
+- `tooling/jdt-formatter/pom.xml` bumped from 0.2.0 to 0.2.1.
+  `format_file.py` reads this version at runtime to construct the
+  GitHub Release URL it downloads the JAR from
+  (`.../releases/download/v<version>/jdt-formatter.jar`); the pom
+  version must match the git tag.
+
+### Migration
+
+Adopting projects that pinned the standards submodule to
+`v0.2.0` and ran the adoption flow at that version need to:
+
+1. Bump the submodule pin to `v0.2.1`.
+2. Re-run `/init-java`, or manually drop the
+   `<suppressionsLocation>` line from the `checkstyle` profile in
+   their `pom.xml`. Leaving it in is harmless (the plugin
+   parameter becomes a no-op once the embedded filters fire) but
+   misleading.
+3. Re-run `mvn -Pcheckstyle validate` **from the project root**
+   (not a sub-module directory — both suppressions paths now
+   resolve relative to the Maven working directory). Project-local
+   `checkstyle-suppressions-local.xml` rules will engage for the
+   first time — confirm no regressions surface (e.g. files that
+   were silently checked at 0.2.0 because the project-local
+   suppressions weren't loading may now report new violations
+   that the suppressions are explicitly silencing).
 
 ## [0.2.0] - 2026-04-30
 

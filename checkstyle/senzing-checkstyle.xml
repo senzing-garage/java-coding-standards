@@ -23,6 +23,26 @@
         <property name="onCommentFormat" value="CSON"/>
     </module>
 
+    <!-- Shared baseline. Path resolves relative to the Maven working
+         directory (the project root from which mvn is invoked).
+         Deliberately NOT optional: a missing path is a broken
+         submodule mount, and failing loudly beats silently dropping
+         the baseline (which would surface as "spurious" violations
+         on rules the baseline normally suppresses). -->
+    <module name="SuppressionFilter">
+        <property name="file"
+                  value=".java-coding-standards/checkstyle/senzing-checkstyle-suppressions.xml"/>
+    </module>
+
+    <!-- Optional project-local suppressions for project-specific
+         carve-outs (e.g. generated-file rules), committed at the
+         project root. Adoption-prompt step 11 generates this file
+         interactively. -->
+    <module name="SuppressionFilter">
+        <property name="file" value="checkstyle-suppressions-local.xml"/>
+        <property name="optional" value="true"/>
+    </module>
+
     <module name="TreeWalker">
 
         <!-- Unused imports (Javadoc-only usage counts as used) -->
