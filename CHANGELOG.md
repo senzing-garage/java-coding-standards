@@ -8,6 +8,102 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-05-04
+
+**Note:** Third orchestrator-regression fix in the 0.2.x series.
+0.2.2 closed the `} catch / else / finally` and Tier 1 collapse
+bugs but left a per-wrap-level over-indent: every JDT line wrap
+added +8 of indent rather than the documented +4 per wrap level.
+For shallow wraps the over-indent was cosmetic (cumulating to +8
+from base instead of the documented +4); for nested wraps it
+cumulated to +16 on double-wraps and +24 on triple-wraps, where
+the documented cumulative effect is +8 and +12 respectively. The
+overshoot pushed wrapped lines in string-concat-in-method-call
+patterns past the 80-character limit. 0.2.3 corrects the per-wrap
+indent so JDT output matches the spec example in
+`docs/java-coding-standards.md` byte-for-byte:
+
+```java
+    throw new IllegalArgumentException(
+        "Cannot specify a secondary value when "
+            + "the primary value is null.  primary=[ "
+            + primary + " ], secondary=[ "
+            + secondary + " ]");
+```
+
+— first wrapped argument at single-indent (+4) past the
+statement base; each subsequent operator continuation at
+single-indent past the previous wrap (cumulating to +8 past
+the statement base, matching the "8 spaces from base" wording
+in the rule statement).
+
+### Fixed
+
+- `tooling/ide/java-formatter.xml` line 34 — flipped
+  `continuation_indentation` from `2` to `1`. JDT applies this
+  setting per wrap level, not cumulatively across wraps. With
+  `2` (= 2 × indentation_size = 8 spaces), the first wrap
+  landed at +8 from base and each subsequent wrap added another
+  +8, producing the +16 / +24 / ... cascade the regression
+  report cataloged. With `1` (= 1 × indentation_size = 4 spaces)
+  per wrap level, the cumulative indent matches the spec
+  example: first wrap +4, subsequent wraps +4 from each
+  previous wrap (so +8 from base for double-wraps, +12 for
+  triple, etc.).
+
+  This release also reframes a long-standing wording ambiguity
+  in the standards doc. Pre-0.2.3, the "General Continuation
+  Indentation" section read "Continuation lines use 8 spaces
+  (double indent) from the base indentation of the statement"
+  — that wording described the cumulative effect for second-
+  and-deeper wraps; the first wrap is single-indent (+4 from
+  base), as the spec example shows. The same release rewrites
+  that section and the four short-form summaries elsewhere in
+  the docs to make the per-level vs cumulative distinction
+  explicit. The `continuation_indentation` JDT setting is the
+  per-level value (now `1`); the cumulative effect is what the
+  rule describes.
+
+### Tests
+
+- `tooling/scripts/tests/fixtures/orchestrator/08_string_concat_spec_layout`
+  — new end-to-end fixture that reproduces the spec example
+  layout byte-for-byte. Locks in the fix and forestalls future
+  regressions.
+- `tooling/scripts/tests/fixtures/orchestrator/01_user_failure_cases/expected.java`
+  and `03_long_line_wrapping/expected.java` — updated. Both
+  fixtures previously locked in the buggy double-indent JDT
+  output; the new expected files match the spec-aligned
+  single-indent layout. No other fixtures changed.
+- Total test count: 253 → 255 (one new fixture × two pipeline
+  test variants).
+
+### Migration
+
+Adopting projects pinned to `v0.2.2` should:
+
+1. Bump the submodule pin to `v0.2.3`.
+2. Re-run `python3 .java-coding-standards/tooling/scripts/format_file.py`
+   from the project root. Expect a content diff on any file that
+   contains multi-line method-call args or string concatenations
+   — JDT's wrap indent moves from +8 to +4 per level, which
+   re-formats the affected lines. For typical Senzing Java
+   codebases this means **most non-trivial source files will
+   re-flow at least one wrap**; review the generated diff in
+   focused chunks (per-package or per-pattern) rather than as a
+   single monolithic commit.
+3. Re-run `mvn -Pcheckstyle validate` from the project root.
+   `LineLength` violations introduced by the 0.2.2 over-indent
+   should clear. Any remaining `LineLength` violations are
+   source-side issues not addressed by this PR — typically:
+   - long string literals that exceed 80 chars even at the
+     spec's correct indent (shorten or split),
+   - generic type parameter lists on class declarations that
+     JDT does not wrap (`alignment_for_type_parameters=0` is
+     unchanged in this release; if your project has these,
+     hand-wrap or wrap in `// @formatter:off` /
+     `// @formatter:on`).
+
 ## [0.2.2] - 2026-05-04
 
 **Note:** This release fixes two orchestrator regressions that

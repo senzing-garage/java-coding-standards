@@ -45,7 +45,9 @@ the FAQ:
   paren-aligned with types/names aligned in columns; otherwise next-line
   double-indented.
 - **`throws` clauses** go on their own line, single-indented.
-- **Continuation indentation**: 8 spaces (double indent).
+- **Continuation indentation**: +4 per wrap level (cumulating to
+  8 spaces of displacement for the typical double-wrap; see the
+  full standards doc for the per-level rule).
 - **Operators on continuation lines**: break **before** `+`, `&&`, `||`, `?`,
   `:`, `.` (the operator starts the continuation line).
 - **Short-circuit `if`**: `if (cond) statement;` on one line is preferred
