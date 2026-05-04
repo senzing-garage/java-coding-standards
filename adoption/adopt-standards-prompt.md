@@ -260,6 +260,7 @@ into `.claude/settings.json`:
 
 If `.claude/settings.json` already has `hooks` for any of these events,
 merge entries into the existing arrays rather than replacing.
+
 Top-level `_comment` fields collide on a structural merge — when the
 existing `.claude/settings.json` already has its own `_comment`,
 **preserve the user's** rather than overwriting with the template's.
