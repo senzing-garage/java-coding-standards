@@ -55,6 +55,22 @@ orchestrator's own output gave no hint.
   modified count up to the failure point is more informative than
   silence.
 
+### Changed
+
+- Every shared FAQ under `docs/faqs/` now starts with an H1
+  heading (`#`) instead of H2 (`##`), with the rest of each
+  file's heading hierarchy shifted up one level to match. The
+  H2-as-title convention had accumulated across all five FAQs
+  and was flagged in PR review as a CommonMark / GitHub-renderer
+  structural error (a document with no H1 is treated as
+  title-less by many tools). Sweep covers
+  `conventions/adding-new-faqs.md`,
+  `conventions/cspell-word-list-policy.md`,
+  `building/java-formatting-standards.md`,
+  `building/javadoc-reflow-conventions.md`, and
+  `testing/system-stubs-and-output-capture.md`. No content
+  changes; only heading levels.
+
 ### Tests
 
 - `tooling/scripts/tests/test_format_file.py::test_jdt_summary_*`

@@ -1,4 +1,4 @@
-## CSpell Word List Policy
+# CSpell Word List Policy
 
 The `.vscode/cspell.json` `words` array is **not** an
 "unknown-word silencer" — adding a made-up word there to make
@@ -9,7 +9,7 @@ word once normalizes it for future readers and every subsequent
 contributor, and the signal-to-noise of the check degrades on
 every evasion.
 
-### Rule
+## Rule
 
 There are two ways a word can be wrong:
 
@@ -57,7 +57,7 @@ pulling its weight in the prose, **ask in order**:
    `jacoco`, `pytest`, `Allman`, `Senzing`, `Maven`, `Eclipse`),
    add it to the `words` array; keep the list alphabetized.
 
-### Examples
+## Examples
 
 | Word                       | cspell verdict                                                                                                           | Meaning verdict                                                                                                                                                          | Action                                                                                                                                                  |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -69,7 +69,7 @@ pulling its weight in the prose, **ask in order**:
 | `splitlines`               | Flagged                                                                                                                  | Real Python standard-library method name                                                                                                                                 | Add to `words` (already in the list)                                                                                                                    |
 | `MyAnno`, `AlphaException` | Accepted                                                                                                                 | Synthetic placeholders                                                                                                                                                   | Don't whitelist; cspell tolerates camelCase identifiers                                                                                                 |
 
-### Why not just whitelist everything?
+## Why not just whitelist everything?
 
 Two reasons:
 
@@ -87,7 +87,7 @@ Reword first; whitelist only as a last resort, and only for
 words that are unambiguously proper nouns or domain-specific
 terms with clear industry usage.
 
-### Always state the justification when adding a word
+## Always state the justification when adding a word
 
 A `.vscode/cspell.json` edit that adds a word **must** ship with
 a one-line justification — what the word is, and why
@@ -108,7 +108,7 @@ the `keepends` parameter (which is already in the word list);
 neither rewording nor renaming applies because it's a real API
 identifier, not a symbol we control."
 
-### Authority
+## Authority
 
 This rule applies project-wide, including in CHANGELOG entries,
 code comments, identifier names, README prose, and FAQ content.
@@ -116,7 +116,7 @@ The standards repo's super-linter run blocks PRs that fail
 cspell, so a misuse will be caught at PR time — but the policy
 above is meant to prevent the misuse upstream of CI.
 
-### Quick fix recipe
+## Quick fix recipe
 
 When a PR review or CI fails on a cspell finding:
 
