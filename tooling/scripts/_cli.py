@@ -9,7 +9,7 @@ positional path arguments: process exactly those files (single-file mode,
 used by the `format_file.py` orchestrator and by VSCode keybindings).
 
 Exclude globs are gitignore-style and matched against the full posix-form
-path of each candidate file, so patterns like `**/SzExceptionMapper.java`
+path of each candidate file, so patterns like `**/GeneratedFoo.java`
 or `target/**` work as expected.
 
 Used by: fix_allman_braces.py, fix_javadoc_reflow.py,

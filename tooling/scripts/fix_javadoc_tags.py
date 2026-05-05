@@ -97,16 +97,21 @@ def process_file(filepath):
 
             i += 1
 
-        # Check if reflowing is needed
+        # Check if reflowing is needed.
+        # Single-input case: if the line fits within MAX_LINE, emit
+        # as-is; otherwise fall through to the wrap logic so the
+        # output respects the 80-char ceiling.
         if len(texts) <= 1:
-            # Single line or empty — reconstruct as-is
-            if texts:
-                new_lines.append(
-                    star_prefix + tag_prefix + texts[0] + '\n')
-            else:
+            if not texts:
                 new_lines.append(
                     star_prefix + tag_prefix.rstrip() + '\n')
-            continue
+                continue
+            single_line_len = len(star_prefix) + len(tag_prefix) \
+                + len(texts[0])
+            if single_line_len <= MAX_LINE:
+                new_lines.append(
+                    star_prefix + tag_prefix + texts[0] + '\n')
+                continue
 
         # Join all words and reflow
         all_words = []

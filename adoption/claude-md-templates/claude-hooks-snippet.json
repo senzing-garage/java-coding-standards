@@ -8,19 +8,40 @@
     "All commands reference ${CLAUDE_PROJECT_DIR} so they work",
     "regardless of where Claude Code was invoked from.",
     "",
-    "The SessionStart fetch uses git's http.lowSpeedLimit /",
-    "http.lowSpeedTime to abort if the transfer stalls below 1 KB/s",
-    "for 3 seconds, bounding session-start latency in slow or",
-    "unreliable network conditions. Offline failures stay silent",
-    "via the trailing 2>/dev/null || true.",
+    "The SessionStart hook compares the local submodule HEAD against",
+    "the latest released tag at origin via `git ls-remote --tags`,",
+    "which queries the remote without modifying the local clone.",
+    "If the local pin is not at the latest released tag, the hook",
+    "outputs an explicit relay instruction to stdout, which Claude",
+    "Code captures as model context. The wrapper text instructs the",
+    "model to surface the message verbatim to the user at the start",
+    "of its first response.",
     "",
-    "The SessionStart nudge is written to stderr (>&2) so Claude",
-    "Code displays it in the user's terminal at session start.",
-    "stdout from SessionStart hooks is captured as additional",
-    "context for the model only and is invisible to the user; do",
-    "not remove the >&2 redirect. Versions 0.2.0-0.2.3 of this",
-    "template were missing the redirect, which silently surfaced",
-    "freshness nudges to the model alone — fixed in 0.2.4."
+    "Why not use stderr or exit 2? Both were tried in 0.2.4 and",
+    "neither produced user-visible output: SessionStart is a",
+    "non-blocking hook event in Claude Code, so stderr is not",
+    "displayed in the user's terminal and exit code 2 has no",
+    "effect. The model-relay approach is the documented",
+    "user-visibility channel that actually works for SessionStart.",
+    "",
+    "The `http.lowSpeedLimit`/`http.lowSpeedTime` settings bound",
+    "session-start latency to about 3 seconds on a stalled network.",
+    "Offline failures stay silent via `|| exit 0` guards on each",
+    "step.",
+    "",
+    "Tag-name sanitization: the hook validates that the resolved",
+    "$latest and $current tag names contain only alphanumerics,",
+    "dots, underscores, and dashes before passing them through",
+    "printf. Rationale: an attacker with write access to origin",
+    "could otherwise create a tag whose name contained crafted",
+    "text (newlines git itself rejects, but most other ASCII is",
+    "allowed in refnames) and inject content into the model-relay",
+    "message — the model would then receive the injection as part",
+    "of its session context. Rejecting non-alphanumeric tag names",
+    "defends against that. Pure semver tags (0.2.5, v1.0.0-rc.1,",
+    "etc.) pass through unchanged. The threat is low-severity in",
+    "practice (requires repo write access) but the defense is",
+    "cheap."
   ],
   "hooks": {
     "PostToolUse": [
@@ -49,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'cd \"${CLAUDE_PROJECT_DIR}/.java-coding-standards\" 2>/dev/null && git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=3 fetch -q origin main 2>/dev/null && [[ $(git rev-list --count HEAD..origin/main) -gt 0 ]] && echo \"NOTE: .java-coding-standards is $(git rev-list --count HEAD..origin/main) commits behind upstream/main. Run /init-java to refresh.\" >&2 || true'"
+            "command": "bash -c 'cd \"${CLAUDE_PROJECT_DIR}/.java-coding-standards\" 2>/dev/null || exit 0; head_sha=$(git rev-parse HEAD 2>/dev/null) || exit 0; tags_raw=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=3 ls-remote --tags origin 2>/dev/null); [ -n \"$tags_raw\" ] || exit 0; latest=$(echo \"$tags_raw\" | awk -F/ \"{print \\$NF}\" | grep -v \"\\^{}$\" | sort -V | tail -1); [ -n \"$latest\" ] || exit 0; case \"$latest\" in *[!A-Za-z0-9._-]*) exit 0 ;; esac; latest_sha=$(echo \"$tags_raw\" | awk \"\\$2==\\\"refs/tags/${latest}^{}\\\" || \\$2==\\\"refs/tags/${latest}\\\" {print \\$1}\" | tail -1); [ \"$head_sha\" = \"$latest_sha\" ] && exit 0; current=$(echo \"$tags_raw\" | awk -v h=\"$head_sha\" \"\\$1==h {n=\\$2; sub(\\\"\\\\\\\\^{}\\\",\\\"\\\",n); sub(\\\"refs/tags/\\\",\\\"\\\",n); print n}\" | sort -V | tail -1); case \"$current\" in *[!A-Za-z0-9._-]*) exit 0 ;; esac; printf \"INSTRUCTION FOR ASSISTANT (from SessionStart hook): At the start of your first response, tell the user verbatim: \\\"Heads up: .java-coding-standards has a newer release available (%s); current pin is %s. Run /init-java to refresh.\\\"\\n\" \"$latest\" \"${current:-untagged}\"'"
           }
         ]
       }
