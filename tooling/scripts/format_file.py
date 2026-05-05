@@ -235,22 +235,41 @@ def _resolve_target_paths(forwarded_args: list[str]) -> list[Path]:
 _JDT_BATCH_SIZE = 500
 
 
-def _file_signature(path: Path) -> tuple[int, str] | None:
-    """Return `(size, sha256-hex)` for `path`, or `None` if missing.
+def _file_snapshot(path: Path) -> tuple[int, str, int, int] | None:
+    """Return `(size, sha256-hex, atime_ns, mtime_ns)` for `path`, or
+    `None` if missing.
 
-    `None` lets a deleted file compare unequal to its prior tuple
-    signature without a special case at the call site. Guards both
-    `stat()` and `_sha256()` so a deletion between the two calls
-    still resolves to `None` instead of raising. Catches
-    `FileNotFoundError` only, not `OSError` broadly: a permission
-    flip mid-pass is a genuine anomaly and should fail loud rather
+    Used by `main()` to compare files before/after the full pipeline
+    (JDT + override scripts) so the orchestrator can both report a
+    net-modified count AND restore the original mtime on files whose
+    final content is bit-identical to the input. Preserving mtime in
+    the net-zero case keeps IDE reloads, Maven/Gradle build caches,
+    and `make` timestamp tracking quiet on idempotent runs.
+
+    Catches `FileNotFoundError` only — a permission flip or other
+    OSError mid-pass is a genuine anomaly and should fail loud rather
     than silently count as "modified" in the summary.
     """
     try:
-        size = path.stat().st_size
-        return (size, _sha256(path))
+        st = path.stat()
+        return (st.st_size, _sha256(path), st.st_atime_ns, st.st_mtime_ns)
     except FileNotFoundError:
         return None
+
+
+def _restore_mtime(path: Path, atime_ns: int, mtime_ns: int) -> None:
+    """Best-effort restore of `path`'s atime + mtime to the saved
+    values. Warns on any `OSError` and continues; the mtime restore
+    is purely cosmetic (IDE/build-cache hygiene) and must never fail
+    the pipeline.
+    """
+    try:
+        os.utime(path, ns=(atime_ns, mtime_ns))
+    except OSError as exc:
+        print(
+            f"WARNING: could not restore mtime on {path}: {exc}",
+            file=sys.stderr,
+        )
 
 
 def run_jdt_pass(paths: list[Path]) -> int:
@@ -333,22 +352,21 @@ def main() -> int:
         target_paths = []
 
     failures: list[tuple[str, int]] = []
+
+    # Snapshot every target's content + atime + mtime before any pass
+    # runs. After all passes complete we use this to (a) report a
+    # net-pipeline modified count and (b) restore mtime on files
+    # whose final content matches the snapshot. Without the restore,
+    # JDT's "always re-serialize" behavior would advance every
+    # target's mtime even when the override scripts undo all of
+    # JDT's byte-level edits, churning IDE reloads and build caches
+    # on otherwise idempotent runs.
+    pre_states: dict[Path, tuple[int, str, int, int] | None] = {}
     if target_paths:
-        # JDT (unlike the override scripts) doesn't print a
-        # modified-count of its own; snapshot signatures so we can
-        # synthesize one after the subprocess returns.
-        pre_signatures = {p: _file_signature(p) for p in target_paths}
+        pre_states = {p: _file_snapshot(p) for p in target_paths}
         rc = run_jdt_pass(target_paths)
         if rc != 0:
             failures.append(("jdt-formatter", rc))
-        jdt_modified = sum(
-            1 for p in target_paths
-            if _file_signature(p) != pre_signatures[p]
-        )
-        print(
-            f"\nJDT pass: {len(target_paths)} files processed, "
-            f"{jdt_modified} modified."
-        )
 
     # Stage 2: existing Python override scripts in canonical order.
     for script in SCRIPT_ORDER:
@@ -364,6 +382,51 @@ def main() -> int:
         result = subprocess.run(cmd)
         if result.returncode != 0:
             failures.append((script, result.returncode))
+
+    # Stage 3: pipeline summary + mtime restore. Compare every
+    # target's post-pipeline content against its pre-pipeline
+    # snapshot. Bit-identical -> restore the original mtime (silent
+    # in-place no-op on disk). Any difference (or a re-snapshot
+    # failure) -> count as modified and leave the new mtime alone.
+    # Prints unconditionally when target_paths is non-empty,
+    # including when JDT or an override script exited non-zero —
+    # the count up to the failure point is more useful than silence.
+    if target_paths:
+        pipeline_modified = 0
+        for p in target_paths:
+            pre = pre_states.get(p)
+            if pre is None:
+                # File didn't exist at pre-snapshot time. Shouldn't
+                # happen — _resolve_target_paths only yields existing
+                # files — but defensive: count as modified, skip
+                # mtime restore (no original mtime to restore to).
+                pipeline_modified += 1
+                continue
+            try:
+                post = _file_snapshot(p)
+            except OSError as exc:
+                print(
+                    f"WARNING: could not re-snapshot {p} for pipeline "
+                    f"summary: {exc}",
+                    file=sys.stderr,
+                )
+                pipeline_modified += 1
+                continue
+            if post is None:
+                # File deleted during the pipeline.
+                pipeline_modified += 1
+                continue
+            # Compare on (size, sha256). atime/mtime intentionally
+            # excluded — we want byte-content equality, then we'll
+            # restore mtime if it matches.
+            if pre[0] == post[0] and pre[1] == post[1]:
+                _restore_mtime(p, pre[2], pre[3])
+            else:
+                pipeline_modified += 1
+        print(
+            f"\nPipeline: {len(target_paths)} files processed, "
+            f"{pipeline_modified} modified."
+        )
 
     if failures:
         print("\nFailures:", file=sys.stderr)

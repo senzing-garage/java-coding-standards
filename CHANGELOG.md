@@ -8,6 +8,108 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-05-05
+
+**Note:** Net-pipeline summary line + mtime preservation on
+net-zero runs. Supersedes the JDT-only summary line shipped in
+0.2.7 — that line was technically accurate but cosmetically
+misleading: JDT re-serializes its output even when no formatting
+decisions changed, so the summary reported "JDT modified N
+files" on every run even when the override scripts undid all of
+JDT's byte-level edits and `git diff` was clean.
+
+The 0.2.8 fix snapshots every target's content + atime + mtime
+before the pipeline starts, runs JDT and the six override scripts
+(unchanged behavior), then compares each file's final content to
+the pre-pipeline snapshot. Two consequences:
+
+- The summary line now reports the **net** modified count
+  (`Pipeline: <N> files processed, <M> modified.`), so a fully
+  spec-compliant codebase reports `0 modified` and matches what
+  `git diff` shows.
+
+- Files whose final content is bit-identical to the input have
+  their original mtime restored via `os.utime()`. JDT's
+  out-of-band write no longer churns IDE reloads, Maven/Gradle
+  build caches, or `make`-style timestamp tracking on net-zero
+  runs.
+
+### Fixed
+
+`tooling/scripts/format_file.py`:
+
+- Replaced the `_file_signature` helper (which returned a
+  size+hash 2-tuple) with `_file_snapshot`, which also captures
+  the file's atime and mtime in nanoseconds. The two extra
+  fields support the new mtime restore. `FileNotFoundError` is
+  the only exception caught; `PermissionError` and other
+  `OSError` subclasses propagate intentionally — a permission
+  flip mid-pass is a genuine anomaly that should fail loud
+  rather than silently count as "modified" in the summary.
+
+- New `_restore_mtime(path, atime_ns, mtime_ns)` helper. Wraps
+  `os.utime()` in a broad `try`/`except OSError` and prints a
+  one-line `WARNING: could not restore mtime on <path>: <exc>`
+  to stderr on any failure. The mtime restore is purely
+  cosmetic and must never abort the pipeline.
+
+- `main()` restructured into three explicit stages. Stage 1
+  takes a pre-pipeline snapshot of every target. Stage 2 runs
+  the JDT pass and the six override scripts (unchanged
+  behavior). Stage 3 takes a post-pipeline snapshot, prints the
+  net summary, and restores mtimes on bit-identical files. The
+  `JDT pass: ...` line from 0.2.7 is replaced by
+  `Pipeline: ...`. The summary prints unconditionally when the
+  target list is non-empty, including when JDT or an override
+  script exited non-zero. The Stage 3 comparison loop catches
+  `OSError` per-file, so one unreadable file emits
+  `WARNING: could not re-snapshot <path>: <exc>` and is counted
+  as modified, rather than crashing the whole orchestrator.
+
+### Tests
+
+- `tooling/scripts/tests/test_format_file.py` — five tests
+  renamed `test_jdt_summary_*` -> `test_pipeline_summary_*` and
+  their assertions updated from `JDT pass:` to `Pipeline:`. One
+  test renamed `test_file_signature_returns_none_for_missing`
+  -> `test_file_snapshot_returns_none_for_missing` to track the
+  helper rename.
+
+- Three new tests:
+  - `test_pipeline_preserves_mtime_when_net_zero` pins a target's
+    mtime to a known past value, runs the pipeline against a
+    spec-compliant input, and asserts the mtime is unchanged
+    after the run.
+
+  - `test_pipeline_advances_mtime_when_modified` does the same
+    pin, but with non-compliant input the pipeline rewrites,
+    and asserts the mtime DID advance — confirming the restore
+    is contingent on byte-content equality, not unconditional.
+
+  - `test_restore_mtime_warns_on_oserror` calls `_restore_mtime`
+    on a non-existent path and asserts the helper emits a
+    `WARNING` to stderr without raising.
+
+- Total test count: 288 -> 291 (three new tests; no fixture
+  changes).
+
+### Migration
+
+Adopting projects pinned to `v0.2.7` should:
+
+1. Bump the submodule pin to `v0.2.8`.
+
+2. The `JDT pass: ...` line that 0.2.7 emitted is replaced by
+   a `Pipeline: ...` line of the same shape. Any downstream
+   tooling that grepped for `JDT pass:` needs to grep for
+   `Pipeline:` instead.
+
+3. On idempotent runs (codebases already in spec-compliant
+   shape), the `M modified` count drops to 0 and target file
+   mtimes are preserved. IDE / build-cache churn from
+   `format_file.py` invocations should disappear in steady
+   state.
+
 ## [0.2.7] - 2026-05-05
 
 **Note:** Observability fix. The orchestrator now prints a JDT-pass
