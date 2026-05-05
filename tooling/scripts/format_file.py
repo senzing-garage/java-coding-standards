@@ -235,6 +235,31 @@ def _resolve_target_paths(forwarded_args: list[str]) -> list[Path]:
 _JDT_BATCH_SIZE = 500
 
 
+def _file_signature(path: Path) -> tuple[int, str] | None:
+    """Return `(size, sha256-hex)` for the file at `path`, or `None`
+    if the file is missing at the moment we sample it.
+
+    Used by `main()` to detect which files the JDT pass actually
+    rewrote. JDT shouldn't delete files, but the missing-file branch
+    keeps the initial `stat()` from raising and lets a deleted file
+    count as "modified" (None != prior signature) without a special
+    case at the call site. There is a vanishingly small race
+    window between the `stat()` and the `_sha256()` open — if the
+    file vanishes in that window, the hash call will still raise.
+    Not defended against because it cannot occur in any documented
+    JDT pass behavior.
+
+    Hashes via `_sha256()` (streams in 1 MiB chunks) rather than
+    `path.read_bytes()` + a one-shot hash, so a bulk pass over
+    thousands of files keeps memory bounded.
+    """
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return None
+    return (size, _sha256(path))
+
+
 def run_jdt_pass(paths: list[Path]) -> int:
     """Run the Eclipse JDT formatter against `paths`. Returns 0 on
     success or the first non-zero exit code if any batch fails. The
@@ -316,9 +341,26 @@ def main() -> int:
 
     failures: list[tuple[str, int]] = []
     if target_paths:
+        # Snapshot file content hashes before JDT runs so we can
+        # report a per-pass "modified N" summary. Each Python override
+        # script prints its own modified-count summary, but JDT does
+        # not — without this, an orchestrator run that ends with six
+        # "modified 0" rows can hide the fact that JDT rewrote dozens
+        # of files. Hashing target files before/after a JDT pass is
+        # rounding-error cost compared to JVM startup for the JDT
+        # subprocess, even at thousands of files.
+        pre_signatures = {p: _file_signature(p) for p in target_paths}
         rc = run_jdt_pass(target_paths)
         if rc != 0:
             failures.append(("jdt-formatter", rc))
+        jdt_modified = sum(
+            1 for p in target_paths
+            if _file_signature(p) != pre_signatures[p]
+        )
+        print(
+            f"\nJDT pass: {len(target_paths)} files processed, "
+            f"{jdt_modified} modified."
+        )
 
     # Stage 2: existing Python override scripts in canonical order.
     for script in SCRIPT_ORDER:
