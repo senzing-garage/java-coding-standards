@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Orchestrator: run JDT formatter then the five Python override scripts
+"""Orchestrator: run JDT formatter then the six Python override scripts
 in canonical order against one or more Java files.
 
 The pipeline:
 
     JDT formatter (general-purpose Java formatting)
         ↓
-    fix_allman_braces.py  — Allman brace placement override
+    fix_allman_braces.py     — Allman brace placement override
     fix_javadoc_reflow.py
     fix_javadoc_inline_tags.py
     fix_javadoc_tags.py
-    fix_need_braces.py    — short-circuit if rules
+    fix_need_braces.py       — short-circuit if rules
+    fix_throws_alignment.py  — throws-clause column alignment
 
 JDT handles the bulk of the standard (indent, line wrap, alignment,
 continuation-indent, ternary tiers, operator-on-continuation). The
-five Python scripts override the rules JDT can't express in a single
-profile (Allman braces for type/method but same-line for control flow),
-plus rules our standards add beyond what JDT or checkstyle catch
-(no-orphan-words javadoc reflow, short-circuit if collapse, etc.).
+six Python scripts override the rules JDT can't express in a single
+profile (Allman braces for type/method but same-line for control flow,
+column-aligned throws-clause continuations), plus rules our standards
+add beyond what JDT or checkstyle catch (no-orphan-words javadoc
+reflow, short-circuit if collapse, etc.).
 
 Used by:
 - VSCode `Format Java file to Senzing standards` task.
@@ -48,6 +50,7 @@ SCRIPT_ORDER: tuple[str, ...] = (
     "fix_javadoc_inline_tags.py",
     "fix_javadoc_tags.py",
     "fix_need_braces.py",
+    "fix_throws_alignment.py",
 )
 
 # format_file.py lives at tooling/scripts/; the formatter module +
