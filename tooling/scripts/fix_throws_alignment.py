@@ -41,6 +41,37 @@ def _strip_annotations(token):
     return RE_LEADING_ANNOTATION.sub('', token).strip()
 
 
+def _split_top_level_commas(text):
+    """Split `text` at commas that sit at paren-depth zero.
+
+    Annotation arguments may contain commas inside `(...)` (e.g.
+    `@MyAnno(a=1, b=2) Foo`); those commas must not split the
+    enclosing exception list. Returns a list of stripped, non-empty
+    tokens.
+    """
+    tokens = []
+    current = []
+    depth = 0
+    for ch in text:
+        if ch == '(':
+            depth += 1
+            current.append(ch)
+        elif ch == ')':
+            depth = max(depth - 1, 0)
+            current.append(ch)
+        elif ch == ',' and depth == 0:
+            piece = ''.join(current).strip()
+            if piece:
+                tokens.append(piece)
+            current = []
+        else:
+            current.append(ch)
+    piece = ''.join(current).strip()
+    if piece:
+        tokens.append(piece)
+    return tokens
+
+
 def _collect_clause(lines, start_idx):
     """Starting at `lines[start_idx]` which matches a `throws` line,
     collect the full clause across continuation lines.
@@ -65,11 +96,12 @@ def _collect_clause(lines, start_idx):
     indent = m.group(1)
     body = m.group(2).strip()
 
-    # Reject if the body contains structural punctuation that means
-    # this isn't a clean `throws ...` line (e.g., `{` from an inline
-    # method definition, `(` from a method call inside an annotation
-    # argument we don't handle, etc.).
-    if any(c in body for c in '{}()'):
+    # Reject if the body contains brace punctuation, which means this
+    # isn't a clean `throws ...` line (e.g., `{` from an inline method
+    # body). Parens are OK — they appear in annotation arguments like
+    # `@MyAnno(value=1)` and are handled by the paren-aware splitter
+    # below.
+    if any(c in body for c in '{}'):
         return None
 
     types_text = body
@@ -92,7 +124,12 @@ def _collect_clause(lines, start_idx):
         if len(cont.group(1)) < len(indent):
             return None
         cont_text = cont.group(2).strip()
-        if any(c in cont_text for c in '{}()'):
+        # Defense: a whitespace-only continuation line (.+? matched
+        # whitespace, .strip() emptied it) means there's nothing to
+        # contribute — punt to avoid scanning to EOF on a stray blank.
+        if not cont_text:
+            return None
+        if any(c in cont_text for c in '{}'):
             return None
         types_text = types_text + ' ' + cont_text
         consumed += 1
@@ -106,8 +143,10 @@ def _collect_clause(lines, start_idx):
     # Defensive — strip a stray trailing comma if we somehow got one.
     types_text = types_text.rstrip(',').strip()
 
-    # Split on commas. Whitespace around each token is normalized.
-    raw_types = [t.strip() for t in types_text.split(',') if t.strip()]
+    # Split on commas at paren-depth 0. Annotation arguments may
+    # contain commas inside `(...)` (e.g., `@MyAnno(a=1, b=2) Foo`)
+    # and must not be split.
+    raw_types = _split_top_level_commas(types_text)
     if not raw_types:
         return None
 
@@ -130,6 +169,14 @@ def _emit_clause(indent, types, suffix):
     """
     single_line = f"{indent}throws {', '.join(types)}{suffix}"
     if len(single_line) <= MAX_LINE:
+        return single_line + '\n'
+
+    # A single exception cannot be wrapped — its name is atomic, so the
+    # column-aligned-wrap branch below would just re-emit the same long
+    # line. Return single-line form unconditionally; the over-budget
+    # length is a structural fact about the identifier, not something
+    # this script can fix.
+    if len(types) == 1:
         return single_line + '\n'
 
     cont_indent = ' ' * (len(indent) + len('throws '))
