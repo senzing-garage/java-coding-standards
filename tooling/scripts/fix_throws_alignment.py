@@ -22,7 +22,20 @@ from pathlib import Path
 
 MAX_LINE = 80
 
-# Match a line whose first non-whitespace token is `throws`.
+# Match a line whose first non-whitespace token is `throws`. The
+# leading `\s+` (not `\s*`) means a line where `throws` is the
+# very first token — i.e. it sits on its own line at the body's
+# indent. This is enough to avoid the obvious false positives:
+# - `// throws X` and `/* throws X */` lines start with `//` or
+#   `/*` before any `throws` token; rejected.
+# - Javadoc lines start with `*`; rejected.
+# - String literals containing the word `throws` cannot reach
+#   column 0 of a line (they live inside method bodies); rejected
+#   at the structural-punctuation guard in `_collect_clause`.
+# A throws-on-method-decl-line (`void m() throws X`) doesn't match
+# because `throws` isn't the first token; that case is left to
+# JDT, which reliably moves `throws` to its own line under the
+# 0.2.6 alignment flag.
 RE_THROWS_LINE = re.compile(r'^(\s+)throws\s+(.+?)\s*$')
 
 # Validate an exception-type token (after stripping leading
@@ -88,7 +101,7 @@ def _collect_clause(lines, start_idx):
 
     Returns `None` if parsing fails (the block is left untouched).
     """
-    line0 = lines[start_idx].rstrip('\n').rstrip('\r')
+    line0 = lines[start_idx].rstrip('\r\n')
     m = RE_THROWS_LINE.match(line0)
     if not m:
         return None
@@ -114,7 +127,7 @@ def _collect_clause(lines, start_idx):
         idx = start_idx + consumed
         if idx >= len(lines):
             return None
-        next_line = lines[idx].rstrip('\n').rstrip('\r')
+        next_line = lines[idx].rstrip('\r\n')
         cont = re.match(r'^(\s+)(.+?)\s*$', next_line)
         if not cont:
             return None

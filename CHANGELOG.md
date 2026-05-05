@@ -60,10 +60,12 @@ column-aligned-wrap cases.
 
   The script is idempotent (running twice produces the same
   output as running once), defensive (skips any line whose body
-  contains structural punctuation like `{` or `(`, so it never
-  touches non-throws code that happens to have the word
-  "throws" in it), and tolerant of qualified type names
-  (`java.io.IOException`).
+  contains a brace `{` or `}`, which is the only structural
+  punctuation that cannot legitimately appear inside a clean
+  `throws` clause; parens are allowed because they show up in
+  annotation argument lists like `@MyAnno(level=ERROR)` and a
+  paren-aware comma splitter handles those), and tolerant of
+  qualified type names (`java.io.IOException`).
 
 - `tooling/scripts/format_file.py` — added
   `fix_throws_alignment.py` to `SCRIPT_ORDER` after
@@ -73,16 +75,24 @@ column-aligned-wrap cases.
 
 ### Tests
 
-- `tooling/scripts/tests/fixtures/throws_alignment/` — eight new
-  fixtures exercising the new script in isolation (single-
+- `tooling/scripts/tests/fixtures/throws_alignment/` — thirteen
+  new fixtures exercising the new script in isolation: single-
   exception class method, single-exception interface, multi-
   exception fits, multi-exception wraps with column alignment,
   compact-packed input re-aligns, qualified type names, already-
-  correct idempotency, long single-exception with semi). All use
-  generic `Foo` / `AlphaException` / `BetaException` /
-  `GammaException` / `AReallyLongExceptionTypeName*` /
-  `AnUnreasonablyLongExceptionTypeName*` placeholders — no
-  Senzing or SDK identifiers anywhere.
+  correct idempotency, single-exception under-80 (idempotent),
+  single-exception genuinely-over-80 (kept as-is), leading
+  annotations on exception types preserved, generic type
+  parameters as throws types, constructor throws wraps column-
+  aligned, and annotation arguments containing commas
+  (`@MyAnno(a=1, b=2)`) — the last guards the paren-aware
+  splitter against fragmenting the exception list on inner
+  commas. All use generic `Foo` / `AlphaException` /
+  `BetaException` / `GammaException` /
+  `AReallyLongExceptionTypeName*` /
+  `AnUnreasonablyLongExceptionTypeName*` /
+  `AnAbsurdlyLongExceptionTypeName*` placeholders — no Senzing
+  or SDK identifiers anywhere.
 - `tooling/scripts/tests/fixtures/orchestrator/12_throws_clause_multi_exception_fits_one_line`
   — locks in Bug 1 fix end-to-end (three exceptions totaling
   under 80 chars; expected output keeps them on the same line
@@ -94,9 +104,14 @@ column-aligned-wrap cases.
   paren-aligned under it).
 - `tooling/scripts/tests/test_format_file.py::test_canonical_script_order`
   — extended to assert the new six-script pipeline order.
-- Total test count: 264 → 277 (one new test file with 8 fixture
-  cases + 1 unit test, two updated orchestrator fixtures, plus
-  the doc-string change to the canonical-order assertion).
+- Total test count: 264 → 282. Breakdown of the +18: 13 new
+  fixture cases under `throws_alignment/` × 1 parametrized test
+  each = 13; 1 new unit test (`test_returns_tuple`) = 1; 2 new
+  orchestrator fixtures under `orchestrator/` × 2 parametrized
+  tests each (`test_pipeline_produces_expected_output` and
+  `test_pipeline_idempotent`) = 4. The
+  `test_canonical_script_order` assertion was extended in place
+  (existing test, no count delta).
 
 ### Migration
 
