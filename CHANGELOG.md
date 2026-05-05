@@ -8,6 +8,115 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-05-04
+
+**Note:** Two-part fix to the multi-exception `throws`-clause
+shape produced by the orchestrator. The 0.2.5 JDT profile
+force-split every multi-exception clause onto multiple lines
+(even when the assembled clause fit within 80 chars) and
+indented continuations under `throws` rather than column-
+aligning them with the first exception. The spec example at
+`docs/java-coding-standards.md` lines 198-213 prescribes
+neither shape: stay on one line if the clause fits; otherwise
+wrap with each subsequent exception column-aligned under the
+first.
+
+The fix has two pieces because JDT alone cannot produce the
+spec layout. The JDT alignment value flip eliminates the
+premature wrap (Bug 1) and gets `throws` onto its own line.
+A new post-JDT override script — `fix_throws_alignment.py` —
+then reformats the wrap continuations so they column-align
+with the first exception (Bug 2). Together they produce the
+spec example output byte-for-byte for both same-line and
+column-aligned-wrap cases.
+
+### Fixed
+
+- `tooling/ide/java-formatter.xml` — flipped two settings:
+  - `alignment_for_throws_clause_in_method_declaration`: 21 → 33.
+  - `alignment_for_throws_clause_in_constructor_declaration`: 21 → 33.
+
+  Bit decomposition of value 33: `M_INDENT_ON_COLUMN (32)` +
+  `M_COMPACT_SPLIT (1)`. Pre-0.2.6 was 21 (`M_FORCE (16)` +
+  `M_NEXT_PER_LINE_SPLIT (5)` = always wrap to next line, then
+  one exception per line). The new value places `throws` on its
+  own line (single-indent past the method declaration, per the
+  spec) and packs as many exceptions as fit within 80 chars on
+  the same line as `throws`. JDT alone, however, cannot
+  column-align continuations when wrapping is needed — that's
+  what the new script handles.
+
+- `tooling/scripts/fix_throws_alignment.py` — **new** override
+  script in the orchestrator pipeline (Tier 6, runs last). For
+  any method or constructor `throws` clause it finds, the script
+  collects all exception types across single- or multi-line
+  inputs, then re-emits the clause in spec layout:
+  - Same-line if the assembled clause fits within 80 chars.
+  - Otherwise, each subsequent exception on its own continuation
+    line, with leading whitespace = method indent + 4 (single
+    indent for `throws`) + `len("throws ")` so the first
+    character of every exception lands directly under the first
+    exception of the `throws` line.
+
+  The script is idempotent (running twice produces the same
+  output as running once), defensive (skips any line whose body
+  contains structural punctuation like `{` or `(`, so it never
+  touches non-throws code that happens to have the word
+  "throws" in it), and tolerant of qualified type names
+  (`java.io.IOException`).
+
+- `tooling/scripts/format_file.py` — added
+  `fix_throws_alignment.py` to `SCRIPT_ORDER` after
+  `fix_need_braces.py`. Pipeline now runs six override scripts
+  after JDT instead of five. Top-of-file docstring updated to
+  describe the new Tier 6 step.
+
+### Tests
+
+- `tooling/scripts/tests/fixtures/throws_alignment/` — eight new
+  fixtures exercising the new script in isolation (single-
+  exception class method, single-exception interface, multi-
+  exception fits, multi-exception wraps with column alignment,
+  compact-packed input re-aligns, qualified type names, already-
+  correct idempotency, long single-exception with semi). All use
+  generic `Foo` / `AlphaException` / `BetaException` /
+  `GammaException` / `AReallyLongExceptionTypeName*` /
+  `AnUnreasonablyLongExceptionTypeName*` placeholders — no
+  Senzing or SDK identifiers anywhere.
+- `tooling/scripts/tests/fixtures/orchestrator/12_throws_clause_multi_exception_fits_one_line`
+  — locks in Bug 1 fix end-to-end (three exceptions totaling
+  under 80 chars; expected output keeps them on the same line
+  as `throws`).
+- `tooling/scripts/tests/fixtures/orchestrator/13_throws_clause_multi_exception_wraps_column_aligned`
+  — locks in the post-JDT script's column-aligned wrap
+  end-to-end (three deliberately-long exception names; expected
+  output places the first on the `throws` line, continuations
+  paren-aligned under it).
+- `tooling/scripts/tests/test_format_file.py::test_canonical_script_order`
+  — extended to assert the new six-script pipeline order.
+- Total test count: 264 → 277 (one new test file with 8 fixture
+  cases + 1 unit test, two updated orchestrator fixtures, plus
+  the doc-string change to the canonical-order assertion).
+
+### Migration
+
+Adopting projects pinned to `v0.2.5` should:
+
+1. Bump the submodule pin to `v0.2.6`.
+2. Re-run
+   `python3 .java-coding-standards/tooling/scripts/format_file.py`
+   from the project root. Expect a small targeted diff at every
+   multi-exception `throws` site that was previously force-split
+   by 0.2.5; those clauses should re-flow back onto a single
+   line (when they fit) or column-align under the first
+   exception (when they need to wrap). The bulk count varies by
+   project — adoption of 0.2.5 typically left dozens-to-hundreds
+   of such sites in a wrong-shape state per consumer codebase.
+3. Re-run `mvn -Pcheckstyle validate` from the project root.
+   The 0.2.5 wrong-shape clauses didn't fail checkstyle (the
+   spec rule has no checkstyle module), so this is mostly a
+   readability-and-spec-compliance follow-up.
+
 ## [0.2.5] - 2026-05-04
 
 **Note:** Two fixes in this release.

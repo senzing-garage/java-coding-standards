@@ -23,6 +23,7 @@
     "ignorefile",
     "jacoco",
     "jface",
+    "keepends",
     "kernelsam",
     "mapfile",
     "mktemp",

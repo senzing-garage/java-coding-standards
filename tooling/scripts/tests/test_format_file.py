@@ -20,6 +20,8 @@ def test_canonical_script_order() -> None:
     Tier 1: Allman braces (structural).
     Tier 2-4: javadoc reflow (prose).
     Tier 5: short-circuit / brace insertion (depends on prior reflow).
+    Tier 6: throws-clause column alignment (post-JDT cleanup; runs
+    last so it sees the final layout from earlier passes).
     """
     assert format_file.SCRIPT_ORDER == (
         "fix_allman_braces.py",
@@ -27,6 +29,7 @@ def test_canonical_script_order() -> None:
         "fix_javadoc_inline_tags.py",
         "fix_javadoc_tags.py",
         "fix_need_braces.py",
+        "fix_throws_alignment.py",
     )
 
 
