@@ -190,7 +190,9 @@ def test_file_signature_returns_none_for_missing(tmp_path: Path) -> None:
 
 
 def test_jdt_summary_prints_when_jdt_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The summary line must still print when the JDT subprocess exits
     non-zero. The modified count up to the failure point is more
