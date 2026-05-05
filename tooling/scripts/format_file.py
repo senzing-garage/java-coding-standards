@@ -241,7 +241,10 @@ def _file_signature(path: Path) -> tuple[int, str] | None:
     `None` lets a deleted file compare unequal to its prior tuple
     signature without a special case at the call site. Guards both
     `stat()` and `_sha256()` so a deletion between the two calls
-    still resolves to `None` instead of raising.
+    still resolves to `None` instead of raising. Catches
+    `FileNotFoundError` only, not `OSError` broadly: a permission
+    flip mid-pass is a genuine anomaly and should fail loud rather
+    than silently count as "modified" in the summary.
     """
     try:
         size = path.stat().st_size
