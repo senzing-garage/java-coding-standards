@@ -235,6 +235,24 @@ def _resolve_target_paths(forwarded_args: list[str]) -> list[Path]:
 _JDT_BATCH_SIZE = 500
 
 
+def _file_signature(path: Path) -> tuple[int, str] | None:
+    """Return `(size, sha256-hex)` for `path`, or `None` if missing.
+
+    `None` lets a deleted file compare unequal to its prior tuple
+    signature without a special case at the call site. Guards both
+    `stat()` and `_sha256()` so a deletion between the two calls
+    still resolves to `None` instead of raising. Catches
+    `FileNotFoundError` only, not `OSError` broadly: a permission
+    flip mid-pass is a genuine anomaly and should fail loud rather
+    than silently count as "modified" in the summary.
+    """
+    try:
+        size = path.stat().st_size
+        return (size, _sha256(path))
+    except FileNotFoundError:
+        return None
+
+
 def run_jdt_pass(paths: list[Path]) -> int:
     """Run the Eclipse JDT formatter against `paths`. Returns 0 on
     success or the first non-zero exit code if any batch fails. The
@@ -316,9 +334,21 @@ def main() -> int:
 
     failures: list[tuple[str, int]] = []
     if target_paths:
+        # JDT (unlike the override scripts) doesn't print a
+        # modified-count of its own; snapshot signatures so we can
+        # synthesize one after the subprocess returns.
+        pre_signatures = {p: _file_signature(p) for p in target_paths}
         rc = run_jdt_pass(target_paths)
         if rc != 0:
             failures.append(("jdt-formatter", rc))
+        jdt_modified = sum(
+            1 for p in target_paths
+            if _file_signature(p) != pre_signatures[p]
+        )
+        print(
+            f"\nJDT pass: {len(target_paths)} files processed, "
+            f"{jdt_modified} modified."
+        )
 
     # Stage 2: existing Python override scripts in canonical order.
     for script in SCRIPT_ORDER:

@@ -1,10 +1,10 @@
-## Java Formatting Standards
+# Java Formatting Standards
 
-### Overview
+## Overview
 
 All non-generated Java source files must conform to the formatting rules defined in `.java-coding-standards/docs/java-coding-standards.md`. Consult it before writing or reformatting Java code.
 
-### When generating new code
+## When generating new code
 
 **Apply these standards from the start.** Do not write Java code in a free-form way and then reformat — generate it already compliant:
 
@@ -19,7 +19,7 @@ All non-generated Java source files must conform to the formatting rules defined
 
 After generation, run `mvn -Pcheckstyle validate` to confirm compliance. The bulk-fix scripts below are an aid for legacy code or batch updates — they are not a substitute for writing compliant code on the first pass.
 
-### Key Rules
+## Key Rules
 
 - **80-character line limit** — enforced by checkstyle via `-Pcheckstyle`
 - **Allman braces** for class, interface, enum, method, and constructor definitions
@@ -31,7 +31,7 @@ After generation, run `mvn -Pcheckstyle validate` to confirm compliance. The bul
 - **Switch case labels**: left-aligned with switch (no extra indent)
 - **Single-line `if`** is reserved for short-circuit control flow only — body must be `return`/`continue`/`break`/`throw`, no `else`, and the whole thing must fit on one line. Assignments and method calls always use braces, even when they fit. `if`/`else` pairs always brace both branches.
 
-### Checkstyle Configuration
+## Checkstyle Configuration
 
 The standards repo ships two checkstyle config files; consumer projects reference them via the submodule path in `pom.xml`'s `maven-checkstyle-plugin` configuration:
 
@@ -40,7 +40,7 @@ The standards repo ships two checkstyle config files; consumer projects referenc
 
 Project-specific suppressions (e.g. for auto-generated files) layer in via a project-local `checkstyle-suppressions-local.xml` next to the project's `pom.xml` — passed to checkstyle alongside the shared base via the multi-value `<suppressionsLocation>` syntax.
 
-### Formatter pipeline
+## Formatter pipeline
 
 The orchestrator (`tooling/scripts/format_file.py`) runs a two-stage pipeline:
 
@@ -60,13 +60,13 @@ fix_need_braces.py          ─┘
 
 The pipeline produces a fully compliant file regardless of caller — VS Code save, Claude Code edit hook, CLI, CI pre-commit. Same input, same output, everywhere.
 
-### VSCode integration
+## VSCode integration
 
 - `.vscode/settings.json` — `[java].editor.formatOnSave: false` (we do NOT use redhat.java's built-in format-on-save). `emeraldwalk.runonsave` instead invokes `format_file.py` on Java save, which runs JDT plus the override scripts in one pass with the correct ordering.
 - `.java-coding-standards/tooling/ide/java-formatter.xml` — Eclipse JDT formatter profile, also referenced by `java.format.settings.url` so redhat.java's manual "Format Document" command uses the same JDT rules even when invoked outside the orchestrator.
 - Why not let redhat.java do format-on-save? Running redhat.java + emeraldwalk both on save would invoke JDT twice (redundant) and complicate ordering. Single orchestrator invocation is cleaner.
 
-### Running the pipeline
+## Running the pipeline
 
 End-to-end:
 
@@ -95,6 +95,6 @@ Override-script behavior summary:
 
 The scripts scan `src/main/java`, `src/test/java`, and `src/demo/java` if present. Use `--src-dirs` to override the default list and `--exclude` to skip globs (e.g. auto-generated files). For single-file mode, pass a file path as a positional argument.
 
-### Full Reference
+## Full Reference
 
 See `.java-coding-standards/docs/java-coding-standards.md` for the complete standards document, including method declaration priority rules, ternary operator tiers, short-circuit conditional formatting, and the Claude prompt for formatting.

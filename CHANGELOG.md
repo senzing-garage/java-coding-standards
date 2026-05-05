@@ -8,6 +8,97 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-05-05
+
+**Note:** Observability fix. The orchestrator now prints a JDT-pass
+summary line so users can see how many files were rewritten by the
+JDT stage. Previously, a `format_file.py` run that ended with six
+"modified 0" rows from the override scripts could hide the fact
+that JDT had just rewritten dozens of files in the same pass. No
+behavior change to formatting itself; pure reporting.
+
+Surfaced during 0.2.6 adoption in `sz-sdk-java`: an 82-file JDT
+rewrite (the wrong-shape `throws`-clause delta) was invisible in
+the orchestrator's stdout because none of the Python override
+scripts touched those files (JDT had already shaped them
+correctly). The user verified the rewrite via `git diff`, but the
+orchestrator's own output gave no hint.
+
+### Fixed
+
+- `tooling/scripts/format_file.py` — added a JDT-pass summary line
+  emitted between the JDT subprocess and the first override
+  script. Format:
+
+  ```
+  JDT pass: <N> files processed, <M> modified.
+  ```
+
+  Implementation: snapshot `(size, sha256)` for every target file
+  before the JDT subprocess runs; recompute after; count entries
+  whose pre/post signatures differ. Hashing reuses the existing
+  `_sha256(path)` helper (streams in 1 MiB chunks), so memory
+  stays bounded on bulk passes over thousands of files. Cost is
+  rounding-error compared to JVM startup for the JDT subprocess
+  (typical Java sources are KB-scale; a 5,000-file bulk pass
+  adds well under a second of disk I/O on SSD).
+
+  The new helper `_file_signature(path)` returns
+  `(size, sha256-hex)` for an existing file, or `None` for a
+  missing one (so a stat-after-delete doesn't raise; a deleted
+  file's `None` compares unequal to its prior signature, which
+  correctly counts it as "modified" without a special case at
+  the call site).
+
+  The summary line prints unconditionally when the path list is
+  non-empty, including when the JDT pass exited non-zero — the
+  modified count up to the failure point is more informative than
+  silence.
+
+### Changed
+
+- Every shared FAQ under `docs/faqs/` now starts with an H1
+  heading (`#`) instead of H2 (`##`), with the rest of each
+  file's heading hierarchy shifted up one level to match. The
+  H2-as-title convention had accumulated across all five FAQs
+  and was flagged in PR review as a CommonMark / GitHub-renderer
+  structural error (a document with no H1 is treated as
+  title-less by many tools). Sweep covers
+  `conventions/adding-new-faqs.md`,
+  `conventions/cspell-word-list-policy.md`,
+  `building/java-formatting-standards.md`,
+  `building/javadoc-reflow-conventions.md`, and
+  `testing/system-stubs-and-output-capture.md`. No content
+  changes; only heading levels.
+
+### Tests
+
+- `tooling/scripts/tests/test_format_file.py::test_jdt_summary_*`
+  — five new unit tests covering: summary line is emitted on a
+  successful single-file pass, the count is 0 when no JDT change
+  is needed (already-formatted input), `_file_signature` returns
+  `None` for a missing file, the summary line is still emitted
+  when the JDT subprocess exits non-zero (so a partial-failure
+  run is observable in stdout), and the summary line is skipped
+  when the resolved target list is empty (so a `--help` passthrough
+  doesn't emit a confusing "processed 0, modified 0" line).
+- Total test count: 283 → 288 (five new unit tests; no fixture
+  changes).
+
+### Migration
+
+No migration needed. Adopting projects pinned to `v0.2.6` should:
+
+1. Bump the submodule pin to `v0.2.7`.
+2. Re-run `format_file.py` from the project root or as part of
+   normal use; expect one new line of output per invocation that
+   resolves to a non-empty target list
+   (`JDT pass: <N> files processed, <M> modified.`). Invocations
+   that resolve to an empty target list (e.g. `--help`
+   passthrough) are unchanged. No diff to source files
+   attributable to this change — the summary line is purely
+   cosmetic.
+
 ## [0.2.6] - 2026-05-05
 
 **Note:** Two-part fix to the multi-exception `throws`-clause
