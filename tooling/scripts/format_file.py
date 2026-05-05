@@ -239,13 +239,15 @@ def _file_signature(path: Path) -> tuple[int, str] | None:
     """Return `(size, sha256-hex)` for `path`, or `None` if missing.
 
     `None` lets a deleted file compare unequal to its prior tuple
-    signature without a special case at the call site.
+    signature without a special case at the call site. Guards both
+    `stat()` and `_sha256()` so a deletion between the two calls
+    still resolves to `None` instead of raising.
     """
     try:
         size = path.stat().st_size
+        return (size, _sha256(path))
     except FileNotFoundError:
         return None
-    return (size, _sha256(path))
 
 
 def run_jdt_pass(paths: list[Path]) -> int:
