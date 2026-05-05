@@ -8,7 +8,7 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.6] - 2026-05-04
+## [0.2.6] - 2026-05-05
 
 **Note:** Two-part fix to the multi-exception `throws`-clause
 shape produced by the orchestrator. The 0.2.5 JDT profile
