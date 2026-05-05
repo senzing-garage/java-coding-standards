@@ -47,12 +47,13 @@ tooling/
     scripts/                              — orchestrator + override scripts
         _cli.py                           — shared argparse + iter helpers
         format_file.py                    — orchestrator: runs JDT pass
-                                             then five fix_*.py overrides
+                                             then six fix_*.py overrides
         fix_allman_braces.py              — Allman brace placement override
         fix_javadoc_reflow.py             — javadoc no-orphan reflow
         fix_javadoc_inline_tags.py        — javadoc inline-tag reflow
         fix_javadoc_tags.py               — @param/@return/@throws reflow
         fix_need_braces.py                — short-circuit if rules
+        fix_throws_alignment.py           — column-aligned throws clauses
 
 mcp/
     faq_server.py                         — generic FAQ MCP server, invoked

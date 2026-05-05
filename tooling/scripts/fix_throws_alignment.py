@@ -224,6 +224,18 @@ def process_file(filepath):
         original = ''.join(lines[i:i + consumed])
         new_block = _emit_clause(indent, types, suffix)
 
+        # Preserve the original block's trailing-newline state.
+        # `_emit_clause` always emits exactly one trailing `\n`, but
+        # if the throws clause is the last line of a file that has
+        # no trailing newline, blindly appending one would silently
+        # change EOF state on the first run (and only on the first
+        # run, since subsequent runs would see the now-newline-
+        # terminated file). Strip the emitted `\n` to keep the
+        # script's output byte-for-byte equal to the input on this
+        # property.
+        if not original.endswith('\n') and new_block.endswith('\n'):
+            new_block = new_block[:-1]
+
         new_lines.append(new_block)
         if new_block != original:
             fixes += 1

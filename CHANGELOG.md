@@ -14,9 +14,9 @@ and this project adheres to
 shape produced by the orchestrator. The 0.2.5 JDT profile
 force-split every multi-exception clause onto multiple lines
 (even when the assembled clause fit within 80 chars) and
-indented continuations under `throws` rather than column-
-aligning them with the first exception. The spec example at
-`docs/java-coding-standards.md` lines 198-213 prescribes
+indented continuations under `throws` instead of
+column-aligning them with the first exception. The spec example
+at `docs/java-coding-standards.md` lines 198-213 prescribes
 neither shape: stay on one line if the clause fits; otherwise
 wrap with each subsequent exception column-aligned under the
 first.
