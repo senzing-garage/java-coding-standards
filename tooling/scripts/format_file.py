@@ -328,11 +328,12 @@ def main() -> int:
     here = Path(__file__).resolve().parent
     forwarded_args = sys.argv[1:]
 
-    # Stage 1: JDT pass against resolved paths.
-    # We resolve paths Python-side so JDT only sees real .java files
-    # (and so we honor BASELINE_EXCLUDES, --exclude, etc. before
-    # invoking the JVM). For pure --help passthrough or non-path args
-    # the path list will be empty and the JDT call is a no-op.
+    # Resolve target paths (prelude — runs before any of the three
+    # numbered stages below). Resolution happens Python-side so JDT
+    # only sees real .java files and so BASELINE_EXCLUDES / --exclude
+    # are honored before the JVM is invoked. For pure --help
+    # passthrough or non-path args the path list will be empty and
+    # every stage that branches on it becomes a no-op.
     try:
         target_paths = _resolve_target_paths(forwarded_args)
     except SystemExit as exc:
@@ -353,22 +354,24 @@ def main() -> int:
 
     failures: list[tuple[str, int]] = []
 
-    # Snapshot every target's content + atime + mtime before any pass
-    # runs. After all passes complete we use this to (a) report a
-    # net-pipeline modified count and (b) restore mtime on files
-    # whose final content matches the snapshot. Without the restore,
-    # JDT's "always re-serialize" behavior would advance every
-    # target's mtime even when the override scripts undo all of
-    # JDT's byte-level edits, churning IDE reloads and build caches
-    # on otherwise idempotent runs.
+    # Stage 1: pre-pipeline snapshot. Capture every target's content
+    # + atime + mtime before any pass runs. Stage 3 uses this to
+    # (a) report a net-pipeline modified count and (b) restore mtime
+    # on files whose final content matches the snapshot. Without the
+    # restore, JDT's "always re-serialize" behavior would advance
+    # every target's mtime even when the override scripts undo all
+    # of JDT's byte-level edits, churning IDE reloads and build
+    # caches on otherwise idempotent runs.
     pre_states: dict[Path, tuple[int, str, int, int] | None] = {}
     if target_paths:
         pre_states = {p: _file_snapshot(p) for p in target_paths}
+
+        # Stage 2 (a): JDT pass.
         rc = run_jdt_pass(target_paths)
         if rc != 0:
             failures.append(("jdt-formatter", rc))
 
-    # Stage 2: existing Python override scripts in canonical order.
+    # Stage 2 (b): the six Python override scripts in canonical order.
     for script in SCRIPT_ORDER:
         script_path = here / script
         if not script_path.is_file():

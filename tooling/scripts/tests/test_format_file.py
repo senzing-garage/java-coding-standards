@@ -290,9 +290,17 @@ def test_pipeline_summary_prints_when_jdt_fails(
     more useful than silence, and downstream tooling that greps for
     `Pipeline:` should still see it on a partial-failure run.
 
-    Patches `format_file.run_jdt_pass` to return non-zero without
-    actually invoking the JDT subprocess; runs `format_file.main`
-    in-process; asserts the summary line appears in stdout.
+    Both subprocess paths are stubbed: `format_file.run_jdt_pass` is
+    monkey-patched to return 1 without touching the file, and
+    `format_file.subprocess.run` (used to invoke the override scripts)
+    is monkey-patched to a no-op `CompletedProcess(returncode=0)`. As
+    a result, the pre- and post-pipeline snapshots are byte-identical
+    by construction — `0 modified` is the correct count for the
+    "everything was a no-op" pipeline this test simulates, not an
+    accidental match. The asserted count tightly checks both the
+    `1 files processed` (we provided one path) and the `0 modified`
+    (no stub touched it) numbers, so a future refactor that
+    accidentally changed either one would fail loudly here.
     """
     target = tmp_path / "Source.java"
     target.write_text("public class Foo {\n}\n", encoding="utf-8")
