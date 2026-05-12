@@ -25,8 +25,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         # The format scripts use only the standard library (re, pathlib,
         # sys, argparse) and PEP 604 union syntax (`str | None`) introduced
-        # in 3.10, so 3.10+ is the supported floor.
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # in 3.10, so 3.10+ is the supported floor. The new AST formatter
+        # in `format_java.py` adds runtime deps (tree-sitter,
+        # tree-sitter-java) installed by `tooling/scripts/requirements.txt`.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     timeout-minutes: 5
 
     steps:

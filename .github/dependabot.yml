@@ -23,3 +23,19 @@ updates:
     directory: "/tooling/jdt-formatter"
     schedule:
       interval: "daily"
+  - package-ecosystem: "pip"
+    assignees:
+      - "barrycaceres"
+    cooldown:
+      default-days: 21
+    directory: "/tooling/scripts"
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "pip"
+    assignees:
+      - "barrycaceres"
+    cooldown:
+      default-days: 21
+    directory: "/tooling/scripts/tests"
+    schedule:
+      interval: "daily"

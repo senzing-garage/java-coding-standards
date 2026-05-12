@@ -10,8 +10,36 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `tooling/scripts/format_java.py` — Phase 2a scaffolding for
+  the new canonical AST-based Java formatter. Loads the
+  `tree-sitter-java` grammar, exposes `parse_source` /
+  `parse_file` / `has_parse_errors`, and stubs `format_source` to
+  raise `NotImplementedError`. CLI provides `--check-grammar`,
+  `--parse FILE`, and `--version`. The emitter dispatch (the
+  actual formatting logic) lands in subsequent phases; this
+  commit verifies the grammar pin and the parser wiring only.
+- `tooling/scripts/requirements.txt` — runtime dependency pins
+  for the formatter: `tree-sitter==0.25.2` and
+  `tree-sitter-java==0.23.5`. Python 3.10+ required.
+- `tooling/scripts/tests/test_format_java.py` — smoke tests for
+  the Phase 2a scaffolding (15 tests).
+
 ### Changed
 
+- `tooling/scripts/tests/requirements.txt` — now pulls in the
+  runtime requirements via `-r ../requirements.txt` so the
+  formatter under test has its `tree-sitter` /
+  `tree-sitter-java` imports available.
+- `.github/workflows/pytest.yaml` — added Python 3.14 to the
+  CI matrix alongside 3.10–3.13.
+- `.github/dependabot.yml` — added `pip` ecosystem coverage for
+  `/tooling/scripts` and `/tooling/scripts/tests` with the
+  standard 21-day cooldown so the new `tree-sitter` and
+  `tree-sitter-java` pins receive routine update PRs through
+  the same gate as the existing Maven and GitHub Actions
+  ecosystems.
 - `docs/java-coding-standards.md` — substantially expanded and
   rewritten in preparation for the 0.3.0 architectural shift to
   the pure-Python AST-based formatter. The document now covers
@@ -30,15 +58,16 @@ and this project adheres to
 
 ### Notes
 
-This is a Phase 1 spec-doc-only edit on the
-`caceres-abandon-jdt-1` branch. No formatter source code, test
-fixtures, FAQ files, or tooling files have been added/removed in
-this entry — the spec doc is intentionally allowed to lead the
-implementation, since the design must be settled before the new
-formatter can be coded against it. FAQ refresh and adoption-
-template updates are held back until the commit that removes JDT
-and introduces `format_java.py`, so every committed snapshot on
-this branch has an internally-consistent FAQ-vs-code state.
+These entries are the in-progress work on the
+`caceres-abandon-jdt-1` branch for the 0.3.0 release. The spec
+doc (Phase 1) and the scaffolding for the new AST-based
+formatter (Phase 2a) have landed, but `format_java.py` is not
+yet wired into the format-on-save / pre-commit hook — the
+legacy JDT-plus-six-script pipeline at `format_file.py` is
+still the active entry point. FAQ refresh and adoption-template
+updates are held back until the commit that removes JDT and
+activates `format_java.py`, so every committed snapshot on this
+branch has an internally-consistent FAQ-vs-code state.
 
 ## [0.2.8] - 2026-05-05
 
