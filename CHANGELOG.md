@@ -8,6 +8,38 @@ The format is based on
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `docs/java-coding-standards.md` — substantially expanded and
+  rewritten in preparation for the 0.3.0 architectural shift to
+  the pure-Python AST-based formatter. The document now covers
+  all 25 spec sections (A1–A5 introductory, B1–B12 modern-syntax
+  constructs, C1–C8 cross-cutting clarifications), promotes the
+  Indentation section to a top-level rule, adds the explicit
+  "4 spaces, no tab characters" directive, adds a Trailing
+  Whitespace / End-of-File Newline section, and revises the
+  Tooling section to describe `tooling/scripts/format_java.py`
+  (the upcoming tree-sitter-java AST formatter) as the canonical
+  emitter invoked via the `format_file.py` thin wrapper. The
+  legacy "Claude Prompt for Java Formatting" section and the
+  per-script "Scripted Formatting Notes" section are removed —
+  they described the JDT-pipeline-plus-six-override-scripts
+  architecture that 0.3.0 supersedes.
+
+### Notes
+
+This is a Phase 1 spec-doc-only edit on the
+`caceres-abandon-jdt-1` branch. No formatter source code, test
+fixtures, FAQ files, or tooling files have been added/removed in
+this entry — the spec doc is intentionally allowed to lead the
+implementation, since the design must be settled before the new
+formatter can be coded against it. FAQ refresh and adoption-
+template updates are held back until the commit that removes JDT
+and introduces `format_java.py`, so every committed snapshot on
+this branch has an internally-consistent FAQ-vs-code state.
+
 ## [0.2.8] - 2026-05-05
 
 **Note:** Net-pipeline summary line + mtime preservation on
