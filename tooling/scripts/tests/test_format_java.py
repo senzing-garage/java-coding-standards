@@ -1020,6 +1020,158 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    # --- Loop statements (Phase 2j) ---
+
+    def test_for_statement_classic(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"for (int i = 0; i < n; i++) { x(); } } }"
+        )
+        # Same-line-brace control-flow form; the
+        # `local_variable_declaration` init carries its own
+        # trailing `;` from the grammar.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        for (int i = 0; i < n; i++) {\n"
+            b"            x();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_for_statement_empty_header(self) -> None:
+        # `for (;;)` — no init, no condition, no update.
+        out = format_java.format_source(
+            b"class A { void m() { for (;;) {} } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        for (;;) {\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_while_statement(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { while (x) { y(); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        while (x) {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_do_while_statement_cuddled_while(self) -> None:
+        # Per "Closing Brace Rules", `while` cuddles with the
+        # closing `}` of the body block: `} while (cond);`.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"do { x(); } while (cond); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        do {\n"
+            b"            x();\n"
+            b"        } while (cond);\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_enhanced_for_statement(self) -> None:
+        # For-each form: `for (TYPE NAME : VALUE) { ... }`.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"for (int x : list) { use(x); } } }"
+        )
+        # Single space around the `:` separator.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        for (int x : list) {\n"
+            b"            use(x);\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_enhanced_for_with_named_type(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"for (String s : items) { print(s); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        for (String s : items) {\n"
+            b"            print(s);\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_for_statement_bare_expression_init(self) -> None:
+        # `i = 0` as init (no `int` keyword) — the bare-
+        # expression init branch of `_emit_for_statement`
+        # (different from the local_variable_declaration
+        # init branch tested above).
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"for (i = 0; i < n; i++) {} } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        for (i = 0; i < n; i++) {\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_for_multi_init_not_yet_supported(self) -> None:
+        # Comma-separated init expressions
+        # (`for (i = 0, j = 0; ...)`) — the grammar surfaces
+        # them as multiple children sharing the `init` field
+        # name; the naive `child_by_field_name` lookup would
+        # silently drop all but the first. Refuse loudly.
+        with pytest.raises(
+            NotImplementedError, match="comma-separated init"
+        ):
+            format_java.format_source(
+                b"class A { void m() { "
+                b"for (i = 0, j = 0; i < n; i++) {} } }"
+            )
+
+    def test_for_multi_update_not_yet_supported(self) -> None:
+        with pytest.raises(
+            NotImplementedError, match="comma-separated update"
+        ):
+            format_java.format_source(
+                b"class A { void m() { "
+                b"for (int i = 0; i < n; i++, j++) {} } }"
+            )
+
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
     ) -> None:
@@ -1279,12 +1431,11 @@ class TestEmitNodeDispatch:
     """Verify the dispatch helper's error path."""
 
     def test_unknown_node_type_raises(self) -> None:
-        # for_statement is intentionally not yet registered;
-        # remaining control-flow emitters land in subsequent
-        # phases.
-        src = b"class A { void m() { for (;;) {} } }"
+        # try_statement is intentionally not yet registered;
+        # try/catch/finally lands in its own phase.
+        src = b"class A { void m() { try {} catch (Exception e) {} } }"
         tree = format_java.parse_source(src)
-        stmt = _find_first(tree.root_node, "for_statement")
+        stmt = _find_first(tree.root_node, "try_statement")
         assert stmt is not None
         emitter = format_java.Emitter()
         with pytest.raises(

@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2i — if/else control flow):
+Status (Phase 2j — loop statements):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -33,11 +33,16 @@ Status (Phase 2i — if/else control flow):
       `field_declaration` — both have identical grammar
       shape), `assignment_expression` (with space-space
       around any assignment operator), `block` (same-line
-      brace for control-flow constructs), and `if_statement`
+      brace for control-flow constructs), `if_statement`
       (with cuddled `} else {` and else-if chains;
-      brace-less Tier 1 short-circuit form refuses).
-      Remaining control-flow statements (`for`, `while`,
-      `do`, `try`, `switch`) refuse until subsequent phases.
+      brace-less Tier 1 short-circuit form refuses),
+      `for_statement` (classic three-part header and empty
+      `for (;;)`), `enhanced_for_statement` (for-each form
+      with `:` separator), `while_statement`, and
+      `do_statement` (with cuddled `} while (cond);`).
+      Remaining control-flow constructs (`try`, `switch`,
+      `synchronized`, `throw`, `break`, `continue`,
+      labeled statements) refuse until subsequent phases.
     - Expression emitters cover `binary_expression`,
       `unary_expression`, `update_expression`,
       `parenthesized_expression`, `field_access`,
@@ -822,6 +827,185 @@ def _emit_if_statement(
             )
 
 
+def _emit_for_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `for (init; cond; update) { ... }`.
+
+    Per the "Brace Placement / Same-Line Style" spec section,
+    the opening `{` for the for-block sits on the same line as
+    `for (...)`. Per the "Whitespace and Operator Spacing"
+    spec row "After semicolons in for headers: Exactly one
+    space", each semicolon separator is followed by exactly
+    one space IF the following component is non-empty;
+    standalone `for (;;)` (no init / condition / update) emits
+    with no interior spaces.
+
+    Grammar fields: optional `init` (either a
+    `local_variable_declaration` which carries its own
+    trailing `;`, or a bare expression), optional `condition`,
+    optional `update`, required `body`.
+
+    Refuses brace-less bodies — those depend on the
+    short-circuit-conditionals rules.
+    """
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "block":
+        raise NotImplementedError(
+            "for_statement with brace-less body is not yet "
+            "supported; the short-circuit-conditionals phase "
+            "will handle the brace-less form."
+        )
+
+    # tree-sitter-java surfaces comma-separated init or update
+    # expressions as multiple children sharing the same field
+    # name. `child_by_field_name(...)` would return only the
+    # first, which would silently drop the others. Refuse the
+    # multi-form for now — proper multi-init/multi-update
+    # support lands with the wrap-priority phase that has the
+    # column-aware logic for long headers.
+    init_count = 0
+    update_count = 0
+    for index in range(len(node.children)):
+        fn = node.field_name_for_child(index)
+        if fn == "init":
+            init_count += 1
+        elif fn == "update":
+            update_count += 1
+    if init_count > 1:
+        raise NotImplementedError(
+            "for_statement with comma-separated init expressions "
+            f"({init_count} of them, e.g. `for (i = 0, j = 0; ...`) "
+            "is not yet supported; the multi-init form lands with "
+            "the wrap-priority phase."
+        )
+    if update_count > 1:
+        raise NotImplementedError(
+            "for_statement with comma-separated update expressions "
+            f"({update_count} of them, e.g. `for (...; ...; i++, j++)`) "
+            "is not yet supported; the multi-update form lands "
+            "with the wrap-priority phase."
+        )
+
+    init = node.child_by_field_name("init")
+    condition = node.child_by_field_name("condition")
+    update = node.child_by_field_name("update")
+
+    emitter.write("for (")
+    # `local_variable_declaration` includes its own trailing
+    # `;`; bare-expression and missing-init paths need a
+    # manual `;`.
+    if init is None:
+        emitter.write(";")
+    elif init.type == "local_variable_declaration":
+        _emit_node(emitter, source, init)
+    else:
+        _emit_node(emitter, source, init)
+        emitter.write(";")
+
+    if condition is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, condition)
+    emitter.write(";")
+
+    if update is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, update)
+    emitter.write(") ")
+    _emit_node(emitter, source, body)
+
+
+def _emit_enhanced_for_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `for (TYPE NAME : VALUE) { ... }` (for-each form).
+
+    Grammar fields: `type`, `name`, `value`, `body`. The `:`
+    in the for-each header gets a single space on each side
+    per "Whitespace and Operator Spacing" — same convention
+    as binary operators and as the for-statement header's `;`
+    separator.
+
+    Refuses brace-less bodies.
+    """
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "block":
+        raise NotImplementedError(
+            "enhanced_for_statement with brace-less body is "
+            "not yet supported."
+        )
+
+    type_node = node.child_by_field_name("type")
+    name_node = node.child_by_field_name("name")
+    value_node = node.child_by_field_name("value")
+    if type_node is None or name_node is None or value_node is None:
+        raise NotImplementedError(
+            "enhanced_for_statement missing 'type', 'name', or "
+            "'value' — grammar shape unexpected."
+        )
+
+    emitter.write("for (")
+    _emit_node(emitter, source, type_node)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
+    emitter.write(" : ")
+    _emit_node(emitter, source, value_node)
+    emitter.write(") ")
+    _emit_node(emitter, source, body)
+
+
+def _emit_while_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `while (cond) { ... }`.
+
+    Same-line-brace control-flow form. Grammar fields:
+    `condition` (parenthesized_expression) and `body` (block).
+    """
+    condition = node.child_by_field_name("condition")
+    body = node.child_by_field_name("body")
+    if condition is None or body is None or body.type != "block":
+        raise NotImplementedError(
+            "while_statement with missing fields or brace-less "
+            "body is not yet supported."
+        )
+    emitter.write("while ")
+    _emit_node(emitter, source, condition)
+    emitter.write(" ")
+    _emit_node(emitter, source, body)
+
+
+def _emit_do_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `do { ... } while (cond);`.
+
+    Per the "Closing Brace Rules" spec section, `while`
+    cuddles with the closing `}` of the body block:
+    `} while (cond);`. Grammar fields: `body` (block),
+    `condition` (parenthesized_expression).
+    """
+    body = node.child_by_field_name("body")
+    condition = node.child_by_field_name("condition")
+    if body is None or body.type != "block":
+        raise NotImplementedError(
+            "do_statement with missing body or brace-less body "
+            "is not yet supported."
+        )
+    if condition is None:
+        raise NotImplementedError(
+            "do_statement missing 'condition' — grammar shape "
+            "unexpected."
+        )
+    emitter.write("do ")
+    _emit_node(emitter, source, body)
+    # The block emitter ends mid-line at `}`; we continue on
+    # the same line with cuddled ` while (cond);`.
+    emitter.write(" while ")
+    _emit_node(emitter, source, condition)
+    emitter.write(";")
+
+
 def _emit_return_statement(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1297,6 +1481,10 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "expression_statement": _emit_expression_statement,
     "block": _emit_block,
     "if_statement": _emit_if_statement,
+    "for_statement": _emit_for_statement,
+    "enhanced_for_statement": _emit_enhanced_for_statement,
+    "while_statement": _emit_while_statement,
+    "do_statement": _emit_do_statement,
     # --- Expression emitters ---
     "binary_expression": _emit_binary_expression,
     "unary_expression": _emit_unary_expression,

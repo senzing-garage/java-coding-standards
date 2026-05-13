@@ -80,6 +80,31 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2j loop statements: `_emit_for_statement` (classic
+  three-part header `for (init; cond; update) BODY` with
+  single space after each non-empty header separator per the
+  "Whitespace and Operator Spacing" spec section's
+  "After semicolons in for headers" row; empty `for (;;)`
+  case handled with no interior spaces).
+  `_emit_enhanced_for_statement` covers the for-each form
+  `for (TYPE NAME : VALUE) BODY` with single space on each
+  side of `:`. `_emit_while_statement` emits
+  `while (cond) BODY`. `_emit_do_statement` emits
+  `do BODY while (cond);` with the cuddled `} while` per
+  "Closing Brace Rules". All four use the same-line-brace
+  control-flow form via the existing `_emit_block` emitter.
+  After Phase 2j the formatter handles realistic loop-
+  bearing methods like
+  `for (int i = 0; i < n; i++) { use(i); }` and
+  `for (String s : items) { print(s); }`. Refusals: all
+  four loop emitters refuse brace-less bodies (those land
+  with the short-circuit-conditionals phase); the classic
+  for-statement also refuses comma-separated init or
+  update expressions (`for (i = 0, j = 0; ...; i++, j++)`)
+  since the grammar surfaces those as multiple children
+  sharing the same field name and `child_by_field_name`
+  would silently drop all but the first — multi-init /
+  multi-update support lands with the wrap-priority phase.
 - Phase 2i if/else control flow: `_emit_block` for the
   same-line-brace control-flow block shape (per the
   "Brace Placement / Same-Line Style" spec section);
@@ -200,10 +225,15 @@ and this project adheres to
   local variable declarations (single, multiple, with
   modifier), the if-statement-not-yet-registered (now
   lifted; retargeted to for-statement) dispatcher fail-mode,
-  and (Phase 2i) if/else tests covering simple if-with-block,
+  (Phase 2i) if/else tests covering simple if-with-block,
   if-else, else-if chain, compound boolean condition, empty
-  consequence block, and the brace-less Tier 1 refusal
-  (121 tests total).
+  consequence block, and the brace-less Tier 1 refusal, and
+  (Phase 2j) loop tests covering classic for with LVD init,
+  bare-expression init, empty `for (;;)`, while loop,
+  do-while with cuddled `} while (cond);`, enhanced-for
+  with primitive type, enhanced-for with named type,
+  and refusals for multi-init and multi-update comma-
+  separated forms (130 tests total).
 
 ### Changed
 
@@ -248,9 +278,10 @@ invocation, cast, instanceof), Phase 2g (method declarations
 with empty bodies, formal parameters, array-type parameter
 types), Phase 2h (statement emitters in method bodies —
 return / expression-statement / local-variable-declaration /
-assignment-expression), and Phase 2i (if/else control flow —
-block emitter, if-with-block, cuddled else, else-if chains)
-have landed, but
+assignment-expression), Phase 2i (if/else control flow —
+block emitter, if-with-block, cuddled else, else-if chains),
+and Phase 2j (loop statements — classic for, enhanced-for,
+while, do-while with cuddled `} while`) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh
