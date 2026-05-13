@@ -319,6 +319,149 @@ class TestFormatSourceSubset:
                 b"class A { @Deprecated public int x; }"
             )
 
+    # --- Expression-form initializers (Phase 2e) ---
+
+    def test_field_with_binary_expression_initializer(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = 1 + 2; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = 1 + 2;\n"
+            b"}\n"
+        )
+
+    def test_binary_operator_spacing_preserved(self) -> None:
+        # Spec: single space around binary operators. Test
+        # several operator families to verify the spacing rule
+        # is applied uniformly.
+        out = format_java.format_source(
+            b"class A { int x = a + b * c - d / e % f; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = a + b * c - d / e % f;\n"
+            b"}\n"
+        )
+
+    def test_comparison_and_boolean_operators(self) -> None:
+        out = format_java.format_source(
+            b"class A { boolean b = x == 1 && y != 2; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    boolean b = x == 1 && y != 2;\n"
+            b"}\n"
+        )
+
+    def test_shift_and_bitwise_operators(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = a << 2 | b >> 1; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = a << 2 | b >> 1;\n"
+            b"}\n"
+        )
+
+    def test_parenthesized_expression(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = (1 + 2) * 3; }"
+        )
+        # Spec: no space inside parens; binary operator
+        # spacing applied recursively.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = (1 + 2) * 3;\n"
+            b"}\n"
+        )
+
+    def test_unary_expression_negation(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = -42; }"
+        )
+        # Spec: no space between unary operator and operand.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = -42;\n"
+            b"}\n"
+        )
+
+    def test_unary_expression_boolean_not(self) -> None:
+        out = format_java.format_source(
+            b"class A { boolean b = !flag; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    boolean b = !flag;\n"
+            b"}\n"
+        )
+
+    def test_unary_expression_bitwise_not(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = ~mask; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = ~mask;\n"
+            b"}\n"
+        )
+
+    def test_update_expression_prefix(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = ++counter; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = ++counter;\n"
+            b"}\n"
+        )
+
+    def test_update_expression_postfix(self) -> None:
+        # Symmetry check for the iteration approach in
+        # `_emit_update_expression` — handles postfix the same
+        # way as prefix.
+        out = format_java.format_source(
+            b"class A { int x = counter++; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = counter++;\n"
+            b"}\n"
+        )
+
+    def test_nested_parens_and_unary(self) -> None:
+        out = format_java.format_source(
+            b"class A { boolean b = !((a == 1) || (b == 2)); }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    boolean b = !((a == 1) || (b == 2));\n"
+            b"}\n"
+        )
+
+    def test_ternary_expression_not_yet_supported(self) -> None:
+        # Ternary expressions have their own multi-tier wrapping
+        # rules in the "Line Continuation / Ternary Operator"
+        # spec section and land in a later phase.
+        with pytest.raises(
+            NotImplementedError, match="ternary_expression"
+        ):
+            format_java.format_source(
+                b"class A { int x = a ? b : c; }"
+            )
+
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
     ) -> None:

@@ -67,6 +67,19 @@ and this project adheres to
   `annotation`, etc.) remain refused — they have their own
   per-annotation wrapping rules from the "Annotations" spec
   section and land in a later phase.
+- Phase 2e expression emitters: `binary_expression` (space
+  around the operator per "Whitespace and Operator Spacing"
+  spec section's binary-operator row), `unary_expression`
+  (no space between operator and operand), `update_expression`
+  (prefix and postfix `++` / `--` forms, no space), and
+  `parenthesized_expression` (no spaces inside parens).
+  Field-initializer expressions now support arithmetic,
+  comparison, boolean, shift, and bitwise binary operators;
+  unary negation / `!` / `~`; pre- and post-increment /
+  decrement; and arbitrary nesting via parentheses. The
+  ternary operator (`condition ? a : b`) still refuses — it
+  has its own multi-tier wrapping rules and lands in a later
+  phase.
 - `tooling/scripts/requirements.txt` — runtime dependency pins
   for the formatter: `tree-sitter==0.25.2` and
   `tree-sitter-java==0.23.5`. Python 3.10+ required.
@@ -74,9 +87,13 @@ and this project adheres to
   the Phase 2a scaffolding (15 tests), extended in Phase 2b with
   Emitter and leaf-dispatch tests, and in Phase 2c with
   format_source-end-to-end tests, idempotency tests, and
-  unsupported-construct rejection tests, and (Phase 2d)
+  unsupported-construct rejection tests, (Phase 2d)
   modifier-emission tests including modifier-order preservation
-  and annotation refusal (73 tests total).
+  and annotation refusal, and (Phase 2e) expression-form
+  initializer tests covering arithmetic / comparison / boolean /
+  shift / bitwise binary operators, unary `-` / `!` / `~`,
+  pre- and post-increment, parenthesization, and ternary
+  refusal (85 tests total).
 
 ### Changed
 
@@ -111,18 +128,18 @@ and this project adheres to
 ### Notes
 
 These entries are the in-progress work on the
-`caceres-abandon-jdt-1` branch for the 0.3.0 release. The spec
-doc (Phase 1), the formatter scaffolding (Phase 2a), the
-token-stream emission layer (Phase 2b), the first structural
-emitters covering minimal class declarations (Phase 2c), and
-the keyword-modifier support on classes and fields (Phase 2d)
-have landed, but `format_java.py` is not yet wired into the
-format-on-save / pre-commit hook — the legacy JDT-plus-six-
-script pipeline at `format_file.py` is still the active entry
-point. FAQ refresh and adoption-template updates are held back
-until the commit that removes JDT and activates
-`format_java.py`, so every committed snapshot on this branch
-has an internally-consistent FAQ-vs-code state.
+`caceres-abandon-jdt-1` branch for the 0.3.0 release. Phase 1
+(spec doc), Phase 2a (scaffolding), Phase 2b (token-stream
+emission), Phase 2c (minimal structural emitters), Phase 2d
+(keyword modifiers), and Phase 2e (expression emitters —
+binary / unary / update / parenthesized) have landed, but
+`format_java.py` is not yet wired into the format-on-save /
+pre-commit hook — the legacy JDT-plus-six-script pipeline at
+`format_file.py` is still the active entry point. FAQ refresh
+and adoption-template updates are held back until the commit
+that removes JDT and activates `format_java.py`, so every
+committed snapshot on this branch has an internally-consistent
+FAQ-vs-code state.
 
 ## [0.2.8] - 2026-05-05
 

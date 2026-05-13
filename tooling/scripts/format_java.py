@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2c — minimal class declarations):
+Status (Phase 2e — expression emitters):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -21,15 +21,23 @@ Status (Phase 2c — minimal class declarations):
       (no type parameters / extends-implements yet),
       `class_body`, `field_declaration`, `variable_declarator`,
       and `modifiers` (keyword-only — annotations refuse).
+    - Expression emitters cover `binary_expression`,
+      `unary_expression`, `update_expression`, and
+      `parenthesized_expression`. Operator spacing follows the
+      "Whitespace and Operator Spacing" spec section
+      (space-space around binary operators; no space around
+      unary / update operators; no space inside parens).
     - `format_source()` is functional for the supported subset:
       a single top-level class with optional keyword modifiers
       (no annotations), no type parameters, no extends /
       implements, whose body contains primitive- or named-typed
       field declarations with optional keyword modifiers and
-      optional literal initializers. Anything outside the
-      subset raises `NotImplementedError` from the dispatcher
-      (the explicit "not yet supported" signal during
-      incremental rollout).
+      optional initializers (literal values OR
+      binary / unary / update / parenthesized expressions over
+      literals and identifiers). Anything outside the subset
+      raises `NotImplementedError` from the dispatcher (the
+      explicit "not yet supported" signal during incremental
+      rollout).
     - The end-user entry point `format_file.py` still routes
       through the legacy JDT-plus-six-script pipeline; activation
       of this module as the active formatter comes in the phase
@@ -487,6 +495,106 @@ def _emit_field_declaration(
     emitter.write(";")
 
 
+def _emit_binary_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `LEFT OP RIGHT` with a single space on each side of OP.
+
+    Per the "Whitespace and Operator Spacing" spec section, every
+    binary operator gets exactly one space on each side. The
+    grammar exposes the binary operator as an anonymous keyword
+    child between the two named operand children. Supported
+    operators are whatever tree-sitter-java exposes as a
+    `binary_expression`: `+`, `-`, `*`, `/`, `%`, `==`, `!=`,
+    `<`, `>`, `<=`, `>=`, `&`, `|`, `^`, `<<`, `>>`, `>>>`,
+    `&&`, `||`. `instanceof` is its own `instanceof_expression`
+    node type in the grammar and is not handled here.
+    """
+    children = node.children
+    if len(children) != 3:
+        raise NotImplementedError(
+            f"binary_expression with {len(children)} children — "
+            "expected exactly 3 (left, operator, right)."
+        )
+    left, op, right = children
+    _emit_node(emitter, source, left)
+    emitter.write(" ")
+    emitter.write(op.type)
+    emitter.write(" ")
+    _emit_node(emitter, source, right)
+
+
+def _emit_unary_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `OP OPERAND` with no space between operator and operand.
+
+    Per the "Whitespace and Operator Spacing" spec section, unary
+    operators (`!`, `-`, `+`, `~`) are emitted with no space
+    between the operator and the operand. The grammar exposes
+    `unary_expression` with two children: the anonymous operator
+    keyword followed by the named operand.
+    """
+    children = node.children
+    if len(children) != 2:
+        raise NotImplementedError(
+            f"unary_expression with {len(children)} children — "
+            "expected exactly 2 (operator, operand)."
+        )
+    op, operand = children
+    emitter.write(op.type)
+    _emit_node(emitter, source, operand)
+
+
+def _emit_update_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `++X` / `X++` / `--X` / `X--` with no space.
+
+    The grammar exposes both prefix and postfix forms as
+    `update_expression`. The order of children is:
+        prefix:  [`++` | `--`, operand]
+        postfix: [operand, `++` | `--`]
+    No space between operator and operand in either form
+    (per the "Whitespace and Operator Spacing" spec).
+    """
+    children = node.children
+    if len(children) != 2:
+        raise NotImplementedError(
+            f"update_expression with {len(children)} children — "
+            "expected exactly 2 (operator + operand)."
+        )
+    for child in children:
+        if child.is_named:
+            _emit_node(emitter, source, child)
+        else:
+            emitter.write(child.type)
+
+
+def _emit_parenthesized_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `(EXPR)` — no spaces inside the parens.
+
+    Per the "Whitespace and Operator Spacing" spec row "Inside
+    parentheses: No leading/trailing space." The grammar exposes
+    three children: `(`, the inner named expression, and `)`.
+    """
+    inner: Node | None = None
+    for child in node.children:
+        if child.is_named:
+            inner = child
+            break
+    if inner is None:
+        raise NotImplementedError(
+            "parenthesized_expression has no named inner child — "
+            "grammar shape unexpected."
+        )
+    emitter.write("(")
+    _emit_node(emitter, source, inner)
+    emitter.write(")")
+
+
 def _emit_modifiers(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -598,6 +706,11 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "field_declaration": _emit_field_declaration,
     "variable_declarator": _emit_variable_declarator,
     "modifiers": _emit_modifiers,
+    # --- Expression emitters ---
+    "binary_expression": _emit_binary_expression,
+    "unary_expression": _emit_unary_expression,
+    "update_expression": _emit_update_expression,
+    "parenthesized_expression": _emit_parenthesized_expression,
 }
 
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
@@ -618,11 +731,14 @@ def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
 def format_source(source: bytes) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Phase 2c: handles a top-level class declaration with no
-    modifiers / type parameters / extends / implements, whose body
-    contains primitive-typed or named-typed field declarations
-    with optional literal initializers. Anything outside that
-    subset raises `NotImplementedError` from the dispatcher (the
+    Currently supported subset: a single top-level class with
+    optional keyword modifiers (no annotations yet), no type
+    parameters, no extends / implements / permits, whose body
+    contains primitive- or named-typed field declarations with
+    optional keyword modifiers and optional initializers (literal
+    values or binary / unary / update / parenthesized expressions
+    over literals and identifiers). Anything outside that subset
+    raises `NotImplementedError` from the dispatcher (the
     explicit "this construct isn't supported yet" signal).
 
     The `format_file.py` orchestrator still routes end-user
