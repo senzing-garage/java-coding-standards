@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2g — method declarations with empty bodies):
+Status (Phase 2h — method bodies with simple statements):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -21,11 +21,20 @@ Status (Phase 2g — method declarations with empty bodies):
       (no type parameters / extends-implements yet),
       `class_body`, `field_declaration`, `variable_declarator`,
       `modifiers` (keyword-only — annotations refuse),
-      `method_declaration` (empty body only — statements
-      land in a later phase; throws clauses, type parameters,
-      and abstract / interface methods refuse),
-      `formal_parameters` (single-line), `formal_parameter`,
-      and `array_type` (for `Type[]` parameter types).
+      `method_declaration` (now with statement bodies; throws
+      clauses, type parameters, and abstract / interface
+      methods still refuse), `formal_parameters` (single-line),
+      `formal_parameter`, and `array_type` (for `Type[]`
+      parameter types).
+    - Statement emitters cover `return_statement` (with or
+      without a value), `expression_statement` (assignment-as-
+      statement, method-call statement, update statement),
+      `local_variable_declaration` (shared emitter with
+      `field_declaration` — both have identical grammar
+      shape), and `assignment_expression` (with space-space
+      around any assignment operator: `=`, `+=`, `-=`, etc.).
+      Control-flow statements (`if`, `for`, `while`, `do`,
+      `try`, `switch`) refuse until the control-flow phase.
     - Expression emitters cover `binary_expression`,
       `unary_expression`, `update_expression`,
       `parenthesized_expression`, `field_access`,
@@ -609,12 +618,12 @@ def _emit_method_declaration(
 ) -> None:
     """Emit a method declaration with Allman brace placement.
 
-    Phase 2g handles the simplest method form:
-    `[modifiers] TYPE NAME(formal_parameters) { }` — no throws
-    clause, empty body (no statements). The signature is on
-    one line, opening `{` on its own line at the same indent as
-    the declaration (Allman per the "Brace Placement" spec
-    section), closing `}` on its own line at the same indent.
+    Handles `[modifiers] TYPE NAME(formal_parameters)` on the
+    signature line, Allman opening `{` on its own line at the
+    same indent as the declaration (per the "Brace Placement /
+    Allman Style" spec section), the body's statements
+    indented one level deeper, and the closing `}` on its own
+    line at the same indent as the declaration.
 
     Refuses:
         - `throws` clauses (later phase: throws-clause wrapping
@@ -623,10 +632,13 @@ def _emit_method_declaration(
         - Methods with no body field (abstract / interface
           methods) — interface bodies and abstract methods land
           in later phases
-        - Methods with non-empty bodies (Phase 2h adds statement
-          emitters)
         - Methods carrying type parameters
           (`<T> void m()`) — generic-types phase
+
+    Statement emission inside the body dispatches per the usual
+    `_emit_node` rules; statement node types that aren't yet
+    registered raise the standard "no emitter registered"
+    NotImplementedError.
 
     Caller contract: the emitter ends mid-line at the closing
     `}` (column = current indent + 1). The caller appends the
@@ -681,20 +693,107 @@ def _emit_method_declaration(
     emitter.write("{")
     emitter.newline()
 
-    # Phase 2g supports empty method bodies only. Refuse if the
-    # block has any statement children — those are handled by
-    # the statement-emitter phase that follows.
     statements = list(body.named_children)
     if statements:
-        raise NotImplementedError(
-            "method_declaration with non-empty body "
-            f"({statements[0].type!r}) is not yet supported; "
-            "statement emitters land in a later phase."
-        )
+        emitter.push_indent()
+        for stmt in statements:
+            emitter.write_indent()
+            _emit_node(emitter, source, stmt)
+            emitter.newline()
+        emitter.pop_indent()
 
     emitter.write_indent()
     emitter.write("}")
     # Caller appends the trailing newline.
+
+
+def _emit_return_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `return;` or `return EXPR;`.
+
+    Grammar: `return` anonymous keyword, optional named
+    expression child, anonymous `;`. The optional expression
+    (when present) is the only named child; we look for it by
+    iteration rather than a field accessor (the grammar
+    doesn't expose a `value` field for it).
+    """
+    value: Node | None = None
+    for child in node.children:
+        if child.is_named:
+            value = child
+            break
+    if value is None:
+        emitter.write("return;")
+    else:
+        emitter.write("return ")
+        _emit_node(emitter, source, value)
+        emitter.write(";")
+
+
+def _emit_expression_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `EXPR;` where EXPR is the single named child.
+
+    Used for assignment-as-statement (`x = 1;`), method-call
+    statement (`compute();`), update statements (`++x;`), etc.
+    The current grammar version exposes exactly one named
+    child for this node type; we look it up by iteration
+    rather than a field accessor (the grammar does not expose
+    a field name for it).
+    """
+    expr: Node | None = None
+    for child in node.children:
+        if child.is_named:
+            expr = child
+            break
+    if expr is None:
+        raise NotImplementedError(
+            "expression_statement has no named child — grammar "
+            "shape unexpected."
+        )
+    _emit_node(emitter, source, expr)
+    emitter.write(";")
+
+
+def _emit_assignment_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `LHS OP RHS` with space-space around the operator.
+
+    Per the "Whitespace and Operator Spacing" spec section's
+    assignment-operator row, every assignment operator
+    (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`,
+    `<<=`, `>>=`, `>>>=`) gets exactly one space on each side.
+    Grammar fields: `left`, `operator`, `right`.
+    """
+    left_node = node.child_by_field_name("left")
+    right_node = node.child_by_field_name("right")
+    if left_node is None or right_node is None:
+        raise NotImplementedError(
+            "assignment_expression missing 'left' or 'right' — "
+            "grammar shape unexpected."
+        )
+    # The operator is exposed as an anonymous child carrying
+    # the operator text. The grammar names this child via the
+    # `operator` field — recover it via field_name_for_child
+    # to support every assignment-operator variant uniformly.
+    op_text: str | None = None
+    for index, child in enumerate(node.children):
+        if node.field_name_for_child(index) == "operator":
+            op_text = child.type
+            break
+    if op_text is None:
+        raise NotImplementedError(
+            "assignment_expression missing operator — grammar "
+            "shape unexpected."
+        )
+    _emit_node(emitter, source, left_node)
+    emitter.write(" ")
+    emitter.write(op_text)
+    emitter.write(" ")
+    _emit_node(emitter, source, right_node)
 
 
 def _emit_formal_parameters(
@@ -1075,6 +1174,12 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "formal_parameters": _emit_formal_parameters,
     "formal_parameter": _emit_formal_parameter,
     "array_type": _emit_array_type,
+    # `local_variable_declaration` has the same grammar shape
+    # as `field_declaration` (optional modifiers + type +
+    # variable_declarator(s) + `;`); share the emitter.
+    "local_variable_declaration": _emit_field_declaration,
+    "return_statement": _emit_return_statement,
+    "expression_statement": _emit_expression_statement,
     # --- Expression emitters ---
     "binary_expression": _emit_binary_expression,
     "unary_expression": _emit_unary_expression,
@@ -1085,6 +1190,7 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "cast_expression": _emit_cast_expression,
     "method_invocation": _emit_method_invocation,
     "argument_list": _emit_argument_list,
+    "assignment_expression": _emit_assignment_expression,
 }
 
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
@@ -1110,21 +1216,30 @@ def format_source(source: bytes) -> bytes:
     parameters, no extends / implements / permits, whose body
     contains primitive- or named-typed field declarations with
     optional keyword modifiers and optional initializers, or
-    method declarations with empty bodies. Supported
-    initializer shapes include literal values, identifiers,
-    binary / unary / update / parenthesized expressions, field
-    accesses, casts (no intersection types yet), non-pattern
-    instanceof, and single-line method invocations (no
-    explicit type witness, no wrap-priority logic yet). Method
-    declarations may carry keyword modifiers, primitive- or
-    named-typed return types (including `Type[]` arrays via
+    method declarations whose bodies are zero-or-more simple
+    statements. Supported initializer / expression shapes
+    include literal values, identifiers, binary / unary /
+    update / parenthesized expressions, field accesses, casts
+    (no intersection types yet), non-pattern instanceof, and
+    single-line method invocations (no explicit type witness,
+    no wrap-priority logic yet). Supported statement shapes
+    include `return_statement` (with or without a value),
+    `expression_statement` (assignment-as-statement, method-
+    call statement, update statement), `local_variable_-
+    declaration` (with optional keyword modifiers), and
+    `assignment_expression` (with space-space around any
+    assignment operator).
+
+    Method declarations may carry keyword modifiers, primitive-
+    or named-typed return types (including `Type[]` arrays via
     `array_type`), and zero-or-more single-line formal
-    parameters; throws clauses, type parameters, abstract /
-    interface methods, parameter annotations, and method
-    bodies containing statements are NOT yet supported.
-    Anything outside that subset raises
-    `NotImplementedError` from the dispatcher (the explicit
-    "this construct isn't supported yet" signal).
+    parameters. Throws clauses, type parameters, abstract /
+    interface methods, parameter annotations, and control-flow
+    statements (`if`, `for`, `while`, `do`, `try`, `switch`)
+    are NOT yet supported. Anything outside the supported
+    subset raises `NotImplementedError` from the dispatcher
+    (the explicit "this construct isn't supported yet"
+    signal).
 
     The `format_file.py` orchestrator still routes end-user
     formatting through the legacy JDT-plus-six-script pipeline;

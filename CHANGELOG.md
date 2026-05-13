@@ -80,6 +80,30 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2h statement emitters in method bodies:
+  `_emit_method_declaration` extended to emit body statements
+  with proper +4 indent and one-statement-per-line layout.
+  New emitters: `_emit_return_statement` (handles both
+  `return;` and `return EXPR;`), `_emit_expression_statement`
+  (for assignment-as-statement, method-call statement, update
+  statement), and `_emit_assignment_expression` (space-space
+  around any assignment operator — `=`, `+=`, `-=`, `*=`,
+  `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=` — per
+  the "Whitespace and Operator Spacing" spec section's
+  assignment-operator row, with the operator text recovered
+  from the `operator` field). `local_variable_declaration`
+  shares the existing `_emit_field_declaration` emitter
+  since the two have identical grammar shapes (modifiers +
+  type + variable_declarator(s) + `;`). After Phase 2h the
+  formatter accepts realistic method bodies like
+  `int compute() { int r = a + b; return r; }`. Refusals:
+  control-flow statements (`if`, `for`, `while`, `do`, `try`,
+  `switch`) — each will land with its own phase carrying the
+  same-line-brace and condition-wrapping rules from the spec's
+  "Brace Placement / Same-Line Style" and per-construct
+  sections. The legacy
+  `test_method_with_body_not_yet_supported` test was removed
+  (promoted to the new statement tests).
 - Phase 2g method declarations with empty bodies:
   `_emit_method_declaration` emits the signature line in
   `[modifiers] TYPE NAME(formal_parameters)` shape and places
@@ -151,8 +175,14 @@ and this project adheres to
   declaration tests covering empty body, modifiers,
   parameter list (zero, one, multiple, array-typed), packed
   field+method members, and refusals for the body-with-
-  statements, throws, type-parameter, and abstract-method
-  forms (108 tests total).
+  statements (lifted in Phase 2h), throws, type-parameter,
+  and abstract-method forms, and (Phase 2h) statement-emitter
+  tests covering return-with-value, return-without-value,
+  return-with-expression, expression-statement (method call,
+  assignment), compound assignment operators (`+=` / `*=`),
+  local variable declarations (single, multiple, with
+  modifier), and the if-statement-not-yet-registered
+  dispatcher fail-mode (116 tests total).
 
 ### Changed
 
@@ -193,9 +223,11 @@ emission), Phase 2c (minimal structural emitters), Phase 2d
 (keyword modifiers), Phase 2e (expression emitters —
 binary / unary / update / parenthesized), Phase 2f
 (single-line expression operations — field access, method
-invocation, cast, instanceof), and Phase 2g (method
-declarations with empty bodies, formal parameters,
-array-type parameter types) have landed, but
+invocation, cast, instanceof), Phase 2g (method declarations
+with empty bodies, formal parameters, array-type parameter
+types), and Phase 2h (statement emitters in method bodies —
+return / expression-statement / local-variable-declaration /
+assignment-expression) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

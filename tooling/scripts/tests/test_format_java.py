@@ -714,16 +714,9 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_method_with_body_not_yet_supported(self) -> None:
-        # Statement emitters land in a later phase; until then
-        # any method with statements refuses with a clear
-        # message rather than emitting a broken body.
-        with pytest.raises(
-            NotImplementedError, match="non-empty body"
-        ):
-            format_java.format_source(
-                b"class A { int compute() { return 42; } }"
-            )
+    # method_declaration with non-empty body is now supported
+    # (Phase 2h) — the former "not yet supported" assertion was
+    # promoted to positive coverage in the statement tests below.
 
     def test_method_with_throws_not_yet_supported(self) -> None:
         with pytest.raises(
@@ -767,6 +760,146 @@ class TestFormatSourceSubset:
             format_java.format_source(
                 b"class A { void m(final int x) {} }"
             )
+
+    # --- Statement emitters (Phase 2h) ---
+
+    def test_return_statement_with_value(self) -> None:
+        out = format_java.format_source(
+            b"class A { int m() { return 42; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int m()\n"
+            b"    {\n"
+            b"        return 42;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_return_statement_without_value(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { return; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        return;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_return_statement_with_expression(self) -> None:
+        out = format_java.format_source(
+            b"class A { int m() { return x + y; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int m()\n"
+            b"    {\n"
+            b"        return x + y;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_expression_statement_method_call(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { compute(); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        compute();\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_expression_statement_assignment(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { x = 1; } }"
+        )
+        # Assignment operator gets single space on each side
+        # per "Whitespace and Operator Spacing" spec section.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        x = 1;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_compound_assignment_operators(self) -> None:
+        # `+=` and `*=` exercise the assignment-operator field
+        # recovery in `_emit_assignment_expression`.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"this.count += 1; this.total *= 2; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        this.count += 1;\n"
+            b"        this.total *= 2;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_local_variable_declaration(self) -> None:
+        out = format_java.format_source(
+            b"class A { int m() { int r = 42; return r; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int m()\n"
+            b"    {\n"
+            b"        int r = 42;\n"
+            b"        return r;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_multiple_local_variable_declarations(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { int x = 1; long y = 2; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        int x = 1;\n"
+            b"        long y = 2;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_local_variable_with_modifier(self) -> None:
+        # `local_variable_declaration` shares the same emitter
+        # as `field_declaration`, so the modifier path is
+        # already covered structurally; this test confirms it
+        # works in the local-variable context.
+        out = format_java.format_source(
+            b"class A { void m() { final int x = 1; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        final int x = 1;\n"
+            b"    }\n"
+            b"}\n"
+        )
 
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
@@ -1027,11 +1160,11 @@ class TestEmitNodeDispatch:
     """Verify the dispatch helper's error path."""
 
     def test_unknown_node_type_raises(self) -> None:
-        # return_statement is intentionally not yet registered;
-        # statement emitters land in a later phase.
-        src = b"class A { int m() { return 42; } }"
+        # if_statement is intentionally not yet registered;
+        # control-flow emitters land in a later phase.
+        src = b"class A { void m() { if (x) return; } }"
         tree = format_java.parse_source(src)
-        stmt = _find_first(tree.root_node, "return_statement")
+        stmt = _find_first(tree.root_node, "if_statement")
         assert stmt is not None
         emitter = format_java.Emitter()
         with pytest.raises(
@@ -1041,16 +1174,28 @@ class TestEmitNodeDispatch:
 
     def test_block_not_yet_handled(self) -> None:
         # `block` is the body of a method or compound statement —
-        # method_declaration manages its own body emission in
-        # Phase 2g; the `block` node type itself is not yet
-        # registered in the dispatch table.
-        src = b"class A { void m() { int x; } }"
+        # method_declaration manages its own body emission;
+        # the `block` node type itself remains unregistered in
+        # the dispatch table because brace style depends on
+        # parent (Allman for methods, same-line for control
+        # flow). When if/for/while emitters land, they will
+        # own their own brace emission too.
+        src = b"class A { void m() { { int x; } } }"  # nested block
         tree = format_java.parse_source(src)
-        block = _find_first(tree.root_node, "block")
-        assert block is not None
+        # The OUTER block is consumed by method_declaration;
+        # the INNER block (a free-standing nested block in the
+        # body) goes through dispatch and should raise.
+        method = _find_first(tree.root_node, "method_declaration")
+        assert method is not None
+        body = method.child_by_field_name("body")
+        assert body is not None
+        inner_blocks = [
+            c for c in body.named_children if c.type == "block"
+        ]
+        assert len(inner_blocks) == 1
         emitter = format_java.Emitter()
         with pytest.raises(NotImplementedError):
-            format_java._emit_node(emitter, src, block)
+            format_java._emit_node(emitter, src, inner_blocks[0])
 
 
 # ---------------------------------------------------------------------------
