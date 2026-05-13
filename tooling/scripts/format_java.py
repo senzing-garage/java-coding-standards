@@ -18,14 +18,18 @@ Status (Phase 2c — minimal class declarations):
       primitive types (`integral_type`, `floating_point_type`,
       `boolean_type`, `void_type`).
     - Structural emitters cover `program`, `class_declaration`
-      (no modifiers / type parameters / extends-implements yet),
-      `class_body`, `field_declaration`, `variable_declarator`.
+      (no type parameters / extends-implements yet),
+      `class_body`, `field_declaration`, `variable_declarator`,
+      and `modifiers` (keyword-only — annotations refuse).
     - `format_source()` is functional for the supported subset:
-      a single top-level class with primitive- or
-      named-typed field declarations and optional literal
-      initializers. Anything outside the subset raises
-      `NotImplementedError` from the dispatcher (the explicit
-      "not yet supported" signal during incremental rollout).
+      a single top-level class with optional keyword modifiers
+      (no annotations), no type parameters, no extends /
+      implements, whose body contains primitive- or named-typed
+      field declarations with optional keyword modifiers and
+      optional literal initializers. Anything outside the
+      subset raises `NotImplementedError` from the dispatcher
+      (the explicit "not yet supported" signal during
+      incremental rollout).
     - The end-user entry point `format_file.py` still routes
       through the legacy JDT-plus-six-script pipeline; activation
       of this module as the active formatter comes in the phase
@@ -362,21 +366,24 @@ def _emit_class_declaration(
 ) -> None:
     """Emit a class declaration with Allman brace placement.
 
-    Phase 2c handles the simplest form — `class Name { ... }` with
-    no modifiers, no type parameters, no `extends` / `implements`.
-    Those clauses (and the more complex priority-by-line-length
-    wrapping in the spec's "Class Headers" section) are added in
-    subsequent phases. If a node carries unsupported children
-    (e.g. a `modifiers` block or an `extends` clause), the
-    dispatcher will raise `NotImplementedError` when it reaches
-    that child — the explicit "not yet supported" signal.
+    Currently handles the form
+    `[modifiers] class Name { [members...] }` — optional keyword
+    modifiers (no annotations yet), no type parameters, no
+    `extends` / `implements` / `permits`. Those omitted clauses
+    (and the more complex priority-by-line-length wrapping in
+    the spec's "Class Headers" section) are added in subsequent
+    phases. If a node carries one of those unsupported clauses,
+    this function raises `NotImplementedError` — the explicit
+    "not yet supported" signal.
     """
-    # Refuse modifiers / type params / superclass-implements for
-    # now. These nodes' presence as direct children indicates we
-    # need the (forthcoming) richer class_declaration emitter.
+    # Inspect direct named children: capture the optional
+    # `modifiers` block; refuse the not-yet-supported clauses.
+    # Those clauses have their own priority-by-line-length
+    # wrapping in the "Class Headers" spec section that the
+    # current emitter doesn't yet handle.
+    modifiers_node: Node | None = None
     for child in node.named_children:
         if child.type in (
-            "modifiers",
             "type_parameters",
             "superclass",
             "super_interfaces",
@@ -384,13 +391,18 @@ def _emit_class_declaration(
         ):
             raise NotImplementedError(
                 f"class_declaration child {child.type!r} is not "
-                "yet supported by the Phase 2c emitter; that "
-                "construct comes in a later phase."
+                "yet supported; that construct comes in a later "
+                "phase."
             )
+        if child.type == "modifiers":
+            modifiers_node = child
 
     name = node.child_by_field_name("name")
     body = node.child_by_field_name("body")
 
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+        emitter.write(" ")
     emitter.write("class ")
     if name is not None:
         _emit_node(emitter, source, name)
@@ -442,12 +454,15 @@ def _emit_field_declaration(
     and annotations on the field are refused here; they come in
     later phases.
     """
+    modifiers_node: Node | None = None
     for child in node.named_children:
         if child.type == "modifiers":
-            raise NotImplementedError(
-                "field_declaration with modifiers or annotations "
-                "is not yet supported by the Phase 2c emitter."
-            )
+            modifiers_node = child
+            break
+
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+        emitter.write(" ")
 
     type_node = node.child_by_field_name("type")
     if type_node is None:
@@ -470,6 +485,48 @@ def _emit_field_declaration(
             emitter.write(", ")
         _emit_node(emitter, source, declarator)
     emitter.write(";")
+
+
+def _emit_modifiers(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a list of modifiers, space-separated.
+
+    Phase 2d handles keyword-only modifiers (`public`,
+    `private`, `protected`, `static`, `final`, `abstract`,
+    `volatile`, `synchronized`, `native`, `strictfp`,
+    `transient`, `default`). Annotations within a `modifiers`
+    node (`marker_annotation`, `annotation`, etc.) are refused
+    with `NotImplementedError` — those land in a later phase
+    with their own per-annotation wrapping rules from the
+    "Annotations" spec section.
+
+    Modifier order is preserved from the source. The JLS
+    conventional order
+    (`public protected private abstract static final transient
+    volatile synchronized native strictfp default`) is a coding
+    convention enforced by checkstyle, not by this formatter.
+    """
+    parts: list[str] = []
+    for child in node.children:
+        if child.is_named:
+            # Named modifier children are annotations
+            # (marker_annotation, annotation, etc.). Phase 2d
+            # doesn't yet handle them; refuse to emit rather
+            # than drop the annotation silently.
+            raise NotImplementedError(
+                f"Annotation in modifiers ({child.type!r}) is "
+                "not yet supported; annotation emission lands "
+                "in a later phase."
+            )
+        parts.append(child.type)
+    if not parts:
+        # Defensive: the grammar should never produce an empty
+        # `modifiers` node, but if it did, the caller's
+        # "write a trailing space" wouldn't make sense after
+        # an empty emission. Refuse to emit a stray separator.
+        return
+    emitter.write(" ".join(parts))
 
 
 def _emit_variable_declarator(
@@ -535,11 +592,12 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "floating_point_type": _emit_verbatim,
     "boolean_type": _emit_verbatim,
     "void_type": _emit_verbatim,
-    # --- Structural emitters (Phase 2c) ---
+    # --- Structural emitters ---
     "program": _emit_program,
     "class_declaration": _emit_class_declaration,
     "field_declaration": _emit_field_declaration,
     "variable_declarator": _emit_variable_declarator,
+    "modifiers": _emit_modifiers,
 }
 
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:

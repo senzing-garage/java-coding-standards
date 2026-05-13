@@ -226,11 +226,65 @@ class TestFormatSourceSubset:
             # Missing closing brace.
             format_java.format_source(b"class A { int x = 42;")
 
-    def test_class_with_modifiers_not_yet_supported(self) -> None:
-        with pytest.raises(
-            NotImplementedError, match="modifiers"
-        ):
-            format_java.format_source(b"public class A {}")
+    def test_class_with_single_modifier(self) -> None:
+        out = format_java.format_source(b"public class A {}")
+        assert out == b"public class A\n{\n}\n"
+
+    def test_class_with_multiple_modifiers(self) -> None:
+        out = format_java.format_source(
+            b"public final class A {}"
+        )
+        assert out == b"public final class A\n{\n}\n"
+
+    def test_field_with_single_modifier(self) -> None:
+        out = format_java.format_source(
+            b"class A { public int x; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public int x;\n"
+            b"}\n"
+        )
+
+    def test_field_with_multiple_modifiers(self) -> None:
+        out = format_java.format_source(
+            b"class A { public static final int X = 42; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public static final int X = 42;\n"
+            b"}\n"
+        )
+
+    def test_class_and_fields_both_modified(self) -> None:
+        out = format_java.format_source(
+            b"public class A { "
+            b"public static final int X = 42; "
+            b"private String s; }"
+        )
+        assert out == (
+            b"public class A\n"
+            b"{\n"
+            b"    public static final int X = 42;\n"
+            b"    private String s;\n"
+            b"}\n"
+        )
+
+    def test_modifier_order_is_preserved(self) -> None:
+        # Formatter does NOT reorder modifiers; checkstyle enforces
+        # the conventional JLS order separately. The formatter
+        # emits modifiers as the developer wrote them.
+        out = format_java.format_source(
+            b"class A { volatile static private int x; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    volatile static private int x;\n"
+            b"}\n"
+        )
 
     def test_class_with_extends_not_yet_supported(self) -> None:
         with pytest.raises(
@@ -246,10 +300,23 @@ class TestFormatSourceSubset:
                 b"class A { void m() {} }"
             )
 
-    def test_field_with_modifiers_not_yet_supported(self) -> None:
-        with pytest.raises(NotImplementedError, match="modifiers"):
+    def test_class_with_annotation_not_yet_supported(self) -> None:
+        # marker_annotation inside `modifiers` is refused since
+        # annotation emission with per-annotation wrapping rules
+        # lands in a later phase.
+        with pytest.raises(
+            NotImplementedError, match="Annotation in modifiers"
+        ):
             format_java.format_source(
-                b"class A { private int x; }"
+                b"@Deprecated public class A {}"
+            )
+
+    def test_field_with_annotation_not_yet_supported(self) -> None:
+        with pytest.raises(
+            NotImplementedError, match="Annotation in modifiers"
+        ):
+            format_java.format_source(
+                b"class A { @Deprecated public int x; }"
             )
 
     def test_field_with_text_block_initializer_not_yet_supported(

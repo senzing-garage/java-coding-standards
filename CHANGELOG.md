@@ -54,6 +54,19 @@ and this project adheres to
   section, since Phase 2c doesn't yet handle javadoc).
   `format_source()` also now rejects parse-error input with a
   `ValueError` rather than producing garbled output.
+- Phase 2d keyword modifiers: `_emit_modifiers` handler for
+  the `modifiers` node, plus dispatch wiring in
+  `_emit_class_declaration` and `_emit_field_declaration` so
+  classes and fields can carry keyword modifiers (`public`,
+  `private`, `protected`, `static`, `final`, `abstract`,
+  `volatile`, `synchronized`, `native`, `strictfp`,
+  `transient`, `default`). Modifier order is preserved from
+  the source; the formatter does not reorder modifiers
+  (checkstyle enforces JLS conventional order separately).
+  Annotations within `modifiers` (`marker_annotation`,
+  `annotation`, etc.) remain refused — they have their own
+  per-annotation wrapping rules from the "Annotations" spec
+  section and land in a later phase.
 - `tooling/scripts/requirements.txt` — runtime dependency pins
   for the formatter: `tree-sitter==0.25.2` and
   `tree-sitter-java==0.23.5`. Python 3.10+ required.
@@ -61,7 +74,9 @@ and this project adheres to
   the Phase 2a scaffolding (15 tests), extended in Phase 2b with
   Emitter and leaf-dispatch tests, and in Phase 2c with
   format_source-end-to-end tests, idempotency tests, and
-  unsupported-construct rejection tests (67 tests total).
+  unsupported-construct rejection tests, and (Phase 2d)
+  modifier-emission tests including modifier-order preservation
+  and annotation refusal (73 tests total).
 
 ### Changed
 
@@ -98,13 +113,14 @@ and this project adheres to
 These entries are the in-progress work on the
 `caceres-abandon-jdt-1` branch for the 0.3.0 release. The spec
 doc (Phase 1), the formatter scaffolding (Phase 2a), the
-token-stream emission layer (Phase 2b), and the first
-structural emitters covering minimal class declarations
-(Phase 2c) have landed, but `format_java.py` is not yet wired
-into the format-on-save / pre-commit hook — the legacy
-JDT-plus-six-script pipeline at `format_file.py` is still the
-active entry point. FAQ refresh and adoption-template updates
-are held back until the commit that removes JDT and activates
+token-stream emission layer (Phase 2b), the first structural
+emitters covering minimal class declarations (Phase 2c), and
+the keyword-modifier support on classes and fields (Phase 2d)
+have landed, but `format_java.py` is not yet wired into the
+format-on-save / pre-commit hook — the legacy JDT-plus-six-
+script pipeline at `format_file.py` is still the active entry
+point. FAQ refresh and adoption-template updates are held back
+until the commit that removes JDT and activates
 `format_java.py`, so every committed snapshot on this branch
 has an internally-consistent FAQ-vs-code state.
 
