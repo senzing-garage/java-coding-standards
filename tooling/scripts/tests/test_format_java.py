@@ -130,12 +130,142 @@ class TestParseFile:
 # ---------------------------------------------------------------------------
 
 
-class TestFormatSourceStub:
-    """Confirm format_source() raises until the emitter lands."""
+class TestFormatSourceSubset:
+    """Verify format_source() handles the Phase 2c subset.
 
-    def test_format_source_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
-            format_java.format_source(b"public class Foo {}\n")
+    Anything outside the supported subset (modifiers, methods,
+    annotations, etc.) raises NotImplementedError from the
+    dispatcher.
+    """
+
+    def test_empty_input_yields_empty_output(self) -> None:
+        assert format_java.format_source(b"") == b""
+
+    def test_empty_class(self) -> None:
+        out = format_java.format_source(b"class A {}")
+        assert out == b"class A\n{\n}\n"
+
+    def test_class_with_field_no_initializer(self) -> None:
+        out = format_java.format_source(b"class A { int x; }")
+        assert out == b"class A\n{\n    int x;\n}\n"
+
+    def test_class_with_field_with_initializer(self) -> None:
+        out = format_java.format_source(b"class A { int x = 42; }")
+        assert out == b"class A\n{\n    int x = 42;\n}\n"
+
+    def test_class_with_multiple_fields_packed_no_blank_lines(
+        self,
+    ) -> None:
+        out = format_java.format_source(
+            b'class A { int x = 1; String s = "hi"; }'
+        )
+        # Per "Blank-Line Rules Between Class Members": fields
+        # without javadoc are packed (no blank line between).
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = 1;\n"
+            b'    String s = "hi";\n'
+            b"}\n"
+        )
+
+    def test_field_with_multiple_declarators_comma_separated(
+        self,
+    ) -> None:
+        out = format_java.format_source(
+            b"class A { int x, y, z = 0; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x, y, z = 0;\n"
+            b"}\n"
+        )
+
+    def test_field_with_named_type(self) -> None:
+        out = format_java.format_source(
+            b'class A { String name = "foo"; }'
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b'    String name = "foo";\n'
+            b"}\n"
+        )
+
+    def test_field_with_double_type(self) -> None:
+        out = format_java.format_source(
+            b"class A { double d = 1.5e-3; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    double d = 1.5e-3;\n"
+            b"}\n"
+        )
+
+    def test_idempotency_for_supported_subset(self) -> None:
+        # format(format(x)) == format(x) for every supported case.
+        sources = [
+            b"class A {}",
+            b"class A { int x; }",
+            b"class A { int x = 42; }",
+            b'class A { String s = "hello"; double d = 1.5; }',
+            b"class A { int x, y, z = 0; }",
+        ]
+        for src in sources:
+            once = format_java.format_source(src)
+            twice = format_java.format_source(once)
+            assert once == twice, (
+                f"non-idempotent for {src!r}: "
+                f"once={once!r}, twice={twice!r}"
+            )
+
+    def test_parse_error_input_raises(self) -> None:
+        with pytest.raises(ValueError, match="parse errors"):
+            # Missing closing brace.
+            format_java.format_source(b"class A { int x = 42;")
+
+    def test_class_with_modifiers_not_yet_supported(self) -> None:
+        with pytest.raises(
+            NotImplementedError, match="modifiers"
+        ):
+            format_java.format_source(b"public class A {}")
+
+    def test_class_with_extends_not_yet_supported(self) -> None:
+        with pytest.raises(
+            NotImplementedError, match="superclass"
+        ):
+            format_java.format_source(b"class A extends B {}")
+
+    def test_method_declaration_not_yet_supported(self) -> None:
+        with pytest.raises(
+            NotImplementedError, match="method_declaration"
+        ):
+            format_java.format_source(
+                b"class A { void m() {} }"
+            )
+
+    def test_field_with_modifiers_not_yet_supported(self) -> None:
+        with pytest.raises(NotImplementedError, match="modifiers"):
+            format_java.format_source(
+                b"class A { private int x; }"
+            )
+
+    def test_field_with_text_block_initializer_not_yet_supported(
+        self,
+    ) -> None:
+        # Text blocks inside an indented context need indent-aware
+        # emission per the "Text Blocks" spec section; the Phase
+        # 2c emitter refuses rather than produce content lines
+        # mis-aligned at column 0.
+        with pytest.raises(
+            NotImplementedError,
+            match="indented context",
+        ):
+            format_java.format_source(
+                b'class A { String s = """\nhello\n"""; }'
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -381,23 +511,28 @@ class TestEmitNodeDispatch:
     """Verify the dispatch helper's error path."""
 
     def test_unknown_node_type_raises(self) -> None:
-        tree = format_java.parse_source(b"class A {}")
-        root = tree.root_node
-        # `program` is not a leaf emitter — Phase 2b doesn't yet
-        # handle structural nodes.
+        # method_declaration is intentionally not yet registered;
+        # the formatter doesn't handle methods until a later phase.
+        src = b"class A { void m() {} }"
+        tree = format_java.parse_source(src)
+        method = _find_first(tree.root_node, "method_declaration")
+        assert method is not None
         emitter = format_java.Emitter()
         with pytest.raises(
             NotImplementedError, match="No emitter registered"
         ):
-            format_java._emit_node(emitter, b"class A {}", root)
+            format_java._emit_node(emitter, src, method)
 
-    def test_class_declaration_not_yet_handled(self) -> None:
-        tree = format_java.parse_source(b"class A {}")
-        class_decl = _find_first(tree.root_node, "class_declaration")
-        assert class_decl is not None
+    def test_block_not_yet_handled(self) -> None:
+        # `block` is the body of a method or compound statement —
+        # not yet registered until method-level emitters land.
+        src = b"class A { void m() { int x; } }"
+        tree = format_java.parse_source(src)
+        block = _find_first(tree.root_node, "block")
+        assert block is not None
         emitter = format_java.Emitter()
         with pytest.raises(NotImplementedError):
-            format_java._emit_node(emitter, b"class A {}", class_decl)
+            format_java._emit_node(emitter, src, block)
 
 
 # ---------------------------------------------------------------------------
@@ -435,12 +570,15 @@ class TestCli:
         )
 
     def test_no_args_exits_nonzero(self) -> None:
-        # The emitter is not implemented; running with no flags
-        # should fail loudly rather than silently no-op or
-        # damaging the input.
+        # format_java.py is deliberately not the end-user entry
+        # point during incremental rollout — running with no
+        # flags must fail loudly rather than silently no-op or
+        # damage the input.
         result = _run_cli([])
         assert result.returncode != 0
-        assert "not yet implemented" in result.stderr.lower()
+        assert "not the end-user formatter entry point" in (
+            result.stderr.lower()
+        )
 
     def test_parse_unknown_file_exits_nonzero(
         self, tmp_path: Path

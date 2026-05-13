@@ -32,15 +32,36 @@ and this project adheres to
   `identifier`, `type_identifier`). The dispatcher raises
   `NotImplementedError` on any node type not yet registered —
   the explicit "this construct isn't supported yet" signal
-  during incremental rollout. Structural emitters (declarations,
-  statements, expressions) come in subsequent phases;
-  `format_source()` still raises until the recursive walk lands.
+  during incremental rollout.
+- Phase 2c recursive walk: structural emitters for `program`,
+  `class_declaration`, `field_declaration`, and
+  `variable_declarator`. Also registers the primitive type
+  nodes (`integral_type`, `floating_point_type`,
+  `boolean_type`, `void_type`) as verbatim emitters. The
+  dispatch table (previously `_LEAF_EMITTERS`) renamed to
+  `_NODE_EMITTERS` to reflect that it now covers both leaf
+  tokens and structural nodes.
+  `format_source()` is now FUNCTIONAL for the supported subset:
+  a single top-level class with no modifiers / type parameters /
+  extends-implements, whose body contains primitive-typed or
+  named-typed field declarations with optional literal
+  initializers. Anything outside that subset raises
+  `NotImplementedError` from the dispatcher (the explicit
+  "not yet supported" signal — the formatter never silently
+  emits non-spec output). Allman brace placement is enforced,
+  with class members packed (no blank lines between fields
+  per the "Blank-Line Rules Between Class Members" spec
+  section, since Phase 2c doesn't yet handle javadoc).
+  `format_source()` also now rejects parse-error input with a
+  `ValueError` rather than producing garbled output.
 - `tooling/scripts/requirements.txt` — runtime dependency pins
   for the formatter: `tree-sitter==0.25.2` and
   `tree-sitter-java==0.23.5`. Python 3.10+ required.
 - `tooling/scripts/tests/test_format_java.py` — smoke tests for
   the Phase 2a scaffolding (15 tests), extended in Phase 2b with
-  Emitter and leaf-dispatch tests (53 tests total).
+  Emitter and leaf-dispatch tests, and in Phase 2c with
+  format_source-end-to-end tests, idempotency tests, and
+  unsupported-construct rejection tests (67 tests total).
 
 ### Changed
 
@@ -76,15 +97,16 @@ and this project adheres to
 
 These entries are the in-progress work on the
 `caceres-abandon-jdt-1` branch for the 0.3.0 release. The spec
-doc (Phase 1), the formatter scaffolding (Phase 2a), and the
-token-stream emission layer (Phase 2b) have landed, but
-`format_java.py` is not yet wired into the format-on-save /
-pre-commit hook — the legacy JDT-plus-six-script pipeline at
-`format_file.py` is still the active entry point. FAQ refresh
-and adoption-template updates are held back until the commit
-that removes JDT and activates `format_java.py`, so every
-committed snapshot on this branch has an internally-consistent
-FAQ-vs-code state.
+doc (Phase 1), the formatter scaffolding (Phase 2a), the
+token-stream emission layer (Phase 2b), and the first
+structural emitters covering minimal class declarations
+(Phase 2c) have landed, but `format_java.py` is not yet wired
+into the format-on-save / pre-commit hook — the legacy
+JDT-plus-six-script pipeline at `format_file.py` is still the
+active entry point. FAQ refresh and adoption-template updates
+are held back until the commit that removes JDT and activates
+`format_java.py`, so every committed snapshot on this branch
+has an internally-consistent FAQ-vs-code state.
 
 ## [0.2.8] - 2026-05-05
 

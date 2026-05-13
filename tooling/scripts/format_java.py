@@ -5,22 +5,31 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2b — token-level emission):
+Status (Phase 2c — minimal class declarations):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
-      the recursive emit walk. Tracks current column and strips
-      trailing whitespace per the spec's A5 rule.
+      the recursive emit walk. Tracks current column, indent
+      level, and strips trailing whitespace per the spec's
+      "Trailing Whitespace and End-of-File Newline" rule.
     - Leaf-node emitters are wired up for literals (integer,
       floating-point, character, string, null), boolean keywords,
-      `this` / `super`, and `identifier` / `type_identifier`.
-    - Structural emitters (statements, declarations, expressions)
-      are NOT yet implemented. `format_source()` raises
-      `NotImplementedError` until the recursive walk lands. The
-      end-user entry point `format_file.py` still routes through
-      the legacy JDT-plus-six-script pipeline; this module will be
-      activated and the legacy pipeline removed atomically in a
-      later phase.
+      `this` / `super`, `identifier` / `type_identifier`, and
+      primitive types (`integral_type`, `floating_point_type`,
+      `boolean_type`, `void_type`).
+    - Structural emitters cover `program`, `class_declaration`
+      (no modifiers / type parameters / extends-implements yet),
+      `class_body`, `field_declaration`, `variable_declarator`.
+    - `format_source()` is functional for the supported subset:
+      a single top-level class with primitive- or
+      named-typed field declarations and optional literal
+      initializers. Anything outside the subset raises
+      `NotImplementedError` from the dispatcher (the explicit
+      "not yet supported" signal during incremental rollout).
+    - The end-user entry point `format_file.py` still routes
+      through the legacy JDT-plus-six-script pipeline; activation
+      of this module as the active formatter comes in the phase
+      that removes JDT.
 
 The grammar and Python-binding versions are pinned in
 `tooling/scripts/requirements.txt`; `GRAMMAR_VERSION` below records
@@ -282,12 +291,11 @@ class Emitter:
 
 
 # ---------------------------------------------------------------------------
-# Leaf-node emitters
+# Node emitters
 # ---------------------------------------------------------------------------
 
 
-# Signature every node emitter must satisfy. Phase 2c's structural
-# emitters use the same shape.
+# Signature every node emitter must satisfy.
 EmitterFn = Callable[[Emitter, bytes, Node], None]
 
 
@@ -310,19 +318,190 @@ def _emit_verbatim(emitter: Emitter, source: bytes, node: Node) -> None:
     # section requires be preserved byte-for-byte (including any
     # embedded newlines).
     if "\n" in text:
+        # Indented contexts (e.g. a field initializer inside a
+        # class body) need the developer's source-side indent
+        # stripped from each content line and the formatter's
+        # indent re-applied per the "Text Blocks" spec section's
+        # "Closing `\"\"\"` placement" subsection. That logic
+        # doesn't yet exist; refuse to emit rather than produce a
+        # text block whose content lines sit at column 0
+        # regardless of surrounding indent.
+        if emitter.indent_level > 0:
+            raise NotImplementedError(
+                f"Multi-line {node.type!r} inside an indented "
+                "context is not yet supported — indent-aware "
+                "text-block emission lands in a later phase."
+            )
         emitter.write_raw_lines(text)
     else:
         emitter.write(text)
 
 
-# Maps tree-sitter-java node type to its emitter. Phase 2b covers
-# leaf tokens only; structural node types (class_declaration,
-# method_declaration, expression_statement, etc.) get added in
-# subsequent phases. The dispatcher's KeyError on an unknown type
-# is the formatter's way of saying "this construct isn't yet
-# supported" — that's preferable to silently passing source text
-# through (which would propagate non-spec-compliant input).
-_LEAF_EMITTERS: Final[dict[str, EmitterFn]] = {
+# ---------------------------------------------------------------------------
+# Structural emitters
+# ---------------------------------------------------------------------------
+
+
+def _emit_program(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Top-level emitter — the parse-tree root for any Java file.
+
+    Phase 2c handles a single top-level type declaration. Multiple
+    top-level declarations and `package` / `import` headers will
+    be added in subsequent phases. An empty program (e.g. a
+    whitespace-only file) emits nothing — `finish()` then produces
+    `b""` per its empty-buffer rule.
+    """
+    for child in node.named_children:
+        _emit_node(emitter, source, child)
+
+
+def _emit_class_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a class declaration with Allman brace placement.
+
+    Phase 2c handles the simplest form — `class Name { ... }` with
+    no modifiers, no type parameters, no `extends` / `implements`.
+    Those clauses (and the more complex priority-by-line-length
+    wrapping in the spec's "Class Headers" section) are added in
+    subsequent phases. If a node carries unsupported children
+    (e.g. a `modifiers` block or an `extends` clause), the
+    dispatcher will raise `NotImplementedError` when it reaches
+    that child — the explicit "not yet supported" signal.
+    """
+    # Refuse modifiers / type params / superclass-implements for
+    # now. These nodes' presence as direct children indicates we
+    # need the (forthcoming) richer class_declaration emitter.
+    for child in node.named_children:
+        if child.type in (
+            "modifiers",
+            "type_parameters",
+            "superclass",
+            "super_interfaces",
+            "permits",
+        ):
+            raise NotImplementedError(
+                f"class_declaration child {child.type!r} is not "
+                "yet supported by the Phase 2c emitter; that "
+                "construct comes in a later phase."
+            )
+
+    name = node.child_by_field_name("name")
+    body = node.child_by_field_name("body")
+
+    emitter.write("class ")
+    if name is not None:
+        _emit_node(emitter, source, name)
+    emitter.newline()
+    emitter.write("{")
+    emitter.newline()
+    if body is not None:
+        _emit_class_body_members(emitter, source, body)
+    emitter.write("}")
+    emitter.newline()
+
+
+def _emit_class_body_members(
+    emitter: Emitter, source: bytes, body_node: Node
+) -> None:
+    """Emit the members of a class body, indented one level.
+
+    The opening `{` and closing `}` are emitted by the caller
+    (`_emit_class_declaration`); this function emits only the
+    interior. Per the spec's "Blank-Line Rules Between Class
+    Members" section, fields without javadoc pack together (no
+    blank line between them); Phase 2c doesn't yet support
+    javadoc, so all fields are packed. No blank line is left
+    between the last member and the closing brace (the spec's
+    "Right before class closing }" row).
+
+    Caller contract: enter at column 0 on a fresh line (the line
+    after the opening `{`); leave at column 0 on a fresh line
+    (the line on which the caller will write `}`).
+    """
+    members = list(body_node.named_children)
+    if not members:
+        return
+    emitter.push_indent()
+    for member in members:
+        emitter.write_indent()
+        _emit_node(emitter, source, member)
+        emitter.newline()
+    emitter.pop_indent()
+
+
+def _emit_field_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a field declaration: `TYPE NAME [= VALUE][, ...] ;`.
+
+    Phase 2c handles primitive types and named type references
+    (e.g. `String`) with optional literal initializers. Modifiers
+    and annotations on the field are refused here; they come in
+    later phases.
+    """
+    for child in node.named_children:
+        if child.type == "modifiers":
+            raise NotImplementedError(
+                "field_declaration with modifiers or annotations "
+                "is not yet supported by the Phase 2c emitter."
+            )
+
+    type_node = node.child_by_field_name("type")
+    if type_node is None:
+        raise NotImplementedError(
+            "field_declaration missing 'type' field — grammar "
+            "shape unexpected."
+        )
+    _emit_node(emitter, source, type_node)
+    emitter.write(" ")
+
+    # Multiple variable_declarators are separated by ", ". The
+    # grammar exposes all declarator children with the same
+    # field name 'declarator', so iterate by name not by field
+    # accessor (which returns only the first).
+    declarators = [
+        c for c in node.children if c.type == "variable_declarator"
+    ]
+    for index, declarator in enumerate(declarators):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, declarator)
+    emitter.write(";")
+
+
+def _emit_variable_declarator(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `NAME` or `NAME = VALUE`.
+
+    Spaces around `=` are spec-required (the
+    "Whitespace and Operator Spacing" section's row for
+    assignment operators).
+    """
+    name = node.child_by_field_name("name")
+    value = node.child_by_field_name("value")
+    if name is None:
+        raise NotImplementedError(
+            "variable_declarator missing 'name' field — grammar "
+            "shape unexpected."
+        )
+    _emit_node(emitter, source, name)
+    if value is not None:
+        emitter.write(" = ")
+        _emit_node(emitter, source, value)
+
+
+# Maps tree-sitter-java node type to its emitter. Adding a new
+# emitter is purely a matter of registering it here. The
+# dispatcher's `NotImplementedError` on an unknown type is the
+# formatter's way of saying "this construct isn't yet supported"
+# — that's preferable to silently passing source text through
+# (which would propagate non-spec-compliant input).
+_NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
+    # --- Leaf tokens (Phase 2b) ---
     # Numeric literals — formatted identical to source.
     "decimal_integer_literal": _emit_verbatim,
     "hex_integer_literal": _emit_verbatim,
@@ -336,7 +515,8 @@ _LEAF_EMITTERS: Final[dict[str, EmitterFn]] = {
     # uses `string_literal` with `multiline_string_fragment`
     # children. The full source span of the node is the canonical
     # form for both regular and text-block literals — preserved
-    # byte-for-byte per the B4 spec section.
+    # byte-for-byte per the "Text Blocks / Content preservation"
+    # spec section.
     "character_literal": _emit_verbatim,
     "string_literal": _emit_verbatim,
     # Keyword-valued nodes that the grammar exposes as named.
@@ -348,8 +528,19 @@ _LEAF_EMITTERS: Final[dict[str, EmitterFn]] = {
     # Identifiers.
     "identifier": _emit_verbatim,
     "type_identifier": _emit_verbatim,
+    # Primitive type nodes wrap a single anonymous keyword child
+    # (e.g. `int`, `double`); their source span is the keyword
+    # text and emits verbatim with no special handling.
+    "integral_type": _emit_verbatim,
+    "floating_point_type": _emit_verbatim,
+    "boolean_type": _emit_verbatim,
+    "void_type": _emit_verbatim,
+    # --- Structural emitters (Phase 2c) ---
+    "program": _emit_program,
+    "class_declaration": _emit_class_declaration,
+    "field_declaration": _emit_field_declaration,
+    "variable_declarator": _emit_variable_declarator,
 }
-
 
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     """Dispatch a single node to its registered emitter.
@@ -358,7 +549,7 @@ def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     which is the explicit "this construct isn't supported yet"
     signal during incremental rollout.
     """
-    handler = _LEAF_EMITTERS.get(node.type)
+    handler = _NODE_EMITTERS.get(node.type)
     if handler is None:
         raise NotImplementedError(
             f"No emitter registered for node type {node.type!r}"
@@ -369,16 +560,27 @@ def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
 def format_source(source: bytes) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Not yet implemented. Construction of the per-node emitters is
-    incremental — see the project plan. Until those land,
-    `format_file.py` continues to route through the legacy
-    JDT-plus-six-script pipeline.
+    Phase 2c: handles a top-level class declaration with no
+    modifiers / type parameters / extends / implements, whose body
+    contains primitive-typed or named-typed field declarations
+    with optional literal initializers. Anything outside that
+    subset raises `NotImplementedError` from the dispatcher (the
+    explicit "this construct isn't supported yet" signal).
+
+    The `format_file.py` orchestrator still routes end-user
+    formatting through the legacy JDT-plus-six-script pipeline;
+    activation of this path comes in the phase that removes JDT.
     """
-    raise NotImplementedError(
-        "format_source() is not yet implemented. Phase 2a is "
-        "scaffolding only; emitter dispatch lands in subsequent "
-        "phases."
-    )
+    tree = parse_source(source)
+    if has_parse_errors(tree):
+        raise ValueError(
+            "format_source() refuses to emit output for input "
+            "with parse errors — the resulting text could be "
+            "garbled. Fix the syntax error in the input first."
+        )
+    emitter = Emitter()
+    _emit_node(emitter, source, tree.root_node)
+    return emitter.finish()
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -386,7 +588,9 @@ def _main(argv: list[str] | None = None) -> int:
         prog="format_java.py",
         description=(
             "Canonical AST-based Java formatter for the "
-            "senzing-garage standards (Phase 2a — scaffolding)."
+            "senzing-garage standards (incremental rollout — "
+            "see the module docstring for the currently-supported "
+            "Java subset)."
         ),
     )
     parser.add_argument(
@@ -457,14 +661,19 @@ def _main(argv: list[str] | None = None) -> int:
         print(diagnostic, file=sys.stderr if errored else sys.stdout)
         return 1 if errored else 0
 
-    # No action flag supplied. Phase 2a does not yet format files;
-    # format_file.py is the entry point that today still routes to
-    # the legacy JDT pipeline.
+    # No action flag supplied. format_java.py is not the end-user
+    # entry point — format_file.py is, and it today still routes
+    # through the legacy JDT pipeline. The supported subset of
+    # format_source() is documented in the module docstring and
+    # is currently limited to minimal class declarations; running
+    # this script with no flags is therefore deliberately a hard
+    # error so callers don't accidentally invoke an early-rollout
+    # formatter as if it were the production entry point.
     print(
-        "format_java.py: emitter is not yet implemented (Phase 2a "
-        "is scaffolding). Use --check-grammar to verify the parser "
-        "loads, or --parse FILE to inspect a parse result. The "
-        "end-user formatter entry point is `format_file.py`.",
+        "format_java.py: this script is not the end-user "
+        "formatter entry point — use `format_file.py` instead. "
+        "Pass --check-grammar to verify the parser loads, or "
+        "--parse FILE to inspect a parse result.",
         file=sys.stderr,
     )
     return 1
