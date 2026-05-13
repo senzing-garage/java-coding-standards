@@ -5,13 +5,20 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2a — scaffolding only):
+Status (Phase 2b — token-level emission):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
-    - Emission logic is NOT yet implemented. Calls to
-      `format_source()` raise `NotImplementedError`. The end-user
-      entry point `format_file.py` still routes through the
-      legacy JDT-plus-six-script pipeline; this module will be
+    - `Emitter` provides the token-stream output buffer used by
+      the recursive emit walk. Tracks current column and strips
+      trailing whitespace per the spec's A5 rule.
+    - Leaf-node emitters are wired up for literals (integer,
+      floating-point, character, string, null), boolean keywords,
+      `this` / `super`, and `identifier` / `type_identifier`.
+    - Structural emitters (statements, declarations, expressions)
+      are NOT yet implemented. `format_source()` raises
+      `NotImplementedError` until the recursive walk lands. The
+      end-user entry point `format_file.py` still routes through
+      the legacy JDT-plus-six-script pipeline; this module will be
       activated and the legacy pipeline removed atomically in a
       later phase.
 
@@ -27,10 +34,10 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Final
+from typing import Callable, Final
 
 import tree_sitter_java
-from tree_sitter import Language, Parser, Tree
+from tree_sitter import Language, Node, Parser, Tree
 
 
 __version__: Final[str] = "0.3.0-dev"
@@ -103,6 +110,260 @@ def has_parse_errors(tree: Tree) -> bool:
     trees with MISSING descendants.
     """
     return tree.root_node.has_error
+
+
+# ---------------------------------------------------------------------------
+# Token-stream output buffer
+# ---------------------------------------------------------------------------
+
+
+class Emitter:
+    """Append-only output buffer with column tracking.
+
+    The recursive emit walk pushes tokens left-to-right onto an
+    `Emitter` instance. Each call to `write()` appends a string
+    fragment to the current line; `newline()` finalizes the current
+    line and starts a new one. The current column is tracked so
+    wrapping-priority logic can ask "would this fit?" before
+    committing to a particular layout.
+
+    Trailing whitespace is stripped per the spec's
+    "Trailing Whitespace and End-of-File Newline" section: any
+    spaces at the end of a line are dropped when the line is
+    finalized (via `newline()` or `finish()`). The final byte of
+    output is always exactly one `\\n` — `finish()` enforces that.
+
+    Note: `column` is a CHARACTER count, not a display-width count.
+    The project standard forbids tab characters in Java source
+    (Indentation section), so formatter-emitted output never
+    contains tabs — character count equals display column for the
+    formatter's own emission. Developer content reproduced via
+    `write_raw_lines` (text blocks) MAY contain tabs; the column
+    value after such a block reflects characters, not visual
+    width. The wrapping logic in later phases must keep this in
+    mind if it ever measures width immediately after a verbatim
+    block.
+    """
+
+    __slots__ = ("_lines", "_current", "_indent")
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._current: str = ""
+        self._indent: int = 0
+
+    @property
+    def column(self) -> int:
+        """The 0-based column at the end of the current line."""
+        return len(self._current)
+
+    @property
+    def line_count(self) -> int:
+        """Lines finalized so far (excludes the in-progress line)."""
+        return len(self._lines)
+
+    @property
+    def indent_level(self) -> int:
+        """Current indent depth in 4-space units (informational)."""
+        return self._indent
+
+    def write(self, text: str) -> None:
+        """Append `text` to the current line.
+
+        `text` must not contain `\\n`. Callers that need a line
+        break call `newline()` explicitly. This keeps newline
+        accounting out of the leaf-emitter loop and gives the
+        wrapping logic an exact column count it can trust.
+        """
+        if "\n" in text:
+            raise ValueError(
+                "Emitter.write() does not accept newlines; "
+                "call newline() explicitly. Got: " + repr(text)
+            )
+        self._current += text
+
+    def write_indent(self) -> None:
+        """Emit the current indent prefix at the start of a line.
+
+        Only valid at column 0. Emits `4 * indent_level` spaces.
+        """
+        if self._current:
+            # Bound the diagnostic so a developer's long source
+            # line doesn't blow up traceback formatting in CI.
+            preview = self._current[:32]
+            ellipsis = "..." if len(self._current) > 32 else ""
+            raise ValueError(
+                "write_indent() only valid at column 0; current "
+                f"line has {len(self._current)} chars starting "
+                f"with {preview!r}{ellipsis}"
+            )
+        self._current = " " * (4 * self._indent)
+
+    def newline(self) -> None:
+        """Finalize the current line and start a fresh one.
+
+        Trailing spaces on the finalized line are stripped before
+        commit so emitters need not pre-trim them.
+        """
+        self._lines.append(self._current.rstrip(" "))
+        self._current = ""
+
+    def write_raw_lines(self, text: str) -> None:
+        """Append text that may contain newlines, preserved verbatim.
+
+        Used by leaf emitters for content the formatter must
+        reproduce byte-for-byte — text blocks ("Text Blocks /
+        Content preservation" spec section) and eventually block
+        comments. Newlines inside `text` finalize each intermediate
+        line WITHOUT stripping trailing whitespace, since that
+        whitespace is the developer's content (the spec's
+        "Normalize spacing or alignment of content is a no-op"
+        rule applies to text-block contents).
+
+        The in-progress line at the END of `text` (the part after
+        the last newline) is left open so subsequent `write()` /
+        `newline()` calls continue normally. Note: trailing
+        whitespace that the DEVELOPER wrote at the very end of a
+        text block (after the final newline, before any
+        formatter-emitted continuation) will be stripped by the
+        eventual `newline()` / `finish()` — that case doesn't
+        arise in well-formed Java source because every
+        `string_literal` ends with a non-whitespace closing
+        quote token, so the final segment passed here is never a
+        bare-whitespace string. Future emitters that pass other
+        kinds of verbatim multi-line content should guarantee the
+        same invariant.
+        """
+        parts = text.split("\n")
+        # First segment continues the current line.
+        self._current += parts[0]
+        for part in parts[1:]:
+            # Each intermediate line is verbatim — NO strip.
+            self._lines.append(self._current)
+            self._current = part
+
+    def push_indent(self) -> None:
+        """Increase the indent level by one (4 spaces)."""
+        self._indent += 1
+
+    def pop_indent(self) -> None:
+        """Decrease the indent level by one."""
+        if self._indent <= 0:
+            raise ValueError(
+                "Emitter.pop_indent() called with indent_level=0"
+            )
+        self._indent -= 1
+
+    def finish(self) -> bytes:
+        """Finalize the output and return it as a UTF-8 byte string.
+
+        Behavior:
+            - Any in-progress (non-finalized) line is finalized
+              with trailing whitespace stripped.
+            - The output ends with exactly one `\\n` — empty
+              trailing lines are NOT emitted.
+            - Output consisting solely of blank lines (or a buffer
+              with no `write()` calls at all) produces `b""`, not
+              `b"\\n"`. The single trailing newline is reserved
+              for files with at least one byte of real content.
+        """
+        if self._current:
+            self._lines.append(self._current.rstrip(" "))
+            self._current = ""
+        if not self._lines:
+            return b""
+        # Drop any trailing all-empty lines to keep the EOF
+        # contract exact (one newline at end, no trailing blanks).
+        while self._lines and self._lines[-1] == "":
+            self._lines.pop()
+        if not self._lines:
+            return b""
+        return ("\n".join(self._lines) + "\n").encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Leaf-node emitters
+# ---------------------------------------------------------------------------
+
+
+# Signature every node emitter must satisfy. Phase 2c's structural
+# emitters use the same shape.
+EmitterFn = Callable[[Emitter, bytes, Node], None]
+
+
+def _node_source_text(source: bytes, node: Node) -> str:
+    """Return the source text for `node` as a UTF-8 string."""
+    return source[node.start_byte:node.end_byte].decode("utf-8")
+
+
+# Leaf nodes whose canonical formatted form is byte-for-byte
+# identical to their source text. Literals never get rewritten —
+# `42L` stays `42L`, `0xFFp-1` stays `0xFFp-1`, etc. — and named
+# identifiers are likewise reproduced verbatim. Each handler
+# receives `(emitter, source, node)` and writes the node's text
+# to the emitter.
+def _emit_verbatim(emitter: Emitter, source: bytes, node: Node) -> None:
+    text = _node_source_text(source, node)
+    # Most leaf tokens are single-line; the exception is
+    # `string_literal` carrying a triple-quoted text block, whose
+    # content the "Text Blocks / Content preservation" spec
+    # section requires be preserved byte-for-byte (including any
+    # embedded newlines).
+    if "\n" in text:
+        emitter.write_raw_lines(text)
+    else:
+        emitter.write(text)
+
+
+# Maps tree-sitter-java node type to its emitter. Phase 2b covers
+# leaf tokens only; structural node types (class_declaration,
+# method_declaration, expression_statement, etc.) get added in
+# subsequent phases. The dispatcher's KeyError on an unknown type
+# is the formatter's way of saying "this construct isn't yet
+# supported" — that's preferable to silently passing source text
+# through (which would propagate non-spec-compliant input).
+_LEAF_EMITTERS: Final[dict[str, EmitterFn]] = {
+    # Numeric literals — formatted identical to source.
+    "decimal_integer_literal": _emit_verbatim,
+    "hex_integer_literal": _emit_verbatim,
+    "octal_integer_literal": _emit_verbatim,
+    "binary_integer_literal": _emit_verbatim,
+    "decimal_floating_point_literal": _emit_verbatim,
+    "hex_floating_point_literal": _emit_verbatim,
+    # Character and string literals — content preserved verbatim.
+    # string_literal has nested children (quote, fragment, quote);
+    # for triple-quoted text blocks (Java 15+) the grammar still
+    # uses `string_literal` with `multiline_string_fragment`
+    # children. The full source span of the node is the canonical
+    # form for both regular and text-block literals — preserved
+    # byte-for-byte per the B4 spec section.
+    "character_literal": _emit_verbatim,
+    "string_literal": _emit_verbatim,
+    # Keyword-valued nodes that the grammar exposes as named.
+    "null_literal": _emit_verbatim,
+    "true": _emit_verbatim,
+    "false": _emit_verbatim,
+    "this": _emit_verbatim,
+    "super": _emit_verbatim,
+    # Identifiers.
+    "identifier": _emit_verbatim,
+    "type_identifier": _emit_verbatim,
+}
+
+
+def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
+    """Dispatch a single node to its registered emitter.
+
+    Raises `NotImplementedError` for node types not yet handled,
+    which is the explicit "this construct isn't supported yet"
+    signal during incremental rollout.
+    """
+    handler = _LEAF_EMITTERS.get(node.type)
+    if handler is None:
+        raise NotImplementedError(
+            f"No emitter registered for node type {node.type!r}"
+        )
+    handler(emitter, source, node)
 
 
 def format_source(source: bytes) -> bytes:

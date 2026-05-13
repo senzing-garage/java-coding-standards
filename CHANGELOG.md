@@ -20,11 +20,27 @@ and this project adheres to
   `--parse FILE`, and `--version`. The emitter dispatch (the
   actual formatting logic) lands in subsequent phases; this
   commit verifies the grammar pin and the parser wiring only.
+- Phase 2b token-stream emission: `Emitter` class (column /
+  indent / line tracking, A5-spec trailing-whitespace strip on
+  `newline()` and `finish()`, exact EOF-newline guarantee,
+  `write_raw_lines()` for B4-spec verbatim multi-line content
+  like text blocks), `_emit_node()` dispatcher, and
+  `_LEAF_EMITTERS` registry covering 14 leaf node types
+  (decimal / hex / octal / binary integer literals,
+  decimal / hex floating-point literals, character and string
+  literals, `null_literal`, `true` / `false`, `this` / `super`,
+  `identifier`, `type_identifier`). The dispatcher raises
+  `NotImplementedError` on any node type not yet registered —
+  the explicit "this construct isn't supported yet" signal
+  during incremental rollout. Structural emitters (declarations,
+  statements, expressions) come in subsequent phases;
+  `format_source()` still raises until the recursive walk lands.
 - `tooling/scripts/requirements.txt` — runtime dependency pins
   for the formatter: `tree-sitter==0.25.2` and
   `tree-sitter-java==0.23.5`. Python 3.10+ required.
 - `tooling/scripts/tests/test_format_java.py` — smoke tests for
-  the Phase 2a scaffolding (15 tests).
+  the Phase 2a scaffolding (15 tests), extended in Phase 2b with
+  Emitter and leaf-dispatch tests (53 tests total).
 
 ### Changed
 
@@ -60,14 +76,15 @@ and this project adheres to
 
 These entries are the in-progress work on the
 `caceres-abandon-jdt-1` branch for the 0.3.0 release. The spec
-doc (Phase 1) and the scaffolding for the new AST-based
-formatter (Phase 2a) have landed, but `format_java.py` is not
-yet wired into the format-on-save / pre-commit hook — the
-legacy JDT-plus-six-script pipeline at `format_file.py` is
-still the active entry point. FAQ refresh and adoption-template
-updates are held back until the commit that removes JDT and
-activates `format_java.py`, so every committed snapshot on this
-branch has an internally-consistent FAQ-vs-code state.
+doc (Phase 1), the formatter scaffolding (Phase 2a), and the
+token-stream emission layer (Phase 2b) have landed, but
+`format_java.py` is not yet wired into the format-on-save /
+pre-commit hook — the legacy JDT-plus-six-script pipeline at
+`format_file.py` is still the active entry point. FAQ refresh
+and adoption-template updates are held back until the commit
+that removes JDT and activates `format_java.py`, so every
+committed snapshot on this branch has an internally-consistent
+FAQ-vs-code state.
 
 ## [0.2.8] - 2026-05-05
 
