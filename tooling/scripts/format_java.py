@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2e — expression emitters):
+Status (Phase 2f — expression operations):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -22,22 +22,26 @@ Status (Phase 2e — expression emitters):
       `class_body`, `field_declaration`, `variable_declarator`,
       and `modifiers` (keyword-only — annotations refuse).
     - Expression emitters cover `binary_expression`,
-      `unary_expression`, `update_expression`, and
-      `parenthesized_expression`. Operator spacing follows the
-      "Whitespace and Operator Spacing" spec section
-      (space-space around binary operators; no space around
-      unary / update operators; no space inside parens).
+      `unary_expression`, `update_expression`,
+      `parenthesized_expression`, `field_access`,
+      `instanceof_expression` (non-pattern form),
+      `cast_expression`, `method_invocation` (single-line
+      only — wrap rules deferred), and `argument_list`.
+      Operator spacing follows the "Whitespace and Operator
+      Spacing" spec section throughout.
     - `format_source()` is functional for the supported subset:
       a single top-level class with optional keyword modifiers
       (no annotations), no type parameters, no extends /
       implements, whose body contains primitive- or named-typed
       field declarations with optional keyword modifiers and
-      optional initializers (literal values OR
-      binary / unary / update / parenthesized expressions over
-      literals and identifiers). Anything outside the subset
-      raises `NotImplementedError` from the dispatcher (the
-      explicit "not yet supported" signal during incremental
-      rollout).
+      optional initializers. Initializers can be literal
+      values, identifiers, binary / unary / update /
+      parenthesized expressions, field accesses, casts,
+      non-pattern instanceof, or method invocations whose
+      single-line form fits within reasonable bounds. Anything
+      outside the subset raises `NotImplementedError` from the
+      dispatcher (the explicit "not yet supported" signal
+      during incremental rollout).
     - The end-user entry point `format_file.py` still routes
       through the legacy JDT-plus-six-script pipeline; activation
       of this module as the active formatter comes in the phase
@@ -595,6 +599,187 @@ def _emit_parenthesized_expression(
     emitter.write(")")
 
 
+def _emit_field_access(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `OBJECT.FIELD` with no spaces around the dot.
+
+    Grammar: `field_access` has named fields `object` (the
+    receiver expression) and `field` (the identifier after the
+    dot). The `.` itself is an anonymous child.
+    """
+    object_node = node.child_by_field_name("object")
+    field_node = node.child_by_field_name("field")
+    if object_node is None or field_node is None:
+        raise NotImplementedError(
+            "field_access missing 'object' or 'field' — grammar "
+            "shape unexpected."
+        )
+    _emit_node(emitter, source, object_node)
+    emitter.write(".")
+    _emit_node(emitter, source, field_node)
+
+
+def _emit_instanceof_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `VALUE instanceof TYPE` with single spaces.
+
+    Grammar: `instanceof_expression` has named fields `left`
+    (the value) and `right` (the type), with `instanceof` as
+    an anonymous keyword between them. Per the surrounding
+    "Whitespace and Operator Spacing" rules and the spec's
+    "Pattern matching — type patterns" subsection, the keyword
+    gets one space on each side.
+
+    Two extended forms are explicitly refused here because they
+    have dedicated spec sections that need their own emitters:
+        - **Pattern-binding form** `obj instanceof Type t` adds
+          a `name` field carrying the bound identifier.
+        - **Record / deconstruction pattern form**
+          `obj instanceof Point(int x, int y)` replaces the
+          `right` field with a `pattern` field pointing at a
+          `record_pattern` node.
+    Both land in a later phase with the pattern-matching
+    emitters.
+    """
+    # Record-pattern form must be checked BEFORE looking for
+    # `right`, because the grammar uses `pattern` instead of
+    # `right` for the deconstruction case.
+    if node.child_by_field_name("pattern") is not None:
+        raise NotImplementedError(
+            "instanceof record/deconstruction pattern form "
+            "(`x instanceof Point(int x, int y)`) is not yet "
+            "supported; pattern matching lands in a later phase."
+        )
+    if node.child_by_field_name("name") is not None:
+        raise NotImplementedError(
+            "instanceof pattern-binding form "
+            "(`x instanceof Type t`) is not yet supported; "
+            "pattern matching lands in a later phase."
+        )
+    left_node = node.child_by_field_name("left")
+    right_node = node.child_by_field_name("right")
+    if left_node is None or right_node is None:
+        raise NotImplementedError(
+            "instanceof_expression missing 'left' or 'right' — "
+            "grammar shape unexpected."
+        )
+    _emit_node(emitter, source, left_node)
+    emitter.write(" instanceof ")
+    _emit_node(emitter, source, right_node)
+
+
+def _emit_cast_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `(TYPE) VALUE` with a single space after the closing paren.
+
+    Per the "Whitespace and Operator Spacing" spec section, a
+    type cast emits as `(Type) value` — single space between
+    the closing cast paren and the value. The grammar exposes
+    `cast_expression` with named fields `type` (for the cast
+    target type) and `value` (for the expression being cast).
+
+    Intersection-type casts (`(A & B) value`) are explicitly
+    refused for now: tree-sitter-java surfaces both bound types
+    as siblings each carrying the `type` field, with the `&`
+    operator as an anonymous child between them.
+    `child_by_field_name("type")` returns only the FIRST type,
+    so a naive emission would silently drop the second bound.
+    The "Cast expressions" spec section's intersection-type
+    bullet documents the required formatting; full emission
+    lands with the generic-types phase.
+    """
+    type_node = node.child_by_field_name("type")
+    value_node = node.child_by_field_name("value")
+    if type_node is None or value_node is None:
+        raise NotImplementedError(
+            "cast_expression missing 'type' or 'value' — grammar "
+            "shape unexpected."
+        )
+    # Detect intersection-type cast: more than one `type` field
+    # or the presence of an anonymous `&` child indicates the
+    # extended form.
+    type_field_count = 0
+    has_amp = False
+    for index, child in enumerate(node.children):
+        if node.field_name_for_child(index) == "type":
+            type_field_count += 1
+        elif not child.is_named and child.type == "&":
+            has_amp = True
+    if type_field_count > 1 or has_amp:
+        raise NotImplementedError(
+            "cast_expression with intersection type "
+            "(`(A & B) value`) is not yet supported; full "
+            "emission lands with the generic-types phase."
+        )
+    emitter.write("(")
+    _emit_node(emitter, source, type_node)
+    emitter.write(") ")
+    _emit_node(emitter, source, value_node)
+
+
+def _emit_argument_list(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `(arg1, arg2, ...)` on a single line.
+
+    Method-call argument-list WRAPPING (the priority 1 / 2 / 3
+    / 4 rules from the "Method Call Arguments" spec section) is
+    NOT yet implemented — this emitter always uses the
+    single-line form. If the surrounding context makes the
+    resulting line exceed 80 characters, the emitter still
+    produces single-line output; the wrap-priority phase will
+    add the column-aware logic that decides among the four
+    priorities.
+    """
+    args = [c for c in node.children if c.is_named]
+    emitter.write("(")
+    for index, arg in enumerate(args):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, arg)
+    emitter.write(")")
+
+
+def _emit_method_invocation(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `[OBJECT.]METHOD(ARGS)` on a single line.
+
+    Grammar fields:
+        - `object` (optional): the receiver expression
+        - `name`: the method identifier
+        - `arguments`: the `argument_list` node
+        - `type_arguments` (optional): explicit `<T>` type
+          witness — refused for now (lands with the generic-
+          type-parameter phase)
+
+    Like `_emit_argument_list`, this emits the single-line form
+    unconditionally; the wrap-priority logic from the
+    "Method Call Arguments" spec section lands in a later phase.
+    """
+    if node.child_by_field_name("type_arguments") is not None:
+        raise NotImplementedError(
+            "method_invocation with explicit type arguments "
+            "(`obj.<Type>method(...)`) is not yet supported."
+        )
+    object_node = node.child_by_field_name("object")
+    name_node = node.child_by_field_name("name")
+    arguments_node = node.child_by_field_name("arguments")
+    if name_node is None or arguments_node is None:
+        raise NotImplementedError(
+            "method_invocation missing 'name' or 'arguments' — "
+            "grammar shape unexpected."
+        )
+    if object_node is not None:
+        _emit_node(emitter, source, object_node)
+        emitter.write(".")
+    _emit_node(emitter, source, name_node)
+    _emit_node(emitter, source, arguments_node)
+
+
 def _emit_modifiers(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -711,6 +896,11 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "unary_expression": _emit_unary_expression,
     "update_expression": _emit_update_expression,
     "parenthesized_expression": _emit_parenthesized_expression,
+    "field_access": _emit_field_access,
+    "instanceof_expression": _emit_instanceof_expression,
+    "cast_expression": _emit_cast_expression,
+    "method_invocation": _emit_method_invocation,
+    "argument_list": _emit_argument_list,
 }
 
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
@@ -735,11 +925,15 @@ def format_source(source: bytes) -> bytes:
     optional keyword modifiers (no annotations yet), no type
     parameters, no extends / implements / permits, whose body
     contains primitive- or named-typed field declarations with
-    optional keyword modifiers and optional initializers (literal
-    values or binary / unary / update / parenthesized expressions
-    over literals and identifiers). Anything outside that subset
-    raises `NotImplementedError` from the dispatcher (the
-    explicit "this construct isn't supported yet" signal).
+    optional keyword modifiers and optional initializers.
+    Supported initializer shapes include literal values,
+    identifiers, binary / unary / update / parenthesized
+    expressions, field accesses, casts (no intersection types
+    yet), non-pattern instanceof, and single-line method
+    invocations (no explicit type witness, no wrap-priority
+    logic yet). Anything outside that subset raises
+    `NotImplementedError` from the dispatcher (the explicit
+    "this construct isn't supported yet" signal).
 
     The `format_file.py` orchestrator still routes end-user
     formatting through the legacy JDT-plus-six-script pipeline;

@@ -80,6 +80,27 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2f single-line expression operations: `field_access`
+  (no spaces around the dot), `instanceof_expression`
+  (non-pattern form — single space on each side of the
+  `instanceof` keyword), `cast_expression` (single space
+  after the closing cast paren per the spec's
+  "Cast expressions" subsection), `method_invocation`
+  (single-line form only — wrap-priority logic from the
+  "Method Call Arguments" spec section is deferred to a
+  later phase), and `argument_list` (comma-space-separated
+  arguments, single-line form only). The pattern-binding
+  form of instanceof (`obj instanceof Type t`) refuses
+  with `NotImplementedError`; it lands with the pattern-
+  matching emitters. Method invocations with explicit type
+  arguments (`obj.<Type>method(...)`) also refuse; they
+  land with the generic-type emitters. The single-line
+  argument-list form does NOT yet honor the four-priority
+  wrapping rules; calls whose single-line emission exceeds
+  80 chars currently emit as-is (no warn) — the
+  width-measurement + Pn → Pn+1 promotion logic from the
+  spec's "Method Call Arguments" section lands in a later
+  phase.
 - `tooling/scripts/requirements.txt` — runtime dependency pins
   for the formatter: `tree-sitter==0.25.2` and
   `tree-sitter-java==0.23.5`. Python 3.10+ required.
@@ -93,7 +114,13 @@ and this project adheres to
   initializer tests covering arithmetic / comparison / boolean /
   shift / bitwise binary operators, unary `-` / `!` / `~`,
   pre- and post-increment, parenthesization, and ternary
-  refusal (85 tests total).
+  refusal, and (Phase 2f) single-line expression-operation
+  tests covering field access, method calls (with / without
+  receiver, with / without arguments, with compound
+  arguments), cast expressions, non-pattern instanceof, and
+  refusals for the pattern-binding instanceof, record-pattern
+  instanceof, explicit-type-witness method call, and
+  intersection-type cast forms (98 tests total).
 
 ### Changed
 
@@ -131,8 +158,10 @@ These entries are the in-progress work on the
 `caceres-abandon-jdt-1` branch for the 0.3.0 release. Phase 1
 (spec doc), Phase 2a (scaffolding), Phase 2b (token-stream
 emission), Phase 2c (minimal structural emitters), Phase 2d
-(keyword modifiers), and Phase 2e (expression emitters —
-binary / unary / update / parenthesized) have landed, but
+(keyword modifiers), Phase 2e (expression emitters —
+binary / unary / update / parenthesized), and Phase 2f
+(single-line expression operations — field access, method
+invocation, cast, instanceof) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

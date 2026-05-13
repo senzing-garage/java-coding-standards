@@ -462,6 +462,171 @@ class TestFormatSourceSubset:
                 b"class A { int x = a ? b : c; }"
             )
 
+    # --- Single-line expression operations (Phase 2f) ---
+
+    def test_field_access_simple(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = obj.field; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = obj.field;\n"
+            b"}\n"
+        )
+
+    def test_field_access_through_this(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = this.y; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = this.y;\n"
+            b"}\n"
+        )
+
+    def test_method_call_no_arguments(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = obj.method(); }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = obj.method();\n"
+            b"}\n"
+        )
+
+    def test_method_call_with_arguments(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = compute(1, 2); }"
+        )
+        # Comma-space separator per "Whitespace and Operator
+        # Spacing" spec row "After commas: Exactly one space".
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = compute(1, 2);\n"
+            b"}\n"
+        )
+
+    def test_method_call_with_compound_arguments(self) -> None:
+        # Arguments dispatched recursively — exercises the
+        # interaction between argument_list and the
+        # binary_expression / field_access emitters.
+        out = format_java.format_source(
+            b"class A { int x = obj.method(a, b + c, d.e); }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = obj.method(a, b + c, d.e);\n"
+            b"}\n"
+        )
+
+    def test_method_call_without_receiver(self) -> None:
+        # Method call with no `object` field — bare
+        # method(args) form (typical for same-class methods or
+        # statically-imported methods).
+        out = format_java.format_source(
+            b"class A { int x = compute(42); }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = compute(42);\n"
+            b"}\n"
+        )
+
+    def test_cast_expression(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = (int) 1.5; }"
+        )
+        # Spec: single space after the closing cast paren.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = (int) 1.5;\n"
+            b"}\n"
+        )
+
+    def test_cast_to_named_type(self) -> None:
+        out = format_java.format_source(
+            b"class A { Object o = (String) value; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    Object o = (String) value;\n"
+            b"}\n"
+        )
+
+    def test_instanceof_expression(self) -> None:
+        out = format_java.format_source(
+            b"class A { boolean ok = obj instanceof String; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    boolean ok = obj instanceof String;\n"
+            b"}\n"
+        )
+
+    def test_instanceof_pattern_not_yet_supported(self) -> None:
+        # The pattern-binding form (`x instanceof Type t`) has
+        # its own spec section and lands in a later phase with
+        # the pattern-matching emitters.
+        with pytest.raises(
+            NotImplementedError, match="pattern-binding"
+        ):
+            format_java.format_source(
+                b"class A { "
+                b"boolean ok = obj instanceof String s; }"
+            )
+
+    def test_method_call_with_explicit_type_witness_not_supported(
+        self,
+    ) -> None:
+        # `obj.<Type>method(...)` form has explicit type
+        # arguments handled with the generic-type emitter phase.
+        with pytest.raises(
+            NotImplementedError, match="type arguments"
+        ):
+            format_java.format_source(
+                b"class A { "
+                b"Object o = util.<String>method(); }"
+            )
+
+    def test_intersection_cast_not_yet_supported(self) -> None:
+        # `(A & B) value` carries two `type`-field children in
+        # the tree-sitter-java grammar; the naive emitter would
+        # silently drop the second bound. Refuse loudly until
+        # the intersection-type emitter lands.
+        with pytest.raises(
+            NotImplementedError, match="intersection type"
+        ):
+            format_java.format_source(
+                b"class A { Object o = (A & B) v; }"
+            )
+
+    def test_instanceof_record_pattern_not_yet_supported(
+        self,
+    ) -> None:
+        # `obj instanceof Point(int x, int y)` uses a
+        # `pattern` field instead of `right`; refuse with a
+        # clear message rather than the misleading
+        # "grammar shape unexpected" error.
+        with pytest.raises(
+            NotImplementedError, match="record/deconstruction"
+        ):
+            # Wrap in a class+field-init context that's
+            # supported through Phase 2f. The instanceof
+            # itself is the unsupported part.
+            format_java.format_source(
+                b"class A { "
+                b"boolean ok = obj instanceof Pt(int x); }"
+            )
+
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
     ) -> None:
