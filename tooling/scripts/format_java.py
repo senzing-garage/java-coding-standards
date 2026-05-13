@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2j — loop statements):
+Status (Phase 2k — try/catch/finally):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -38,11 +38,17 @@ Status (Phase 2j — loop statements):
       brace-less Tier 1 short-circuit form refuses),
       `for_statement` (classic three-part header and empty
       `for (;;)`), `enhanced_for_statement` (for-each form
-      with `:` separator), `while_statement`, and
-      `do_statement` (with cuddled `} while (cond);`).
-      Remaining control-flow constructs (`try`, `switch`,
-      `synchronized`, `throw`, `break`, `continue`,
-      labeled statements) refuse until subsequent phases.
+      with `:` separator), `while_statement`,
+      `do_statement` (with cuddled `} while (cond);`), and
+      `try_statement` with `catch_clause` (cuddled
+      `} catch (...) {`), `finally_clause` (cuddled
+      `} finally {`), `catch_formal_parameter`, and
+      `catch_type` (with multi-catch `TYPE | TYPE | ...`
+      single-line form, space-space around `|` per spec B7).
+      Remaining control-flow constructs (`switch`, try-with-
+      resources, `synchronized`, `throw`, `break`,
+      `continue`, labeled statements) refuse until
+      subsequent phases.
     - Expression emitters cover `binary_expression`,
       `unary_expression`, `update_expression`,
       `parenthesized_expression`, `field_access`,
@@ -827,6 +833,143 @@ def _emit_if_statement(
             )
 
 
+def _emit_try_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `try { ... } catch (...) { ... } finally { ... }`.
+
+    Per the "Closing Brace Rules" spec section, `catch` and
+    `finally` cuddle with the closing `}` of the preceding
+    block: `} catch (...) {`, `} finally {`. Multiple
+    `catch_clause` children are emitted in order. The optional
+    `finally_clause` follows any catches.
+
+    Note: try-with-resources is a separate
+    `try_with_resources_statement` node type in the grammar
+    (not a `try_statement` with a `resources` field), so it
+    naturally refuses via the dispatcher's "no emitter
+    registered" path. The "Try-with-resources" spec section
+    will get its own emitter in a later phase.
+    """
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "block":
+        raise NotImplementedError(
+            "try_statement missing or non-block body — grammar "
+            "shape unexpected."
+        )
+
+    emitter.write("try ")
+    _emit_node(emitter, source, body)
+    for child in node.children:
+        if child.type in ("catch_clause", "finally_clause"):
+            emitter.write(" ")
+            _emit_node(emitter, source, child)
+
+
+def _emit_catch_clause(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `catch (PARAM) { ... }`.
+
+    Same-line-brace form via `_emit_block`. The single
+    `catch_formal_parameter` child is dispatched directly
+    (carrying any multi-catch `|`-separated types via
+    `_emit_catch_type`).
+    """
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "block":
+        raise NotImplementedError(
+            "catch_clause missing or non-block body — grammar "
+            "shape unexpected."
+        )
+    cfp: Node | None = None
+    for child in node.named_children:
+        if child.type == "catch_formal_parameter":
+            cfp = child
+            break
+    if cfp is None:
+        raise NotImplementedError(
+            "catch_clause missing catch_formal_parameter — "
+            "grammar shape unexpected."
+        )
+    emitter.write("catch (")
+    _emit_node(emitter, source, cfp)
+    emitter.write(") ")
+    _emit_node(emitter, source, body)
+
+
+def _emit_catch_formal_parameter(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `TYPE [| TYPE]... NAME`.
+
+    The grammar exposes `catch_type` (which itself handles the
+    `|`-separated multi-catch list) plus the `name` field.
+    Refuses modifiers / annotations on the parameter (those
+    land with the annotation phase).
+    """
+    for child in node.named_children:
+        if child.type == "modifiers":
+            raise NotImplementedError(
+                "catch_formal_parameter with modifiers or "
+                "annotations is not yet supported."
+            )
+    catch_type: Node | None = None
+    for child in node.named_children:
+        if child.type == "catch_type":
+            catch_type = child
+            break
+    name_node = node.child_by_field_name("name")
+    if catch_type is None or name_node is None:
+        raise NotImplementedError(
+            "catch_formal_parameter missing catch_type or "
+            "name — grammar shape unexpected."
+        )
+    _emit_node(emitter, source, catch_type)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
+
+
+def _emit_catch_type(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `TYPE` or `TYPE | TYPE | ...` for multi-catch.
+
+    Per the spec's "Multi-catch" section, the `|` separator
+    gets a single space on each side. Single-line form only
+    for now; the priority 2 / 3 two-line / one-per-line
+    wrapping forms from that section land with the wrap-
+    priority phase.
+    """
+    types = [c for c in node.children if c.is_named]
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.write(" | ")
+        _emit_node(emitter, source, t)
+
+
+def _emit_finally_clause(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `finally { ... }`.
+
+    The `block` child is not exposed via a field name; locate
+    it by type iteration.
+    """
+    body: Node | None = None
+    for child in node.named_children:
+        if child.type == "block":
+            body = child
+            break
+    if body is None:
+        raise NotImplementedError(
+            "finally_clause missing block body — grammar shape "
+            "unexpected."
+        )
+    emitter.write("finally ")
+    _emit_node(emitter, source, body)
+
+
 def _emit_for_statement(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1485,6 +1628,11 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "enhanced_for_statement": _emit_enhanced_for_statement,
     "while_statement": _emit_while_statement,
     "do_statement": _emit_do_statement,
+    "try_statement": _emit_try_statement,
+    "catch_clause": _emit_catch_clause,
+    "catch_formal_parameter": _emit_catch_formal_parameter,
+    "catch_type": _emit_catch_type,
+    "finally_clause": _emit_finally_clause,
     # --- Expression emitters ---
     "binary_expression": _emit_binary_expression,
     "unary_expression": _emit_unary_expression,

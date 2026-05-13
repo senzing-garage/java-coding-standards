@@ -1172,6 +1172,111 @@ class TestFormatSourceSubset:
                 b"for (int i = 0; i < n; i++, j++) {} } }"
             )
 
+    # --- try/catch/finally (Phase 2k) ---
+
+    def test_try_catch(self) -> None:
+        # Per "Closing Brace Rules", `catch` cuddles with the
+        # closing `}` of the try block: `} catch (...) {`.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"try { x(); } catch (Exception e) { y(); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        try {\n"
+            b"            x();\n"
+            b"        } catch (Exception e) {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_try_finally(self) -> None:
+        # `finally` cuddles with `}` per the spec.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"try { x(); } finally { cleanup(); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        try {\n"
+            b"            x();\n"
+            b"        } finally {\n"
+            b"            cleanup();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_try_catch_catch_finally(self) -> None:
+        # Multiple catches followed by a finally, all cuddled.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"try { x(); } "
+            b"catch (IOException e) { a(); } "
+            b"catch (SQLException e) { b(); } "
+            b"finally { c(); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        try {\n"
+            b"            x();\n"
+            b"        } catch (IOException e) {\n"
+            b"            a();\n"
+            b"        } catch (SQLException e) {\n"
+            b"            b();\n"
+            b"        } finally {\n"
+            b"            c();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_multi_catch_single_line(self) -> None:
+        # Spec "Multi-catch": single space on each side of `|`.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"try { x(); } catch (IOException | SQLException e) "
+            b"{ y(); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        try {\n"
+            b"            x();\n"
+            b"        } catch (IOException | SQLException e) {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_try_with_resources_not_yet_supported(self) -> None:
+        # `try (Resource r = open())` is a separate
+        # `try_with_resources_statement` node in the grammar;
+        # it refuses cleanly via the dispatcher's "no emitter
+        # registered" path until the resource-management phase.
+        with pytest.raises(
+            NotImplementedError,
+            match="try_with_resources_statement",
+        ):
+            format_java.format_source(
+                b"class A { void m() { "
+                b"try (InputStream in = open()) { use(in); } } }"
+            )
+
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
     ) -> None:
@@ -1431,11 +1536,16 @@ class TestEmitNodeDispatch:
     """Verify the dispatch helper's error path."""
 
     def test_unknown_node_type_raises(self) -> None:
-        # try_statement is intentionally not yet registered;
-        # try/catch/finally lands in its own phase.
-        src = b"class A { void m() { try {} catch (Exception e) {} } }"
+        # switch_expression is intentionally not yet registered;
+        # switch (statements + expressions) lands in its own
+        # phase with all the modern Java pattern-matching rules.
+        src = (
+            b"class A { String m(int x) { "
+            b"return switch (x) { case 1 -> \"one\"; "
+            b"default -> \"other\"; }; } }"
+        )
         tree = format_java.parse_source(src)
-        stmt = _find_first(tree.root_node, "try_statement")
+        stmt = _find_first(tree.root_node, "switch_expression")
         assert stmt is not None
         emitter = format_java.Emitter()
         with pytest.raises(

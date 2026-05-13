@@ -80,6 +80,27 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2k try/catch/finally with multi-catch:
+  `_emit_try_statement` emits `try BODY` followed by zero-
+  or-more cuddled catch clauses and an optional cuddled
+  finally clause, per the "Closing Brace Rules" spec
+  section's bullets for `catch` and `finally`.
+  `_emit_catch_clause` emits `catch (PARAM) BODY` with the
+  same-line-brace form. `_emit_catch_formal_parameter`
+  emits `TYPE NAME` and refuses modifiers / annotations
+  (those land with the annotation phase).
+  `_emit_catch_type` handles multi-catch via space-space
+  around `|` per the "Multi-catch" spec section's
+  binary-operator-like spacing rule; single-line form only
+  (the priority 2 / 3 two-line / one-per-line wrapping
+  forms land with the wrap-priority phase).
+  `_emit_finally_clause` emits `finally BODY`. After
+  Phase 2k the formatter handles realistic try blocks:
+  `try { x(); } catch (IOException | SQLException e) { handle(e); } finally { cleanup(); }`.
+  Try-with-resources is a separate
+  `try_with_resources_statement` node type in the grammar
+  and refuses cleanly via the dispatcher; it lands with
+  the resource-management phase.
 - Phase 2j loop statements: `_emit_for_statement` (classic
   three-part header `for (init; cond; update) BODY` with
   single space after each non-empty header separator per the
@@ -231,9 +252,12 @@ and this project adheres to
   (Phase 2j) loop tests covering classic for with LVD init,
   bare-expression init, empty `for (;;)`, while loop,
   do-while with cuddled `} while (cond);`, enhanced-for
-  with primitive type, enhanced-for with named type,
-  and refusals for multi-init and multi-update comma-
-  separated forms (130 tests total).
+  with primitive type, enhanced-for with named type, and
+  refusals for multi-init and multi-update comma-separated
+  forms, and (Phase 2k) try/catch/finally tests covering
+  try-catch, try-finally, multi-catch-with-finally (all
+  clauses cuddled), `|`-separator spacing in multi-catch,
+  and the try-with-resources refusal (135 tests total).
 
 ### Changed
 
@@ -280,8 +304,10 @@ types), Phase 2h (statement emitters in method bodies —
 return / expression-statement / local-variable-declaration /
 assignment-expression), Phase 2i (if/else control flow —
 block emitter, if-with-block, cuddled else, else-if chains),
-and Phase 2j (loop statements — classic for, enhanced-for,
-while, do-while with cuddled `} while`) have landed, but
+Phase 2j (loop statements — classic for, enhanced-for,
+while, do-while with cuddled `} while`), and Phase 2k
+(try/catch/finally with multi-catch, all clauses cuddled
+per "Closing Brace Rules") have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh
