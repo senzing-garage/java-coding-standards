@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2h — method bodies with simple statements):
+Status (Phase 2i — if/else control flow):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -31,10 +31,13 @@ Status (Phase 2h — method bodies with simple statements):
       statement, method-call statement, update statement),
       `local_variable_declaration` (shared emitter with
       `field_declaration` — both have identical grammar
-      shape), and `assignment_expression` (with space-space
-      around any assignment operator: `=`, `+=`, `-=`, etc.).
-      Control-flow statements (`if`, `for`, `while`, `do`,
-      `try`, `switch`) refuse until the control-flow phase.
+      shape), `assignment_expression` (with space-space
+      around any assignment operator), `block` (same-line
+      brace for control-flow constructs), and `if_statement`
+      (with cuddled `} else {` and else-if chains;
+      brace-less Tier 1 short-circuit form refuses).
+      Remaining control-flow statements (`for`, `while`,
+      `do`, `try`, `switch`) refuse until subsequent phases.
     - Expression emitters cover `binary_expression`,
       `unary_expression`, `update_expression`,
       `parenthesized_expression`, `field_access`,
@@ -707,6 +710,118 @@ def _emit_method_declaration(
     # Caller appends the trailing newline.
 
 
+def _emit_block(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a control-flow block with same-line opening `{`.
+
+    Per the "Brace Placement / Same-Line Style" spec section,
+    blocks used by control-flow constructs (`if`, `else`, `for`,
+    `while`, `do`, `try`, `catch`, `finally`, `switch`,
+    `synchronized`) take the same-line opening-brace form. The
+    caller is expected to have just emitted the preceding
+    syntactic token (e.g. `"if (cond) "`) with a trailing space;
+    this emitter then writes `"{"` continuing that line.
+
+    Statements inside the block are emitted at one indent level
+    deeper than the caller's current level. Closing `}` is
+    emitted at the caller's level. The emitter ends mid-line at
+    the closing `}` so the caller's `newline()` finalizes it.
+
+    Method-declaration bodies use the Allman form (opening `{`
+    on its own line) and emit their body inline from
+    `_emit_method_declaration` rather than dispatching here.
+    """
+    statements = list(node.named_children)
+    emitter.write("{")
+    emitter.newline()
+    emitter.push_indent()
+    for stmt in statements:
+        emitter.write_indent()
+        _emit_node(emitter, source, stmt)
+        emitter.newline()
+    emitter.pop_indent()
+    emitter.write_indent()
+    emitter.write("}")
+
+
+def _emit_if_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `if (cond) { ... } [else if|else { ... }]`.
+
+    Per the "Brace Placement / Same-Line Style" spec section,
+    the opening `{` for the if-block sits on the same line as
+    `if (cond)`. Per "Closing Brace Rules", `else` cuddles
+    with the closing `}` of the preceding block (`} else {` or
+    `} else if (...)`).
+
+    Currently supports:
+        - `if (cond) { ... }`
+        - `if (cond) { ... } else { ... }`
+        - `if (cond) { ... } else if (cond2) { ... } else { ... }`
+          (else-if chains, recursive via the grammar's
+          `alternative` field which can itself be an
+          `if_statement`)
+
+    Refuses:
+        - The brace-less Tier 1 short-circuit form
+          (`if (x) return;`) — the
+          "Short-Circuit Conditionals" spec section's Tier 1
+          handling lands in a later phase
+
+    Known limitation until wrap-priority logic lands: the
+    condition is always emitted on a single line. For a long
+    compound boolean condition that the developer authored
+    across multiple lines, the output collapses to one line
+    which may exceed the 80-character limit. The spec's
+    "Brace Placement / Exception: Multi-Line Conditions" rule
+    (Allman `{` on its own line when the condition wraps) will
+    be enforced when the wrap-priority machinery lands.
+
+    Caller contract: the emitter ends mid-line at the final
+    `}` (column = current indent + 1) so the caller's
+    `newline()` finalizes the line.
+    """
+    condition = node.child_by_field_name("condition")
+    consequence = node.child_by_field_name("consequence")
+    alternative = node.child_by_field_name("alternative")
+    if condition is None or consequence is None:
+        raise NotImplementedError(
+            "if_statement missing 'condition' or 'consequence' "
+            "— grammar shape unexpected."
+        )
+
+    if consequence.type != "block":
+        raise NotImplementedError(
+            "if_statement with brace-less consequence "
+            "(Tier 1 short-circuit form, e.g. `if (x) return;`) "
+            "is not yet supported; short-circuit handling lands "
+            "in the short-circuit-conditionals phase."
+        )
+
+    emitter.write("if ")
+    _emit_node(emitter, source, condition)
+    emitter.write(" ")
+    _emit_node(emitter, source, consequence)
+
+    if alternative is not None:
+        if alternative.type == "if_statement":
+            # else-if chain: dispatch the nested if_statement;
+            # its emitter writes "if (...) { ... }" starting at
+            # the current column (right after "} else ").
+            emitter.write(" else ")
+            _emit_node(emitter, source, alternative)
+        elif alternative.type == "block":
+            emitter.write(" else ")
+            _emit_node(emitter, source, alternative)
+        else:
+            raise NotImplementedError(
+                "if_statement with brace-less else alternative "
+                f"({alternative.type!r}) is not yet supported."
+            )
+
+
 def _emit_return_statement(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1180,6 +1295,8 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "local_variable_declaration": _emit_field_declaration,
     "return_statement": _emit_return_statement,
     "expression_statement": _emit_expression_statement,
+    "block": _emit_block,
+    "if_statement": _emit_if_statement,
     # --- Expression emitters ---
     "binary_expression": _emit_binary_expression,
     "unary_expression": _emit_unary_expression,

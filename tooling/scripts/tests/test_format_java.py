@@ -901,6 +901,125 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    # --- if-statement + control-flow blocks (Phase 2i) ---
+
+    def test_if_statement_with_block(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { if (x) { y(); } } }"
+        )
+        # Same-line opening brace; statements indented; closing
+        # brace on its own line at the if's indent.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x) {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_if_else_statement(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"if (x) { y(); } else { z(); } } }"
+        )
+        # Per "Closing Brace Rules": `else` cuddles with the
+        # closing `}` of the preceding block.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x) {\n"
+            b"            y();\n"
+            b"        } else {\n"
+            b"            z();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_else_if_chain(self) -> None:
+        # Else-if chains are recursive: the `alternative` field
+        # is itself an `if_statement`.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"if (a) { x(); } else if (b) { y(); } "
+            b"else { z(); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (a) {\n"
+            b"            x();\n"
+            b"        } else if (b) {\n"
+            b"            y();\n"
+            b"        } else {\n"
+            b"            z();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_if_with_compound_condition(self) -> None:
+        # Condition is a parenthesized binary expression;
+        # dispatches through parenthesized_expression and
+        # binary_expression, exercising the recursive emit.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"if (x == 1 && y != 2) { compute(); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x == 1 && y != 2) {\n"
+            b"            compute();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_braceless_if_not_yet_supported(self) -> None:
+        # `if (x) y();` is the Tier 1 short-circuit form per
+        # the spec; it's allowed only for body types
+        # `return` / `continue` / `break` / `throw`. The
+        # short-circuit-conditionals phase will handle both
+        # the Tier 1 case (collapse `if (x) return;` to a
+        # single line) and the non-short-circuit normalization
+        # (wrap `if (x) doSomething();` in braces).
+        with pytest.raises(
+            NotImplementedError,
+            match="brace-less consequence",
+        ):
+            format_java.format_source(
+                b"class A { void m() { if (x) y(); } }"
+            )
+
+    def test_if_with_empty_block(self) -> None:
+        # Empty consequence block should still emit cleanly
+        # with the opening `{` on the if-line and the closing
+        # `}` on its own line at the if's indent.
+        out = format_java.format_source(
+            b"class A { void m() { if (x) {} } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x) {\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
     ) -> None:
@@ -1160,11 +1279,12 @@ class TestEmitNodeDispatch:
     """Verify the dispatch helper's error path."""
 
     def test_unknown_node_type_raises(self) -> None:
-        # if_statement is intentionally not yet registered;
-        # control-flow emitters land in a later phase.
-        src = b"class A { void m() { if (x) return; } }"
+        # for_statement is intentionally not yet registered;
+        # remaining control-flow emitters land in subsequent
+        # phases.
+        src = b"class A { void m() { for (;;) {} } }"
         tree = format_java.parse_source(src)
-        stmt = _find_first(tree.root_node, "if_statement")
+        stmt = _find_first(tree.root_node, "for_statement")
         assert stmt is not None
         emitter = format_java.Emitter()
         with pytest.raises(
@@ -1172,30 +1292,13 @@ class TestEmitNodeDispatch:
         ):
             format_java._emit_node(emitter, src, stmt)
 
-    def test_block_not_yet_handled(self) -> None:
-        # `block` is the body of a method or compound statement —
-        # method_declaration manages its own body emission;
-        # the `block` node type itself remains unregistered in
-        # the dispatch table because brace style depends on
-        # parent (Allman for methods, same-line for control
-        # flow). When if/for/while emitters land, they will
-        # own their own brace emission too.
-        src = b"class A { void m() { { int x; } } }"  # nested block
-        tree = format_java.parse_source(src)
-        # The OUTER block is consumed by method_declaration;
-        # the INNER block (a free-standing nested block in the
-        # body) goes through dispatch and should raise.
-        method = _find_first(tree.root_node, "method_declaration")
-        assert method is not None
-        body = method.child_by_field_name("body")
-        assert body is not None
-        inner_blocks = [
-            c for c in body.named_children if c.type == "block"
-        ]
-        assert len(inner_blocks) == 1
-        emitter = format_java.Emitter()
-        with pytest.raises(NotImplementedError):
-            format_java._emit_node(emitter, src, inner_blocks[0])
+    # block is now a registered emitter (Phase 2i) for the
+    # control-flow same-line-brace form. Method-declaration
+    # bodies continue to be emitted inline by
+    # `_emit_method_declaration` (Allman form), which doesn't
+    # dispatch through `block`. The former
+    # `test_block_not_yet_handled` is dropped now that the
+    # dispatch is registered.
 
 
 # ---------------------------------------------------------------------------

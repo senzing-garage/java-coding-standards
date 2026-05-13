@@ -80,6 +80,23 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2i if/else control flow: `_emit_block` for the
+  same-line-brace control-flow block shape (per the
+  "Brace Placement / Same-Line Style" spec section);
+  `_emit_if_statement` for `if (cond) { ... }`, cuddled
+  `} else { ... }`, and recursive `else if` chains via the
+  grammar's `alternative` field. Method-declaration bodies
+  continue to be emitted inline by
+  `_emit_method_declaration` (Allman form), which doesn't
+  dispatch through the new `block` emitter. Refusals:
+  brace-less Tier 1 short-circuit form
+  (`if (x) return;`) — short-circuit handling lands in
+  its own phase; multi-line condition wrapping (Allman
+  `{` on its own line per the
+  "Exception: Multi-Line Conditions" spec rule) — lands
+  with wrap-priority logic. After Phase 2i the formatter
+  handles realistic conditional code:
+  `if (x == 1 && y != 2) { compute(); } else { other(); }`.
 - Phase 2h statement emitters in method bodies:
   `_emit_method_declaration` extended to emit body statements
   with proper +4 indent and one-statement-per-line layout.
@@ -181,8 +198,12 @@ and this project adheres to
   return-with-expression, expression-statement (method call,
   assignment), compound assignment operators (`+=` / `*=`),
   local variable declarations (single, multiple, with
-  modifier), and the if-statement-not-yet-registered
-  dispatcher fail-mode (116 tests total).
+  modifier), the if-statement-not-yet-registered (now
+  lifted; retargeted to for-statement) dispatcher fail-mode,
+  and (Phase 2i) if/else tests covering simple if-with-block,
+  if-else, else-if chain, compound boolean condition, empty
+  consequence block, and the brace-less Tier 1 refusal
+  (121 tests total).
 
 ### Changed
 
@@ -225,9 +246,11 @@ binary / unary / update / parenthesized), Phase 2f
 (single-line expression operations — field access, method
 invocation, cast, instanceof), Phase 2g (method declarations
 with empty bodies, formal parameters, array-type parameter
-types), and Phase 2h (statement emitters in method bodies —
+types), Phase 2h (statement emitters in method bodies —
 return / expression-statement / local-variable-declaration /
-assignment-expression) have landed, but
+assignment-expression), and Phase 2i (if/else control flow —
+block emitter, if-with-block, cuddled else, else-if chains)
+have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh
