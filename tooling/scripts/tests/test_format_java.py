@@ -292,13 +292,9 @@ class TestFormatSourceSubset:
         ):
             format_java.format_source(b"class A extends B {}")
 
-    def test_method_declaration_not_yet_supported(self) -> None:
-        with pytest.raises(
-            NotImplementedError, match="method_declaration"
-        ):
-            format_java.format_source(
-                b"class A { void m() {} }"
-            )
+    # method_declaration is now supported (Phase 2g) — the
+    # former "not yet supported" test was promoted to a positive
+    # assertion in `test_empty_method_body` below.
 
     def test_class_with_annotation_not_yet_supported(self) -> None:
         # marker_annotation inside `modifiers` is refused since
@@ -627,6 +623,151 @@ class TestFormatSourceSubset:
                 b"boolean ok = obj instanceof Pt(int x); }"
             )
 
+    # --- Method declarations (Phase 2g) ---
+
+    def test_empty_method_body(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() {} }"
+        )
+        # Allman opening brace on its own line at the same
+        # indent as the method declaration, closing brace
+        # likewise; empty body between them.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_method_with_modifiers(self) -> None:
+        out = format_java.format_source(
+            b"class A { public void run() {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public void run()\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_method_with_single_parameter(self) -> None:
+        out = format_java.format_source(
+            b"class A { void process(int x) {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void process(int x)\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_method_with_multiple_parameters(self) -> None:
+        # Comma-space separator between parameters per spec.
+        out = format_java.format_source(
+            b"class A { String format(int x, String s) {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    String format(int x, String s)\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_main_method_with_array_parameter(self) -> None:
+        # Exercises the array_type emitter (`String[]`).
+        out = format_java.format_source(
+            b"class A { "
+            b"public static void main(String[] args) {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public static void main(String[] args)\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_class_with_field_and_method_packed(self) -> None:
+        # Per the "Blank-Line Rules" spec section, the formatter
+        # doesn't yet emit blank lines between mixed members
+        # (that requires javadoc handling). Just verify the
+        # output is structurally correct.
+        out = format_java.format_source(
+            b"class A { int x = 1; void m() {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = 1;\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_method_with_body_not_yet_supported(self) -> None:
+        # Statement emitters land in a later phase; until then
+        # any method with statements refuses with a clear
+        # message rather than emitting a broken body.
+        with pytest.raises(
+            NotImplementedError, match="non-empty body"
+        ):
+            format_java.format_source(
+                b"class A { int compute() { return 42; } }"
+            )
+
+    def test_method_with_throws_not_yet_supported(self) -> None:
+        with pytest.raises(
+            NotImplementedError, match="throws clause"
+        ):
+            format_java.format_source(
+                b"class A { "
+                b"void m() throws IOException {} }"
+            )
+
+    def test_method_with_type_parameters_not_yet_supported(
+        self,
+    ) -> None:
+        with pytest.raises(
+            NotImplementedError, match="type parameters"
+        ):
+            format_java.format_source(
+                b"class A { <T> void m(T x) {} }"
+            )
+
+    def test_method_without_body_not_yet_supported(self) -> None:
+        # Abstract methods inside a class — the grammar exposes
+        # the method without a `body` field.
+        with pytest.raises(
+            NotImplementedError, match="without body"
+        ):
+            format_java.format_source(
+                b"abstract class A { abstract void m(); }"
+            )
+
+    def test_parameter_with_modifier_not_yet_supported(
+        self,
+    ) -> None:
+        # `final int x` carries a modifier on the parameter,
+        # which lands with parameter-annotation support in the
+        # annotation phase.
+        with pytest.raises(
+            NotImplementedError,
+            match="formal_parameter with modifiers",
+        ):
+            format_java.format_source(
+                b"class A { void m(final int x) {} }"
+            )
+
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
     ) -> None:
@@ -886,21 +1027,23 @@ class TestEmitNodeDispatch:
     """Verify the dispatch helper's error path."""
 
     def test_unknown_node_type_raises(self) -> None:
-        # method_declaration is intentionally not yet registered;
-        # the formatter doesn't handle methods until a later phase.
-        src = b"class A { void m() {} }"
+        # return_statement is intentionally not yet registered;
+        # statement emitters land in a later phase.
+        src = b"class A { int m() { return 42; } }"
         tree = format_java.parse_source(src)
-        method = _find_first(tree.root_node, "method_declaration")
-        assert method is not None
+        stmt = _find_first(tree.root_node, "return_statement")
+        assert stmt is not None
         emitter = format_java.Emitter()
         with pytest.raises(
             NotImplementedError, match="No emitter registered"
         ):
-            format_java._emit_node(emitter, src, method)
+            format_java._emit_node(emitter, src, stmt)
 
     def test_block_not_yet_handled(self) -> None:
         # `block` is the body of a method or compound statement —
-        # not yet registered until method-level emitters land.
+        # method_declaration manages its own body emission in
+        # Phase 2g; the `block` node type itself is not yet
+        # registered in the dispatch table.
         src = b"class A { void m() { int x; } }"
         tree = format_java.parse_source(src)
         block = _find_first(tree.root_node, "block")

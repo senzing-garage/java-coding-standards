@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2f — expression operations):
+Status (Phase 2g — method declarations with empty bodies):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -20,7 +20,12 @@ Status (Phase 2f — expression operations):
     - Structural emitters cover `program`, `class_declaration`
       (no type parameters / extends-implements yet),
       `class_body`, `field_declaration`, `variable_declarator`,
-      and `modifiers` (keyword-only — annotations refuse).
+      `modifiers` (keyword-only — annotations refuse),
+      `method_declaration` (empty body only — statements
+      land in a later phase; throws clauses, type parameters,
+      and abstract / interface methods refuse),
+      `formal_parameters` (single-line), `formal_parameter`,
+      and `array_type` (for `Type[]` parameter types).
     - Expression emitters cover `binary_expression`,
       `unary_expression`, `update_expression`,
       `parenthesized_expression`, `field_access`,
@@ -599,6 +604,181 @@ def _emit_parenthesized_expression(
     emitter.write(")")
 
 
+def _emit_method_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a method declaration with Allman brace placement.
+
+    Phase 2g handles the simplest method form:
+    `[modifiers] TYPE NAME(formal_parameters) { }` — no throws
+    clause, empty body (no statements). The signature is on
+    one line, opening `{` on its own line at the same indent as
+    the declaration (Allman per the "Brace Placement" spec
+    section), closing `}` on its own line at the same indent.
+
+    Refuses:
+        - `throws` clauses (later phase: throws-clause wrapping
+          per the "Method and Constructor Declarations / Throws
+          Clause" spec subsection)
+        - Methods with no body field (abstract / interface
+          methods) — interface bodies and abstract methods land
+          in later phases
+        - Methods with non-empty bodies (Phase 2h adds statement
+          emitters)
+        - Methods carrying type parameters
+          (`<T> void m()`) — generic-types phase
+
+    Caller contract: the emitter ends mid-line at the closing
+    `}` (column = current indent + 1). The caller appends the
+    trailing newline that separates this member from whatever
+    follows.
+    """
+    # Refuse throws clauses and type_parameters via the named-
+    # children scan; also locate the optional modifiers child.
+    modifiers_node: Node | None = None
+    for child in node.named_children:
+        if child.type == "throws":
+            raise NotImplementedError(
+                "method_declaration with throws clause is not "
+                "yet supported; throws-clause wrapping lands in "
+                "a later phase."
+            )
+        if child.type == "type_parameters":
+            raise NotImplementedError(
+                "method_declaration with type parameters "
+                "(`<T> void m()`) is not yet supported; that "
+                "construct lands with the generic-type phase."
+            )
+        if child.type == "modifiers":
+            modifiers_node = child
+
+    body = node.child_by_field_name("body")
+    if body is None:
+        raise NotImplementedError(
+            "method_declaration without body (abstract / "
+            "interface method) is not yet supported; interface "
+            "bodies and abstract methods land in a later phase."
+        )
+
+    type_node = node.child_by_field_name("type")
+    name_node = node.child_by_field_name("name")
+    parameters_node = node.child_by_field_name("parameters")
+    if type_node is None or name_node is None or parameters_node is None:
+        raise NotImplementedError(
+            "method_declaration missing 'type' / 'name' / "
+            "'parameters' — grammar shape unexpected."
+        )
+
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+        emitter.write(" ")
+    _emit_node(emitter, source, type_node)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
+    _emit_node(emitter, source, parameters_node)
+    emitter.newline()
+    emitter.write_indent()
+    emitter.write("{")
+    emitter.newline()
+
+    # Phase 2g supports empty method bodies only. Refuse if the
+    # block has any statement children — those are handled by
+    # the statement-emitter phase that follows.
+    statements = list(body.named_children)
+    if statements:
+        raise NotImplementedError(
+            "method_declaration with non-empty body "
+            f"({statements[0].type!r}) is not yet supported; "
+            "statement emitters land in a later phase."
+        )
+
+    emitter.write_indent()
+    emitter.write("}")
+    # Caller appends the trailing newline.
+
+
+def _emit_formal_parameters(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `(p1, p2, ...)` on a single line.
+
+    Single-line form only for Phase 2g; the four-priority
+    wrapping rules from the "Method and Constructor
+    Declarations / Parameter Placement" spec section land in
+    a later phase. Receivers (`@This Foo this`) and varargs
+    (`Type... name`) are not yet supported and will surface
+    via dispatch refusals from the per-parameter / per-type
+    emitters.
+    """
+    params = [
+        c for c in node.children
+        if c.type == "formal_parameter"
+    ]
+    emitter.write("(")
+    for index, param in enumerate(params):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, param)
+    emitter.write(")")
+
+
+def _emit_formal_parameter(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `TYPE NAME` for a single formal parameter.
+
+    Phase 2g refuses parameter modifiers and annotations
+    (`@NonNull` etc.). The "Annotations on parameters" spec
+    subsection's annotation+type-combo alignment rule lands
+    with the annotation-emitter phase.
+    """
+    for child in node.named_children:
+        if child.type == "modifiers":
+            raise NotImplementedError(
+                "formal_parameter with modifiers or annotations "
+                "is not yet supported; that construct lands "
+                "with the annotation phase."
+            )
+    type_node = node.child_by_field_name("type")
+    name_node = node.child_by_field_name("name")
+    if type_node is None or name_node is None:
+        raise NotImplementedError(
+            "formal_parameter missing 'type' or 'name' — "
+            "grammar shape unexpected."
+        )
+    _emit_node(emitter, source, type_node)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
+
+
+def _emit_array_type(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `T[]` (element type + `[]` per dimension).
+
+    Grammar: `array_type` has named fields `element` (the
+    element type) and `dimensions` (a `dimensions` node with
+    `[`/`]` anonymous children, one pair per dimension).
+    Brackets are adjacent to the type per the spec's
+    "Multi-dimensional arrays" subsection of "Miscellaneous
+    Clarifications".
+    """
+    element_node = node.child_by_field_name("element")
+    dimensions_node = node.child_by_field_name("dimensions")
+    if element_node is None or dimensions_node is None:
+        raise NotImplementedError(
+            "array_type missing 'element' or 'dimensions' — "
+            "grammar shape unexpected."
+        )
+    _emit_node(emitter, source, element_node)
+    # Each `[ ]` pair contributes "[]" with no spaces. The
+    # dimensions node also has no spaces inside.
+    dim_text = _node_source_text(source, dimensions_node)
+    # Strip any internal whitespace the developer may have
+    # written (e.g. `[ ]` → `[]`); spec requires no spaces.
+    emitter.write("".join(dim_text.split()))
+
+
 def _emit_field_access(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -891,6 +1071,10 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "field_declaration": _emit_field_declaration,
     "variable_declarator": _emit_variable_declarator,
     "modifiers": _emit_modifiers,
+    "method_declaration": _emit_method_declaration,
+    "formal_parameters": _emit_formal_parameters,
+    "formal_parameter": _emit_formal_parameter,
+    "array_type": _emit_array_type,
     # --- Expression emitters ---
     "binary_expression": _emit_binary_expression,
     "unary_expression": _emit_unary_expression,
@@ -925,13 +1109,20 @@ def format_source(source: bytes) -> bytes:
     optional keyword modifiers (no annotations yet), no type
     parameters, no extends / implements / permits, whose body
     contains primitive- or named-typed field declarations with
-    optional keyword modifiers and optional initializers.
-    Supported initializer shapes include literal values,
-    identifiers, binary / unary / update / parenthesized
-    expressions, field accesses, casts (no intersection types
-    yet), non-pattern instanceof, and single-line method
-    invocations (no explicit type witness, no wrap-priority
-    logic yet). Anything outside that subset raises
+    optional keyword modifiers and optional initializers, or
+    method declarations with empty bodies. Supported
+    initializer shapes include literal values, identifiers,
+    binary / unary / update / parenthesized expressions, field
+    accesses, casts (no intersection types yet), non-pattern
+    instanceof, and single-line method invocations (no
+    explicit type witness, no wrap-priority logic yet). Method
+    declarations may carry keyword modifiers, primitive- or
+    named-typed return types (including `Type[]` arrays via
+    `array_type`), and zero-or-more single-line formal
+    parameters; throws clauses, type parameters, abstract /
+    interface methods, parameter annotations, and method
+    bodies containing statements are NOT yet supported.
+    Anything outside that subset raises
     `NotImplementedError` from the dispatcher (the explicit
     "this construct isn't supported yet" signal).
 

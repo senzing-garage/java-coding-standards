@@ -80,6 +80,33 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2g method declarations with empty bodies:
+  `_emit_method_declaration` emits the signature line in
+  `[modifiers] TYPE NAME(formal_parameters)` shape and places
+  the body braces in Allman style on their own lines per the
+  "Brace Placement / Allman Style" spec section.
+  `_emit_formal_parameters` emits comma-separated parameters
+  on a single line (wrap-priority logic from the
+  "Method and Constructor Declarations / Parameter Placement"
+  spec section deferred). `_emit_formal_parameter` emits
+  `TYPE NAME`. `_emit_array_type` emits `Type[]` for array
+  parameter types (typical `String[] args` in main methods),
+  stripping any developer-written interior whitespace per
+  the spec's "Multi-dimensional arrays" subsection. The
+  formatter now accepts inputs like
+  `public class Main { public static void main(String[] args) {} }`
+  and produces the expected Allman-braced multi-line output.
+  Refusals: throws clauses (later phase — throws-clause
+  wrapping), type parameters on methods (later phase —
+  generic types), abstract / interface methods (later phase —
+  interface bodies), parameter annotations (later phase —
+  annotations), and method bodies containing statements
+  (later phase — statement emitters). The legacy
+  `test_method_declaration_not_yet_supported` test was
+  removed (promoted to a positive `test_empty_method_body`
+  assertion); `test_unknown_node_type_raises` was retargeted
+  to use `return_statement` since `method_declaration` is now
+  supported.
 - Phase 2f single-line expression operations: `field_access`
   (no spaces around the dot), `instanceof_expression`
   (non-pattern form — single space on each side of the
@@ -120,7 +147,12 @@ and this project adheres to
   arguments), cast expressions, non-pattern instanceof, and
   refusals for the pattern-binding instanceof, record-pattern
   instanceof, explicit-type-witness method call, and
-  intersection-type cast forms (98 tests total).
+  intersection-type cast forms, and (Phase 2g) method-
+  declaration tests covering empty body, modifiers,
+  parameter list (zero, one, multiple, array-typed), packed
+  field+method members, and refusals for the body-with-
+  statements, throws, type-parameter, and abstract-method
+  forms (108 tests total).
 
 ### Changed
 
@@ -159,9 +191,11 @@ These entries are the in-progress work on the
 (spec doc), Phase 2a (scaffolding), Phase 2b (token-stream
 emission), Phase 2c (minimal structural emitters), Phase 2d
 (keyword modifiers), Phase 2e (expression emitters —
-binary / unary / update / parenthesized), and Phase 2f
+binary / unary / update / parenthesized), Phase 2f
 (single-line expression operations — field access, method
-invocation, cast, instanceof) have landed, but
+invocation, cast, instanceof), and Phase 2g (method
+declarations with empty bodies, formal parameters,
+array-type parameter types) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh
