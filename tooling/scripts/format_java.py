@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2k — try/catch/finally):
+Status (Phase 2l — throw / break / continue / labeled):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -45,9 +45,12 @@ Status (Phase 2k — try/catch/finally):
       `} finally {`), `catch_formal_parameter`, and
       `catch_type` (with multi-catch `TYPE | TYPE | ...`
       single-line form, space-space around `|` per spec B7).
-      Remaining control-flow constructs (`switch`, try-with-
-      resources, `synchronized`, `throw`, `break`,
-      `continue`, labeled statements) refuse until
+      `throw_statement`, `break_statement` and
+      `continue_statement` (each with optional label per
+      spec C7), and `labeled_statement` (label on its own
+      line, statement on the next at the same indent per
+      spec C7). Remaining control-flow constructs (`switch`,
+      try-with-resources, `synchronized`) refuse until
       subsequent phases.
     - Expression emitters cover `binary_expression`,
       `unary_expression`, `update_expression`,
@@ -831,6 +834,106 @@ def _emit_if_statement(
                 "if_statement with brace-less else alternative "
                 f"({alternative.type!r}) is not yet supported."
             )
+
+
+def _emit_throw_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `throw EXPR;`.
+
+    Single space between `throw` and the thrown expression.
+    The expression is the single named child of the
+    `throw_statement` node.
+    """
+    expr: Node | None = None
+    for child in node.children:
+        if child.is_named:
+            expr = child
+            break
+    if expr is None:
+        raise NotImplementedError(
+            "throw_statement missing thrown expression — "
+            "grammar shape unexpected."
+        )
+    emitter.write("throw ")
+    _emit_node(emitter, source, expr)
+    emitter.write(";")
+
+
+def _emit_break_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `break;` or `break LABEL;`.
+
+    Per the spec's "Labels and Labeled break/continue" section,
+    a single space sits between the keyword and the label name.
+    """
+    label: Node | None = None
+    for child in node.children:
+        if child.is_named:
+            label = child
+            break
+    if label is None:
+        emitter.write("break;")
+    else:
+        emitter.write("break ")
+        _emit_node(emitter, source, label)
+        emitter.write(";")
+
+
+def _emit_continue_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `continue;` or `continue LABEL;`.
+
+    Same shape as `_emit_break_statement` — single space
+    between the keyword and the label name per the
+    "Labels and Labeled break/continue" spec section.
+    """
+    label: Node | None = None
+    for child in node.children:
+        if child.is_named:
+            label = child
+            break
+    if label is None:
+        emitter.write("continue;")
+    else:
+        emitter.write("continue ")
+        _emit_node(emitter, source, label)
+        emitter.write(";")
+
+
+def _emit_labeled_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `LABEL:` on its own line, then the labeled statement.
+
+    Per the spec's "Labels and Labeled break/continue" section,
+    the label appears on its own line at the column of the
+    labeled statement. The grammar exposes two named children:
+    the label identifier (first), and the statement being
+    labeled (second — typically a `for_statement`,
+    `while_statement`, `do_statement`, or `block`).
+
+    Caller contract: enter with `write_indent` already applied
+    (the block-loop convention). The emitter writes
+    `"LABEL:"`, finalizes the line, re-applies `write_indent`,
+    and dispatches the inner statement. The inner statement
+    ends mid-line (per the usual emitter convention) and the
+    caller's `newline()` finalizes it.
+    """
+    named = [c for c in node.children if c.is_named]
+    if len(named) < 2:
+        raise NotImplementedError(
+            "labeled_statement missing label or inner "
+            "statement — grammar shape unexpected."
+        )
+    label_node, inner_node = named[0], named[1]
+    _emit_node(emitter, source, label_node)
+    emitter.write(":")
+    emitter.newline()
+    emitter.write_indent()
+    _emit_node(emitter, source, inner_node)
 
 
 def _emit_try_statement(
@@ -1633,6 +1736,10 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "catch_formal_parameter": _emit_catch_formal_parameter,
     "catch_type": _emit_catch_type,
     "finally_clause": _emit_finally_clause,
+    "throw_statement": _emit_throw_statement,
+    "break_statement": _emit_break_statement,
+    "continue_statement": _emit_continue_statement,
+    "labeled_statement": _emit_labeled_statement,
     # --- Expression emitters ---
     "binary_expression": _emit_binary_expression,
     "unary_expression": _emit_unary_expression,

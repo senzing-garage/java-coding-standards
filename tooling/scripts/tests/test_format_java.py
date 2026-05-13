@@ -1277,6 +1277,98 @@ class TestFormatSourceSubset:
                 b"try (InputStream in = open()) { use(in); } } }"
             )
 
+    # --- throw / break / continue / labeled (Phase 2l) ---
+
+    def test_throw_statement_with_identifier(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { throw e; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        throw e;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_break_statement_unlabeled(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"while (x) { break; } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        while (x) {\n"
+            b"            break;\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_continue_statement_unlabeled(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"while (x) { continue; } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        while (x) {\n"
+            b"            continue;\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_labeled_break(self) -> None:
+        # Spec C7: label appears on its own line at the column
+        # of the labeled statement. `break LABEL;` with a
+        # single space between keyword and label.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"outer: for (;;) { break outer; } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        outer:\n"
+            b"        for (;;) {\n"
+            b"            break outer;\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_labeled_continue(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"outer: for (int i = 0; i < n; i++) { "
+            b"if (i == 5) { continue outer; } } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        outer:\n"
+            b"        for (int i = 0; i < n; i++) {\n"
+            b"            if (i == 5) {\n"
+            b"                continue outer;\n"
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
     ) -> None:

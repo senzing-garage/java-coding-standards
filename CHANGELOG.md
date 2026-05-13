@@ -80,6 +80,17 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2l throw / break / continue / labeled:
+  `_emit_throw_statement` emits `throw EXPR;` with single
+  space between keyword and expression.
+  `_emit_break_statement` and `_emit_continue_statement`
+  emit either bare `break;` / `continue;` or the labeled
+  `break LABEL;` / `continue LABEL;` form with single
+  space between keyword and label per the spec's
+  "Labels and Labeled break/continue" section (C7).
+  `_emit_labeled_statement` emits `LABEL:` on its own line
+  and the labeled statement on the next line at the same
+  indent per the same spec section.
 - Phase 2k try/catch/finally with multi-catch:
   `_emit_try_statement` emits `try BODY` followed by zero-
   or-more cuddled catch clauses and an optional cuddled
@@ -257,7 +268,11 @@ and this project adheres to
   forms, and (Phase 2k) try/catch/finally tests covering
   try-catch, try-finally, multi-catch-with-finally (all
   clauses cuddled), `|`-separator spacing in multi-catch,
-  and the try-with-resources refusal (135 tests total).
+  and the try-with-resources refusal, and (Phase 2l)
+  throw/break/continue/labeled tests covering bare throw,
+  unlabeled break, unlabeled continue, labeled break with
+  the label on its own line, and labeled continue
+  (140 tests total).
 
 ### Changed
 
@@ -305,9 +320,10 @@ return / expression-statement / local-variable-declaration /
 assignment-expression), Phase 2i (if/else control flow —
 block emitter, if-with-block, cuddled else, else-if chains),
 Phase 2j (loop statements — classic for, enhanced-for,
-while, do-while with cuddled `} while`), and Phase 2k
+while, do-while with cuddled `} while`), Phase 2k
 (try/catch/finally with multi-catch, all clauses cuddled
-per "Closing Brace Rules") have landed, but
+per "Closing Brace Rules"), and Phase 2l (throw / break /
+continue / labeled statements) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh
