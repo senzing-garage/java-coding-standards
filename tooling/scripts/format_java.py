@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2l — throw / break / continue / labeled):
+Status (Phase 2m — ternary + object creation + generics):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -834,6 +834,124 @@ def _emit_if_statement(
                 "if_statement with brace-less else alternative "
                 f"({alternative.type!r}) is not yet supported."
             )
+
+
+def _emit_ternary_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `COND ? CONSEQUENCE : ALTERNATIVE`.
+
+    Phase 2m implements Tier 1 (single-line) only per the
+    spec's "Line Continuation / Ternary Operator" section.
+    The remaining tiers (Tier 2: break before `?` keeping
+    `? value : value` together; Tier 3: break before both
+    `?` and `:`, with `:` aligned under `?`; Tier 4:
+    parenthesize long value expressions) land with the
+    wrap-priority phase.
+
+    Per the "Whitespace and Operator Spacing" spec section,
+    `?` and `:` each get single space on each side.
+
+    The spec also requires nested ternaries to be wrapped in
+    explicit grouping parentheses
+    ("Miscellaneous Clarifications / Nested ternary").
+    Phase 2m doesn't check for nesting; if the source author
+    wrote a nested ternary without parens, the formatter
+    re-emits the same shape — the spec violation is the
+    developer's, not the formatter's invention.
+    """
+    cond = node.child_by_field_name("condition")
+    consequence = node.child_by_field_name("consequence")
+    alternative = node.child_by_field_name("alternative")
+    if cond is None or consequence is None or alternative is None:
+        raise NotImplementedError(
+            "ternary_expression missing 'condition', "
+            "'consequence', or 'alternative' — grammar shape "
+            "unexpected."
+        )
+    _emit_node(emitter, source, cond)
+    emitter.write(" ? ")
+    _emit_node(emitter, source, consequence)
+    emitter.write(" : ")
+    _emit_node(emitter, source, alternative)
+
+
+def _emit_object_creation_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `new TYPE(ARGS)`.
+
+    Single space between the `new` keyword and the type, no
+    space between the type and the argument list. Grammar
+    fields: `type` (may be `type_identifier`, `generic_type`,
+    or `scoped_type_identifier`) and `arguments`
+    (`argument_list`).
+
+    Refuses anonymous class bodies (`new Type() { ... }`),
+    array creation (`new int[5]`), and explicit type arguments
+    on the constructor call (`new <T>Foo(...)`) — those land
+    with subsequent phases.
+    """
+    # Anonymous class body is exposed as a `class_body` named
+    # child (no field name); refuse it explicitly. The
+    # "Anonymous Classes" spec section (C8) needs its own
+    # emitter with the expression-form same-line-brace rule.
+    for child in node.named_children:
+        if child.type == "class_body":
+            raise NotImplementedError(
+                "object_creation_expression with anonymous "
+                "class body (`new Type() { ... }`) is not yet "
+                "supported; that construct lands with the "
+                "anonymous-classes phase."
+            )
+    if node.child_by_field_name("type_arguments") is not None:
+        raise NotImplementedError(
+            "object_creation_expression with explicit type "
+            "arguments (`new <T>Foo(...)`) is not yet supported."
+        )
+    type_node = node.child_by_field_name("type")
+    arguments = node.child_by_field_name("arguments")
+    if type_node is None or arguments is None:
+        raise NotImplementedError(
+            "object_creation_expression missing 'type' or "
+            "'arguments' — grammar shape unexpected."
+        )
+    emitter.write("new ")
+    _emit_node(emitter, source, type_node)
+    _emit_node(emitter, source, arguments)
+
+
+def _emit_generic_type(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `TYPE<TYPE_ARGS>` with no space between the two.
+
+    Grammar: a `generic_type` node has a `type_identifier`
+    (or `scoped_type_identifier`) child followed by a
+    `type_arguments` child. Per the "Whitespace and Operator
+    Spacing" spec section, no space inside or around `<>`.
+    """
+    for child in node.children:
+        if child.is_named:
+            _emit_node(emitter, source, child)
+
+
+def _emit_type_arguments(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `<TYPE, TYPE, ...>` or the diamond `<>`.
+
+    Comma-space separator between type arguments per the
+    "Whitespace and Operator Spacing" spec section's
+    "After commas" row.
+    """
+    types = [c for c in node.children if c.is_named]
+    emitter.write("<")
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, t)
+    emitter.write(">")
 
 
 def _emit_throw_statement(
@@ -1751,6 +1869,13 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "method_invocation": _emit_method_invocation,
     "argument_list": _emit_argument_list,
     "assignment_expression": _emit_assignment_expression,
+    "ternary_expression": _emit_ternary_expression,
+    "object_creation_expression": _emit_object_creation_expression,
+    "generic_type": _emit_generic_type,
+    "type_arguments": _emit_type_arguments,
+    # Outer.Inner scoped type identifier — source text is the
+    # canonical form; emit verbatim.
+    "scoped_type_identifier": _emit_verbatim,
 }
 
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:

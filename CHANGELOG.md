@@ -80,6 +80,26 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2m ternary, object creation, and generic types:
+  `_emit_ternary_expression` emits Tier 1 (single-line)
+  `COND ? CONSEQUENCE : ALTERNATIVE` with single space on
+  each side of `?` and `:` per the "Whitespace and Operator
+  Spacing" spec section. The multi-tier wrapping (Tiers 2,
+  3, 4 per "Line Continuation / Ternary Operator") lands
+  with the wrap-priority phase. `_emit_object_creation_-
+  expression` emits `new TYPE(ARGS)` with single space
+  after `new`, no space before the argument list. Refuses
+  anonymous class bodies (`new Type() { ... }`, Phase 2c8
+  scope) and explicit type-argument constructors
+  (`new <T>Foo(...)`, later phase). `_emit_generic_type`
+  emits `TYPE<TYPE_ARGS>` with no spaces; `_emit_type_-
+  arguments` emits `<TYPE, TYPE, ...>` or the diamond
+  `<>` with comma-space separators per the spec.
+  `scoped_type_identifier` (`Outer.Inner`) registered as
+  `_emit_verbatim`. After Phase 2m the formatter handles
+  realistic field declarations like
+  `Map<String, Integer> m = new HashMap<>();` and
+  `String s = x > 0 ? "pos" : "neg";`.
 - Phase 2l throw / break / continue / labeled:
   `_emit_throw_statement` emits `throw EXPR;` with single
   space between keyword and expression.
@@ -271,8 +291,12 @@ and this project adheres to
   and the try-with-resources refusal, and (Phase 2l)
   throw/break/continue/labeled tests covering bare throw,
   unlabeled break, unlabeled continue, labeled break with
-  the label on its own line, and labeled continue
-  (140 tests total).
+  the label on its own line, and labeled continue, and
+  (Phase 2m) ternary + object-creation tests covering simple
+  ternary, ternary with compound condition, object creation
+  with no args / with args / with diamond generic / with
+  comma-separated type args / with scoped type, plus the
+  anonymous-class-body refusal (147 tests total).
 
 ### Changed
 
@@ -322,8 +346,9 @@ block emitter, if-with-block, cuddled else, else-if chains),
 Phase 2j (loop statements — classic for, enhanced-for,
 while, do-while with cuddled `} while`), Phase 2k
 (try/catch/finally with multi-catch, all clauses cuddled
-per "Closing Brace Rules"), and Phase 2l (throw / break /
-continue / labeled statements) have landed, but
+per "Closing Brace Rules"), Phase 2l (throw / break /
+continue / labeled statements), and Phase 2m (ternary,
+object-creation, and generic types) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

@@ -447,16 +447,8 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_ternary_expression_not_yet_supported(self) -> None:
-        # Ternary expressions have their own multi-tier wrapping
-        # rules in the "Line Continuation / Ternary Operator"
-        # spec section and land in a later phase.
-        with pytest.raises(
-            NotImplementedError, match="ternary_expression"
-        ):
-            format_java.format_source(
-                b"class A { int x = a ? b : c; }"
-            )
+    # ternary_expression is now supported (Phase 2m, Tier 1
+    # single-line). Promoted to positive coverage below.
 
     # --- Single-line expression operations (Phase 2f) ---
 
@@ -1368,6 +1360,114 @@ class TestFormatSourceSubset:
             b"    }\n"
             b"}\n"
         )
+
+    # --- Ternary + object creation (Phase 2m) ---
+
+    def test_ternary_expression_simple(self) -> None:
+        out = format_java.format_source(
+            b"class A { int x = a ? b : c; }"
+        )
+        # Per "Whitespace and Operator Spacing", `?` and `:`
+        # each get single space on each side.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int x = a ? b : c;\n"
+            b"}\n"
+        )
+
+    def test_ternary_expression_with_compound_condition(
+        self,
+    ) -> None:
+        out = format_java.format_source(
+            b'class A { String s = x > 0 ? "pos" : "neg"; }'
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b'    String s = x > 0 ? "pos" : "neg";\n'
+            b"}\n"
+        )
+
+    def test_object_creation_no_args(self) -> None:
+        out = format_java.format_source(
+            b"class A { Object o = new Object(); }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    Object o = new Object();\n"
+            b"}\n"
+        )
+
+    def test_object_creation_with_args(self) -> None:
+        out = format_java.format_source(
+            b'class A { String s = new String("hi"); }'
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b'    String s = new String("hi");\n'
+            b"}\n"
+        )
+
+    def test_object_creation_with_diamond_generic(self) -> None:
+        # `new ArrayList<>()` — diamond operator. Exercises
+        # `_emit_generic_type` + `_emit_type_arguments` with
+        # no type arguments inside `<>`.
+        out = format_java.format_source(
+            b"class A { List<String> ls = new ArrayList<>(); }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    List<String> ls = new ArrayList<>();\n"
+            b"}\n"
+        )
+
+    def test_generic_type_with_two_args(self) -> None:
+        # `Map<String, Integer>` — comma-space between type
+        # arguments per the "Whitespace and Operator Spacing"
+        # spec's "After commas" row, no spaces inside `<>`.
+        out = format_java.format_source(
+            b"class A { Map<String, Integer> m = "
+            b"new HashMap<>(); }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    Map<String, Integer> m = new HashMap<>();\n"
+            b"}\n"
+        )
+
+    def test_object_creation_with_scoped_type(self) -> None:
+        # `new Outer.Inner()` — scoped_type_identifier emitted
+        # verbatim from the source span (it's just the
+        # dotted identifier path).
+        out = format_java.format_source(
+            b"class A { Object o = new Outer.Inner(); }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    Object o = new Outer.Inner();\n"
+            b"}\n"
+        )
+
+    def test_object_creation_anonymous_body_not_supported(
+        self,
+    ) -> None:
+        # `new Type() { ... }` — anonymous class body, refuses
+        # because the spec's "Anonymous Classes" section (C8)
+        # needs its own emitter with the expression-form
+        # same-line-brace rule.
+        with pytest.raises(
+            NotImplementedError, match="anonymous class body"
+        ):
+            format_java.format_source(
+                b"class A { Object o = new Object() "
+                b"{ void m() {} }; }"
+            )
 
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
