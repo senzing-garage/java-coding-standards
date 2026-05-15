@@ -80,6 +80,31 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2n annotations on declarations: refactored
+  `_emit_modifiers` to handle both annotations and keyword
+  modifiers per spec A3. Annotations emit on their own
+  lines directly above the declaration (no blank between
+  annotations or between the last annotation and the
+  declaration); keyword modifiers continue to emit inline
+  space-separated as before. New caller contract: the
+  emitter writes its own trailing space (for keyword
+  modifiers) or its own trailing newline + write_indent
+  (for annotation-only modifiers), so the three callers
+  (`_emit_class_declaration`, `_emit_field_declaration`,
+  `_emit_method_declaration`) no longer write an
+  intermediate `write(" ")` after the modifiers dispatch.
+  New emitters: `_emit_marker_annotation` for `@Foo`,
+  `_emit_annotation` for `@Foo(args)`,
+  `_emit_annotation_argument_list` for the annotation
+  argument list (comma-space-separated, single-line only
+  — multi-line wrapping per spec A3's
+  "Annotations with arguments" subsection lands with the
+  wrap-priority phase), and `_emit_element_value_pair`
+  for named-arg form `key = value`. After Phase 2n the
+  formatter handles realistic annotation-bearing
+  declarations like
+  `@Override public String name() { return n; }` and
+  `@Schedule(hour = "12") class A {}`.
 - Phase 2m ternary, object creation, and generic types:
   `_emit_ternary_expression` emits Tier 1 (single-line)
   `COND ? CONSEQUENCE : ALTERNATIVE` with single space on
@@ -296,7 +321,13 @@ and this project adheres to
   ternary, ternary with compound condition, object creation
   with no args / with args / with diamond generic / with
   comma-separated type args / with scoped type, plus the
-  anonymous-class-body refusal (147 tests total).
+  anonymous-class-body refusal, and (Phase 2n) annotation
+  tests covering marker annotation on class, annotation
+  with string arg, annotation with element_value_pair
+  (named arg form), annotation + keyword modifiers,
+  multiple annotations on class, annotation on method,
+  multiple annotations on method, annotation on field, and
+  annotation-only-no-keyword form (154 tests total).
 
 ### Changed
 
@@ -347,8 +378,10 @@ Phase 2j (loop statements — classic for, enhanced-for,
 while, do-while with cuddled `} while`), Phase 2k
 (try/catch/finally with multi-catch, all clauses cuddled
 per "Closing Brace Rules"), Phase 2l (throw / break /
-continue / labeled statements), and Phase 2m (ternary,
-object-creation, and generic types) have landed, but
+continue / labeled statements), Phase 2m (ternary,
+object-creation, and generic types), and Phase 2n
+(annotations on classes / fields / methods, with marker
+and arg-bearing forms) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2m — ternary + object creation + generics):
+Status (Phase 2n — annotations on declarations):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -444,8 +444,11 @@ def _emit_class_declaration(
     body = node.child_by_field_name("body")
 
     if modifiers_node is not None:
+        # `_emit_modifiers` emits its own trailing space (for
+        # keyword modifiers) or its own trailing newline +
+        # indent (for annotation-only modifiers), so the
+        # caller does not write a separator here.
         _emit_node(emitter, source, modifiers_node)
-        emitter.write(" ")
     emitter.write("class ")
     if name is not None:
         _emit_node(emitter, source, name)
@@ -504,8 +507,11 @@ def _emit_field_declaration(
             break
 
     if modifiers_node is not None:
+        # `_emit_modifiers` emits its own trailing space (for
+        # keyword modifiers) or its own trailing newline +
+        # indent (for annotation-only modifiers), so the
+        # caller does not write a separator here.
         _emit_node(emitter, source, modifiers_node)
-        emitter.write(" ")
 
     type_node = node.child_by_field_name("type")
     if type_node is None:
@@ -699,8 +705,11 @@ def _emit_method_declaration(
         )
 
     if modifiers_node is not None:
+        # `_emit_modifiers` emits its own trailing space (for
+        # keyword modifiers) or its own trailing newline +
+        # indent (for annotation-only modifiers), so the
+        # caller does not write a separator here.
         _emit_node(emitter, source, modifiers_node)
-        emitter.write(" ")
     _emit_node(emitter, source, type_node)
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
@@ -834,6 +843,91 @@ def _emit_if_statement(
                 "if_statement with brace-less else alternative "
                 f"({alternative.type!r}) is not yet supported."
             )
+
+
+def _emit_marker_annotation(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `@IDENTIFIER` (annotation with no arguments).
+
+    Grammar field: `name` (identifier).
+    """
+    name = node.child_by_field_name("name")
+    if name is None:
+        raise NotImplementedError(
+            "marker_annotation missing 'name' — grammar shape "
+            "unexpected."
+        )
+    emitter.write("@")
+    _emit_node(emitter, source, name)
+
+
+def _emit_annotation(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `@IDENTIFIER(ARGS)`.
+
+    Grammar fields: `name` (identifier) and `arguments`
+    (annotation_argument_list). No space between the name
+    and the argument-list parens — same convention as method
+    invocations.
+
+    Phase 2n emits single-line annotation argument lists
+    only; the priority-1-4 wrap pattern from the spec's
+    "Annotations with arguments" subsection (A3) lands with
+    the wrap-priority phase.
+    """
+    name = node.child_by_field_name("name")
+    arguments = node.child_by_field_name("arguments")
+    if name is None or arguments is None:
+        raise NotImplementedError(
+            "annotation missing 'name' or 'arguments' — "
+            "grammar shape unexpected."
+        )
+    emitter.write("@")
+    _emit_node(emitter, source, name)
+    _emit_node(emitter, source, arguments)
+
+
+def _emit_annotation_argument_list(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `(arg1, arg2, ...)` for an annotation.
+
+    Same shape as `_emit_argument_list` — comma-space
+    separator. Each argument can be either a plain
+    expression (single-value form like
+    `@SuppressWarnings("unchecked")`) or an
+    `element_value_pair` (named form like
+    `@Schedule(hour = "12")`).
+    """
+    args = list(node.named_children)
+    emitter.write("(")
+    for index, arg in enumerate(args):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, arg)
+    emitter.write(")")
+
+
+def _emit_element_value_pair(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `KEY = VALUE` for a named annotation argument.
+
+    Per "Whitespace and Operator Spacing" (assignment-
+    operator row), single space on each side of `=`.
+    """
+    key = node.child_by_field_name("key")
+    value = node.child_by_field_name("value")
+    if key is None or value is None:
+        raise NotImplementedError(
+            "element_value_pair missing 'key' or 'value' — "
+            "grammar shape unexpected."
+        )
+    _emit_node(emitter, source, key)
+    emitter.write(" = ")
+    _emit_node(emitter, source, value)
 
 
 def _emit_ternary_expression(
@@ -1725,43 +1819,53 @@ def _emit_method_invocation(
 def _emit_modifiers(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit a list of modifiers, space-separated.
+    """Emit a list of modifiers — annotations + keyword modifiers.
 
-    Phase 2d handles keyword-only modifiers (`public`,
-    `private`, `protected`, `static`, `final`, `abstract`,
-    `volatile`, `synchronized`, `native`, `strictfp`,
-    `transient`, `default`). Annotations within a `modifiers`
-    node (`marker_annotation`, `annotation`, etc.) are refused
-    with `NotImplementedError` — those land in a later phase
-    with their own per-annotation wrapping rules from the
-    "Annotations" spec section.
+    Per the "Annotations" spec section (A3): each annotation
+    on a declaration goes on its own line directly above the
+    declaration, with no blank line between annotations or
+    between the last annotation and the declaration.
 
-    Modifier order is preserved from the source. The JLS
-    conventional order
-    (`public protected private abstract static final transient
-    volatile synchronized native strictfp default`) is a coding
-    convention enforced by checkstyle, not by this formatter.
+    Keyword modifiers (`public`, `private`, `protected`,
+    `static`, `final`, `abstract`, `volatile`, `synchronized`,
+    `native`, `strictfp`, `transient`, `default`) emit inline
+    space-separated. Modifier order is preserved from the
+    source — the formatter does NOT reorder modifiers
+    (checkstyle enforces the JLS conventional order
+    separately).
+
+    Caller contract: the caller has just emitted any
+    preceding leading whitespace via `write_indent`. This
+    emitter writes the annotations (one per line, each
+    followed by `newline()` + `write_indent()`) and then the
+    keyword modifiers followed by a single trailing space.
+    The caller writes the next declaration token (e.g.
+    `class Foo`, `int x`, `void m()`) directly without an
+    intermediate `write(" ")` call.
+
+    If only annotations are present (no keyword modifiers),
+    the trailing `newline()` + `write_indent()` positions
+    the caller's next token correctly on the line below the
+    last annotation. If only keyword modifiers are present
+    (no annotations), the trailing space positions the next
+    token on the same line.
     """
-    parts: list[str] = []
+    annotations: list[Node] = []
+    keywords: list[str] = []
     for child in node.children:
         if child.is_named:
-            # Named modifier children are annotations
-            # (marker_annotation, annotation, etc.). Phase 2d
-            # doesn't yet handle them; refuse to emit rather
-            # than drop the annotation silently.
-            raise NotImplementedError(
-                f"Annotation in modifiers ({child.type!r}) is "
-                "not yet supported; annotation emission lands "
-                "in a later phase."
-            )
-        parts.append(child.type)
-    if not parts:
-        # Defensive: the grammar should never produce an empty
-        # `modifiers` node, but if it did, the caller's
-        # "write a trailing space" wouldn't make sense after
-        # an empty emission. Refuse to emit a stray separator.
-        return
-    emitter.write(" ".join(parts))
+            annotations.append(child)
+        else:
+            keywords.append(child.type)
+
+    for ann in annotations:
+        _emit_node(emitter, source, ann)
+        emitter.newline()
+        emitter.write_indent()
+
+    if keywords:
+        emitter.write(" ".join(keywords))
+        emitter.write(" ")
 
 
 def _emit_variable_declarator(
@@ -1833,6 +1937,10 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "field_declaration": _emit_field_declaration,
     "variable_declarator": _emit_variable_declarator,
     "modifiers": _emit_modifiers,
+    "marker_annotation": _emit_marker_annotation,
+    "annotation": _emit_annotation,
+    "annotation_argument_list": _emit_annotation_argument_list,
+    "element_value_pair": _emit_element_value_pair,
     "method_declaration": _emit_method_declaration,
     "formal_parameters": _emit_formal_parameters,
     "formal_parameter": _emit_formal_parameter,

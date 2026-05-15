@@ -296,24 +296,8 @@ class TestFormatSourceSubset:
     # former "not yet supported" test was promoted to a positive
     # assertion in `test_empty_method_body` below.
 
-    def test_class_with_annotation_not_yet_supported(self) -> None:
-        # marker_annotation inside `modifiers` is refused since
-        # annotation emission with per-annotation wrapping rules
-        # lands in a later phase.
-        with pytest.raises(
-            NotImplementedError, match="Annotation in modifiers"
-        ):
-            format_java.format_source(
-                b"@Deprecated public class A {}"
-            )
-
-    def test_field_with_annotation_not_yet_supported(self) -> None:
-        with pytest.raises(
-            NotImplementedError, match="Annotation in modifiers"
-        ):
-            format_java.format_source(
-                b"class A { @Deprecated public int x; }"
-            )
+    # Annotations on classes and fields are now supported
+    # (Phase 2n). Promoted to positive coverage below.
 
     # --- Expression-form initializers (Phase 2e) ---
 
@@ -1468,6 +1452,135 @@ class TestFormatSourceSubset:
                 b"class A { Object o = new Object() "
                 b"{ void m() {} }; }"
             )
+
+    # --- Annotations (Phase 2n) ---
+
+    def test_marker_annotation_on_class(self) -> None:
+        # Spec A3: annotation on its own line above the
+        # declaration, no blank between.
+        out = format_java.format_source(
+            b"@Override class A {}"
+        )
+        assert out == (
+            b"@Override\n"
+            b"class A\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_annotation_with_string_arg(self) -> None:
+        out = format_java.format_source(
+            b'@SuppressWarnings("unchecked") class A {}'
+        )
+        assert out == (
+            b'@SuppressWarnings("unchecked")\n'
+            b"class A\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_annotation_with_element_value_pair(self) -> None:
+        # `@Schedule(hour = "12")` — named-argument form via
+        # element_value_pair. Spec assignment-operator rule
+        # gives space-space around `=`.
+        out = format_java.format_source(
+            b'@Schedule(hour = "12") class A {}'
+        )
+        assert out == (
+            b'@Schedule(hour = "12")\n'
+            b"class A\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_annotation_plus_keyword_modifiers_on_class(
+        self,
+    ) -> None:
+        out = format_java.format_source(
+            b"@Deprecated public class A {}"
+        )
+        assert out == (
+            b"@Deprecated\n"
+            b"public class A\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_multiple_annotations_on_class(self) -> None:
+        # Spec A3: no blank line between consecutive
+        # annotations; no blank line between the last
+        # annotation and the declaration.
+        out = format_java.format_source(
+            b"@Override @Deprecated public class A {}"
+        )
+        assert out == (
+            b"@Override\n"
+            b"@Deprecated\n"
+            b"public class A\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_annotation_on_method(self) -> None:
+        out = format_java.format_source(
+            b"class A { "
+            b"@Override public String name() { return n; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    @Override\n"
+            b"    public String name()\n"
+            b"    {\n"
+            b"        return n;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_multiple_annotations_on_method(self) -> None:
+        out = format_java.format_source(
+            b"class A { "
+            b"@Override @Deprecated public void m() {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    @Override\n"
+            b"    @Deprecated\n"
+            b"    public void m()\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_annotation_on_field(self) -> None:
+        out = format_java.format_source(
+            b"class A { @Deprecated private int x = 0; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    @Deprecated\n"
+            b"    private int x = 0;\n"
+            b"}\n"
+        )
+
+    def test_annotation_only_on_class_no_keyword_modifiers(
+        self,
+    ) -> None:
+        # Annotations-only modifiers: the trailing
+        # newline + write_indent positions the caller's
+        # next token on the line below at the right column
+        # — no stray space.
+        out = format_java.format_source(
+            b"@Deprecated class A {}"
+        )
+        assert out == (
+            b"@Deprecated\n"
+            b"class A\n"
+            b"{\n"
+            b"}\n"
+        )
 
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
