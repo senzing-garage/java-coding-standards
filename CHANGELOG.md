@@ -80,6 +80,31 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2q short-circuit Tier 1 collapse + brace synthesis
+  in `if_statement`: per the spec's "Short-Circuit
+  Conditionals" section, `_emit_if_statement` now collapses
+  `if (x) [{] return; [}]` (any combination of input forms)
+  to single-line braceless Tier 1 (`if (x) return;`) when
+  the consequence is exactly one short-circuit statement
+  (`return`, `continue`, `break`, `throw`) AND there is no
+  `else` clause. Per the spec's "`if`/`else` pairs always
+  use braces" rule, the presence of any `else` inhibits
+  Tier 1. Non-block bare-statement bodies that are NOT
+  short-circuit (e.g. `if (x) y = 1;`) are wrapped in
+  braces via the new `_emit_branch_as_block` helper. The
+  helper is also used for bare-statement `else` branches
+  to ensure both arms of an if/else are braced. New
+  module-level constant `_SHORT_CIRCUIT_STATEMENT_TYPES`
+  enumerates the four qualifying statement types. New
+  helper `_short_circuit_body(node)` returns the inner
+  short-circuit statement for either Tier-1-input or
+  Tier-2-input shapes (block-with-one-short-circuit). The
+  Tier-1 width check ("would the single-line form exceed
+  80 characters? → fall back to Tier 2") is NOT yet
+  implemented; lands with the wrap-priority phase.
+  Calibration-recon impact: PARTIAL dropped from 14 to 3
+  (11 short-circuit fixtures unblocked); MATCH bumped
+  from 21 to 34 of 83 fixtures.
 - Phase 2p throws clauses on method declarations: new
   `_emit_throws` handler registered for the `throws` node;
   `_emit_method_declaration` updated to detect the optional
@@ -365,9 +390,13 @@ and this project adheres to
   tests covering single-line block comment above a field /
   above a method, line comment inside a method body, and
   multi-line block comment with interior indent preserved,
-  and (Phase 2p) throws-clause tests covering single
+  (Phase 2p) throws-clause tests covering single
   exception, multi-exception single-line, and modifiers +
-  throws + body combinations (160 tests total).
+  throws + body combinations, and (Phase 2q) short-circuit
+  Tier 1 tests covering braceless-non-short-circuit
+  wrapping, braceless-short-circuit-stays-Tier-1,
+  braced-short-circuit-collapses-to-Tier-1, and
+  if/else-inhibits-Tier-1 (163 tests total).
 
 ### Changed
 
@@ -422,9 +451,10 @@ continue / labeled statements), Phase 2m (ternary,
 object-creation, and generic types), Phase 2n
 (annotations on classes / fields / methods, with marker
 and arg-bearing forms), Phase 2o (line + block
-comment verbatim emission, no reflow yet), and Phase 2p
-(throws clauses on method declarations, single-line form)
-have landed, but
+comment verbatim emission, no reflow yet), Phase 2p
+(throws clauses on method declarations, single-line form),
+and Phase 2q (short-circuit Tier 1 collapse and brace
+synthesis for if-statements) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

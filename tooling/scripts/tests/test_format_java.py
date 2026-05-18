@@ -1007,21 +1007,86 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_braceless_if_not_yet_supported(self) -> None:
-        # `if (x) y();` is the Tier 1 short-circuit form per
-        # the spec; it's allowed only for body types
-        # `return` / `continue` / `break` / `throw`. The
-        # short-circuit-conditionals phase will handle both
-        # the Tier 1 case (collapse `if (x) return;` to a
-        # single line) and the non-short-circuit normalization
-        # (wrap `if (x) doSomething();` in braces).
-        with pytest.raises(
-            NotImplementedError,
-            match="brace-less consequence",
-        ):
-            format_java.format_source(
-                b"class A { void m() { if (x) y(); } }"
-            )
+    def test_braceless_non_short_circuit_wraps_in_braces(
+        self,
+    ) -> None:
+        # `if (x) y();` is Tier 1 SOURCE FORM but the body is
+        # a method call, NOT a short-circuit statement.
+        # Per the spec's "Short-Circuit Conditionals" section,
+        # Tier 1 only applies for return/continue/break/throw
+        # bodies; everything else must be braced. The
+        # formatter wraps the bare statement in braces via
+        # `_emit_branch_as_block`.
+        out = format_java.format_source(
+            b"class A { void m() { if (x) y(); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x) {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_braceless_short_circuit_stays_tier1(self) -> None:
+        # Tier 1 source form with a short-circuit body
+        # preserves Tier 1 in the output.
+        out = format_java.format_source(
+            b"class A { void m() { if (x) return; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x) return;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_braced_short_circuit_collapses_to_tier1(self) -> None:
+        # Tier 2 source form with a single short-circuit body
+        # collapses to Tier 1 output (per spec's
+        # "Short-Circuit Conditionals" section).
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"if (x) { return null; } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x) return null;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_if_else_inhibits_tier1_short_circuit(self) -> None:
+        # Per the spec's "if/else pairs always use braces"
+        # rule, the presence of any else clause forces braces
+        # on BOTH branches, even if the body is short-circuit.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"if (x) return; else doB(); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x) {\n"
+            b"            return;\n"
+            b"        } else {\n"
+            b"            doB();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
 
     def test_if_with_empty_block(self) -> None:
         # Empty consequence block should still emit cleanly
@@ -1370,6 +1435,10 @@ class TestFormatSourceSubset:
         )
 
     def test_labeled_continue(self) -> None:
+        # Updated post-Phase-2q: the inner `if (i == 5) {
+        # continue outer; }` collapses to Tier 1 since
+        # `continue outer;` is a short-circuit body and
+        # there's no else.
         out = format_java.format_source(
             b"class A { void m() { "
             b"outer: for (int i = 0; i < n; i++) { "
@@ -1382,9 +1451,7 @@ class TestFormatSourceSubset:
             b"    {\n"
             b"        outer:\n"
             b"        for (int i = 0; i < n; i++) {\n"
-            b"            if (i == 5) {\n"
-            b"                continue outer;\n"
-            b"            }\n"
+            b"            if (i == 5) continue outer;\n"
             b"        }\n"
             b"    }\n"
             b"}\n"

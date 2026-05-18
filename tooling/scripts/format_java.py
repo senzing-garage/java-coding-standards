@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2p — throws clauses on methods):
+Status (Phase 2q — short-circuit Tier 1 collapse):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -779,6 +779,73 @@ def _emit_block(
     emitter.write("}")
 
 
+_SHORT_CIRCUIT_STATEMENT_TYPES: Final[frozenset[str]] = frozenset({
+    "return_statement",
+    "continue_statement",
+    "break_statement",
+    "throw_statement",
+})
+
+
+def _short_circuit_body(node: Node) -> Node | None:
+    """Return the inner short-circuit statement if Tier 1 applies.
+
+    Per the spec's "Short-Circuit Conditionals" section,
+    Tier 1 (single-line braceless `if (x) STMT;`) applies
+    only when the body is exactly one short-circuit
+    statement (`return`, `continue`, `break`, `throw`). The
+    body may be either bare (Tier 1 already in source) or a
+    block containing exactly one short-circuit statement
+    (`if (x) { return; }` — needs collapse). Returns the
+    short-circuit statement node, or None when Tier 1
+    doesn't apply.
+    """
+    if node.type in _SHORT_CIRCUIT_STATEMENT_TYPES:
+        return node
+    if node.type == "block":
+        stmts = list(node.named_children)
+        if (
+            len(stmts) == 1
+            and stmts[0].type in _SHORT_CIRCUIT_STATEMENT_TYPES
+        ):
+            return stmts[0]
+    return None
+
+
+def _emit_branch_as_block(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a branch body in same-line-brace block form.
+
+    Used by `if_statement` (and the other control-flow
+    emitters in subsequent phases) to ensure the body is in
+    braced same-line-`{` form when Tier 1 collapse doesn't
+    apply. If `node` is already a `block`, dispatches
+    normally. Otherwise synthesizes braces around the
+    statement: `{\\n<indent>STMT\\n}`.
+
+    Per the spec's "Brace Placement / Same-Line Style" rule,
+    the opening `{` sits on the same line as the preceding
+    syntactic token (e.g. `if (cond) `). Per the spec's
+    "`if`/`else` pairs always use braces" rule, when an
+    `else` is present BOTH branches must be braced; this
+    helper is the mechanism that wraps a bare-statement
+    branch into block form.
+    """
+    if node.type == "block":
+        _emit_node(emitter, source, node)
+        return
+    emitter.write("{")
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
+    _emit_node(emitter, source, node)
+    emitter.newline()
+    emitter.pop_indent()
+    emitter.write_indent()
+    emitter.write("}")
+
+
 def _emit_if_statement(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -787,34 +854,42 @@ def _emit_if_statement(
     Per the "Brace Placement / Same-Line Style" spec section,
     the opening `{` for the if-block sits on the same line as
     `if (cond)`. Per "Closing Brace Rules", `else` cuddles
-    with the closing `}` of the preceding block (`} else {` or
-    `} else if (...)`).
+    with the closing `}` of the preceding block (`} else {`
+    or `} else if (...)`).
 
-    Currently supports:
-        - `if (cond) { ... }`
-        - `if (cond) { ... } else { ... }`
-        - `if (cond) { ... } else if (cond2) { ... } else { ... }`
-          (else-if chains, recursive via the grammar's
-          `alternative` field which can itself be an
-          `if_statement`)
+    **Tier 1 short-circuit collapse** (spec section
+    "Short-Circuit Conditionals"): when the consequence is
+    exactly one short-circuit statement (`return`,
+    `continue`, `break`, `throw`) AND there is no
+    alternative, the emitter collapses to single-line
+    braceless form: `if (cond) STMT;`. This applies whether
+    the source had Tier 1 form (`if (x) return;`) or Tier 2
+    form (`if (x) { return; }`). Per the spec's
+    "`if`/`else` pairs always use braces" rule, the
+    presence of any `else` clause inhibits Tier 1.
 
-    Refuses:
-        - The brace-less Tier 1 short-circuit form
-          (`if (x) return;`) — the
-          "Short-Circuit Conditionals" spec section's Tier 1
-          handling lands in a later phase
+    **Tier 2 brace synthesis**: when Tier 1 doesn't apply
+    and the consequence is a bare statement (e.g.
+    `if (x) y = 1;`), the emitter wraps the body via
+    `_emit_branch_as_block` to produce the braced form.
+    Same wrap applies to bare-statement `else` branches.
 
-    Known limitation until wrap-priority logic lands: the
-    condition is always emitted on a single line. For a long
-    compound boolean condition that the developer authored
-    across multiple lines, the output collapses to one line
-    which may exceed the 80-character limit. The spec's
-    "Brace Placement / Exception: Multi-Line Conditions" rule
-    (Allman `{` on its own line when the condition wraps) will
-    be enforced when the wrap-priority machinery lands.
+    Known limitations until wrap-priority logic lands:
+        - The condition is always emitted on a single line.
+          A long compound boolean condition that the
+          developer authored multi-line may exceed 80
+          characters; the spec's
+          "Brace Placement / Exception: Multi-Line
+          Conditions" rule (Allman `{` on its own line)
+          will be enforced when the wrap-priority machinery
+          lands.
+        - The Tier-1 width check ("would the single-line
+          form exceed 80 characters? → fall back to Tier 2")
+          is not yet implemented; Tier 1 emits unconditionally
+          when the structural conditions are met.
 
     Caller contract: the emitter ends mid-line at the final
-    `}` (column = current indent + 1) so the caller's
+    `}` (or trailing `;` of the Tier 1 body) so the caller's
     `newline()` finalizes the line.
     """
     condition = node.child_by_field_name("condition")
@@ -826,34 +901,32 @@ def _emit_if_statement(
             "— grammar shape unexpected."
         )
 
-    if consequence.type != "block":
-        raise NotImplementedError(
-            "if_statement with brace-less consequence "
-            "(Tier 1 short-circuit form, e.g. `if (x) return;`) "
-            "is not yet supported; short-circuit handling lands "
-            "in the short-circuit-conditionals phase."
-        )
+    short_circuit = _short_circuit_body(consequence)
+    if alternative is None and short_circuit is not None:
+        # Tier 1: `if (cond) STMT;`. The short-circuit
+        # statement emitters (`return`/`continue`/`break`/
+        # `throw`) write their own trailing `;`.
+        emitter.write("if ")
+        _emit_node(emitter, source, condition)
+        emitter.write(" ")
+        _emit_node(emitter, source, short_circuit)
+        return
 
     emitter.write("if ")
     _emit_node(emitter, source, condition)
     emitter.write(" ")
-    _emit_node(emitter, source, consequence)
+    _emit_branch_as_block(emitter, source, consequence)
 
     if alternative is not None:
         if alternative.type == "if_statement":
             # else-if chain: dispatch the nested if_statement;
-            # its emitter writes "if (...) { ... }" starting at
-            # the current column (right after "} else ").
-            emitter.write(" else ")
-            _emit_node(emitter, source, alternative)
-        elif alternative.type == "block":
+            # its emitter writes "if (...) { ... }" starting
+            # at the current column (right after "} else ").
             emitter.write(" else ")
             _emit_node(emitter, source, alternative)
         else:
-            raise NotImplementedError(
-                "if_statement with brace-less else alternative "
-                f"({alternative.type!r}) is not yet supported."
-            )
+            emitter.write(" else ")
+            _emit_branch_as_block(emitter, source, alternative)
 
 
 def _emit_comment(
