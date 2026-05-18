@@ -80,6 +80,22 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2p throws clauses on method declarations: new
+  `_emit_throws` handler registered for the `throws` node;
+  `_emit_method_declaration` updated to detect the optional
+  throws child during its named-children scan and emit it
+  between the signature line and the opening brace. Per
+  the "Method and Constructor Declarations / Throws Clause"
+  spec section: throws on its own line, single-indented
+  (4 spaces from the method declaration). Single-line form
+  only — the priority-2 "one per line, types left-aligned"
+  multi-exception form lands with the wrap-priority phase.
+  Calibration-recon impact: 11 previously-PARTIAL fixtures
+  unlocked (`method_declaration with throws clause` was the
+  single most common refusal); MATCH bumped from 16 to 21
+  of 83 fixtures. The newly-emitting throws fixtures split
+  between MATCH (5) and DIFFER (6, mostly due to the
+  multi-exception wrapping rule).
 - Phase 2o line + block comment emission: new
   `_emit_comment` handler registered for both
   `line_comment` and `block_comment` node types. Comments
@@ -348,8 +364,10 @@ and this project adheres to
   annotation-only-no-keyword form, and (Phase 2o) comment
   tests covering single-line block comment above a field /
   above a method, line comment inside a method body, and
-  multi-line block comment with interior indent preserved
-  (158 tests total).
+  multi-line block comment with interior indent preserved,
+  and (Phase 2p) throws-clause tests covering single
+  exception, multi-exception single-line, and modifiers +
+  throws + body combinations (160 tests total).
 
 ### Changed
 
@@ -403,8 +421,10 @@ per "Closing Brace Rules"), Phase 2l (throw / break /
 continue / labeled statements), Phase 2m (ternary,
 object-creation, and generic types), Phase 2n
 (annotations on classes / fields / methods, with marker
-and arg-bearing forms), and Phase 2o (line + block
-comment verbatim emission, no reflow yet) have landed, but
+and arg-bearing forms), Phase 2o (line + block
+comment verbatim emission, no reflow yet), and Phase 2p
+(throws clauses on method declarations, single-line form)
+have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

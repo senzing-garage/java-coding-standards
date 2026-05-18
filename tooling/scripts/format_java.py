@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2o — line + block comments, verbatim):
+Status (Phase 2p — throws clauses on methods):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -668,16 +668,12 @@ def _emit_method_declaration(
     trailing newline that separates this member from whatever
     follows.
     """
-    # Refuse throws clauses and type_parameters via the named-
-    # children scan; also locate the optional modifiers child.
+    # Locate the optional modifiers and throws children;
+    # refuse type_parameters (those land with the generic-
+    # type phase).
     modifiers_node: Node | None = None
+    throws_node: Node | None = None
     for child in node.named_children:
-        if child.type == "throws":
-            raise NotImplementedError(
-                "method_declaration with throws clause is not "
-                "yet supported; throws-clause wrapping lands in "
-                "a later phase."
-            )
         if child.type == "type_parameters":
             raise NotImplementedError(
                 "method_declaration with type parameters "
@@ -686,6 +682,8 @@ def _emit_method_declaration(
             )
         if child.type == "modifiers":
             modifiers_node = child
+        elif child.type == "throws":
+            throws_node = child
 
     body = node.child_by_field_name("body")
     if body is None:
@@ -715,6 +713,19 @@ def _emit_method_declaration(
     _emit_node(emitter, source, name_node)
     _emit_node(emitter, source, parameters_node)
     emitter.newline()
+    # Per "Method and Constructor Declarations / Throws
+    # Clause", `throws` goes on its own line single-indented
+    # (4 spaces from the method declaration). Single-line
+    # form only — multi-line wrapping (the "one per line,
+    # types left-aligned with a comma after all but the
+    # last" priority-2 form from the same spec subsection)
+    # lands with the wrap-priority phase.
+    if throws_node is not None:
+        emitter.push_indent()
+        emitter.write_indent()
+        _emit_node(emitter, source, throws_node)
+        emitter.newline()
+        emitter.pop_indent()
     emitter.write_indent()
     emitter.write("{")
     emitter.newline()
@@ -1590,6 +1601,30 @@ def _emit_assignment_expression(
     _emit_node(emitter, source, right_node)
 
 
+def _emit_throws(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `throws TYPE [, TYPE]...` on a single line.
+
+    Caller is responsible for positioning this emitter on
+    its own line single-indented from the method declaration
+    (per the "Method and Constructor Declarations / Throws
+    Clause" spec section). This emitter writes the keyword,
+    a single space, and the comma-space-separated type list;
+    it does NOT add a leading or trailing newline.
+
+    Single-line form only — the multi-line priority-2 form
+    ("one per line, types left-aligned with a comma after
+    all but the last") lands with the wrap-priority phase.
+    """
+    types = [c for c in node.named_children]
+    emitter.write("throws ")
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, t)
+
+
 def _emit_formal_parameters(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1981,6 +2016,7 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "annotation_argument_list": _emit_annotation_argument_list,
     "element_value_pair": _emit_element_value_pair,
     "method_declaration": _emit_method_declaration,
+    "throws": _emit_throws,
     "formal_parameters": _emit_formal_parameters,
     "formal_parameter": _emit_formal_parameter,
     "array_type": _emit_array_type,

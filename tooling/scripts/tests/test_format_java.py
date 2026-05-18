@@ -694,14 +694,59 @@ class TestFormatSourceSubset:
     # (Phase 2h) — the former "not yet supported" assertion was
     # promoted to positive coverage in the statement tests below.
 
-    def test_method_with_throws_not_yet_supported(self) -> None:
-        with pytest.raises(
-            NotImplementedError, match="throws clause"
-        ):
-            format_java.format_source(
-                b"class A { "
-                b"void m() throws IOException {} }"
-            )
+    # method throws clause is now supported (Phase 2p);
+    # promoted to positive coverage below.
+
+    def test_method_with_single_throws(self) -> None:
+        # Per "Method and Constructor Declarations / Throws
+        # Clause": throws on its own line, single-indented
+        # (4 spaces from method declaration).
+        out = format_java.format_source(
+            b"class A { void m() throws IOException {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"        throws IOException\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_method_with_multi_throws_single_line(self) -> None:
+        # Multi-exception throws on one line (Phase 2p covers
+        # only the single-line form; wrap-priority phase
+        # handles the priority-2 one-per-line form).
+        out = format_java.format_source(
+            b"class A { void m() "
+            b"throws IOException, SQLException {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"        throws IOException, SQLException\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_method_with_modifiers_and_throws(self) -> None:
+        out = format_java.format_source(
+            b"class A { public void load() "
+            b"throws IOException { x(); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public void load()\n"
+            b"        throws IOException\n"
+            b"    {\n"
+            b"        x();\n"
+            b"    }\n"
+            b"}\n"
+        )
 
     def test_method_with_type_parameters_not_yet_supported(
         self,
