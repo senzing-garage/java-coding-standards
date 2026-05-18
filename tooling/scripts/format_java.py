@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2n — annotations on declarations):
+Status (Phase 2o — line + block comments, verbatim):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -843,6 +843,43 @@ def _emit_if_statement(
                 "if_statement with brace-less else alternative "
                 f"({alternative.type!r}) is not yet supported."
             )
+
+
+def _emit_comment(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a `line_comment` or `block_comment` verbatim.
+
+    Single-line comments emit straight through. Multi-line
+    block comments (typical javadoc spanning several lines)
+    emit with `write_raw_lines`, preserving the developer-
+    authored indent of interior lines. When the source has
+    the comment at the right column for the current
+    `indent_level`, this produces correctly-indented output.
+    Misindented input comments emit with their original
+    (possibly wrong) indent — re-indentation lands with the
+    javadoc-reflow phase.
+
+    Side-comment attachment (end-of-line comment that
+    syntactically belongs to the preceding line, e.g.
+    `int x = 1;  // explanation`) is NOT handled here. The
+    grammar exposes the comment as a sibling node and the
+    block / class-body loops give each member its own line.
+    Row-proximity attachment logic lands in a separate
+    phase. Until then, side comments emit on their own line
+    below the code they were meant to annotate — a known
+    drift documented in the calibration-gate notes.
+
+    Javadoc reflow (orphan-word reflow, `@tag` continuation
+    alignment, inline-tag handling) per the "Javadoc
+    Comments" spec section is likewise deferred to its own
+    phase. Comments emit verbatim here.
+    """
+    text = _node_source_text(source, node)
+    if "\n" in text:
+        emitter.write_raw_lines(text)
+    else:
+        emitter.write(text)
 
 
 def _emit_marker_annotation(
@@ -1937,6 +1974,8 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "field_declaration": _emit_field_declaration,
     "variable_declarator": _emit_variable_declarator,
     "modifiers": _emit_modifiers,
+    "line_comment": _emit_comment,
+    "block_comment": _emit_comment,
     "marker_annotation": _emit_marker_annotation,
     "annotation": _emit_annotation,
     "annotation_argument_list": _emit_annotation_argument_list,

@@ -80,6 +80,24 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2o line + block comment emission: new
+  `_emit_comment` handler registered for both
+  `line_comment` and `block_comment` node types. Comments
+  emit verbatim — single-line through `Emitter.write` and
+  multi-line block comments (typical javadoc) through
+  `Emitter.write_raw_lines`. When the source has the
+  comment at the right column for the current
+  `indent_level`, this produces correctly-indented output;
+  misindented comments emit with the developer's original
+  indent. Javadoc reflow (orphan-word reflow, `@tag`
+  continuation alignment, inline-tag handling) per the
+  "Javadoc Comments" spec section and side-comment
+  attachment (end-of-line `// explanation`) are both
+  deferred to subsequent phases. Phase-driven recon (Phase
+  2o gate run) bumped MATCH from 12 to 16 of 83 existing
+  fixtures and dropped MISSING from 31 to 12 — comments
+  were the single biggest emitter gap in the fixture
+  surface.
 - Phase 2n annotations on declarations: refactored
   `_emit_modifiers` to handle both annotations and keyword
   modifiers per spec A3. Annotations emit on their own
@@ -327,7 +345,11 @@ and this project adheres to
   (named arg form), annotation + keyword modifiers,
   multiple annotations on class, annotation on method,
   multiple annotations on method, annotation on field, and
-  annotation-only-no-keyword form (154 tests total).
+  annotation-only-no-keyword form, and (Phase 2o) comment
+  tests covering single-line block comment above a field /
+  above a method, line comment inside a method body, and
+  multi-line block comment with interior indent preserved
+  (158 tests total).
 
 ### Changed
 
@@ -379,9 +401,10 @@ while, do-while with cuddled `} while`), Phase 2k
 (try/catch/finally with multi-catch, all clauses cuddled
 per "Closing Brace Rules"), Phase 2l (throw / break /
 continue / labeled statements), Phase 2m (ternary,
-object-creation, and generic types), and Phase 2n
+object-creation, and generic types), Phase 2n
 (annotations on classes / fields / methods, with marker
-and arg-bearing forms) have landed, but
+and arg-bearing forms), and Phase 2o (line + block
+comment verbatim emission, no reflow yet) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

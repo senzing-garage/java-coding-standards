@@ -1582,6 +1582,77 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    # --- Comments (Phase 2o, verbatim, no reflow) ---
+
+    def test_single_line_block_comment_above_field(self) -> None:
+        out = format_java.format_source(
+            b"class A { /** Field. */ int x = 1; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    /** Field. */\n"
+            b"    int x = 1;\n"
+            b"}\n"
+        )
+
+    def test_single_line_block_comment_above_method(self) -> None:
+        out = format_java.format_source(
+            b"class A { /** Method. */ void m() {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    /** Method. */\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_line_comment_in_method_body(self) -> None:
+        # Line comments inside method bodies emit verbatim
+        # on their own line — side-comment attachment is a
+        # known limitation deferred to a later phase.
+        out = format_java.format_source(
+            b"class A { void m() { // a comment\n"
+            b"return; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        // a comment\n"
+            b"        return;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_multi_line_block_comment(self) -> None:
+        # Multi-line javadoc with content already at the
+        # correct indent for class-body level. The emitter
+        # preserves interior indents verbatim via
+        # `write_raw_lines`.
+        src = (
+            b"class A {\n"
+            b"    /**\n"
+            b"     * Multi-line.\n"
+            b"     */\n"
+            b"    int x = 1;\n"
+            b"}"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    /**\n"
+            b"     * Multi-line.\n"
+            b"     */\n"
+            b"    int x = 1;\n"
+            b"}\n"
+        )
+
     def test_field_with_text_block_initializer_not_yet_supported(
         self,
     ) -> None:
