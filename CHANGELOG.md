@@ -80,6 +80,35 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2u wildcard + enum declarations:
+  `_emit_wildcard` handles `?`, `? extends Foo`, and
+  `? super Foo` with single space around the bound
+  keyword per spec A4 ("Whitespace and Operator
+  Spacing"). `_emit_enum_declaration` emits
+  `[modifiers] enum NAME { body }` with Allman braces
+  (declaration-level per the spec's "Brace Placement /
+  Allman Style" section). `_emit_enum_body_members`
+  splits the body into the enum-constants block and any
+  non-constant members (typically a constructor and
+  private fields wrapped in `enum_body_declarations`).
+  Each constant emits on its own line per spec A2/B9
+  with a trailing `,` separator; the last constant
+  gets `;` (always emitted regardless of whether more
+  members follow). One blank line separates the
+  constants block from any following non-constant
+  members per spec A2. `_emit_enum_constant` emits
+  `[modifiers] NAME [(arguments)]` and refuses
+  enum_constants with anonymous class bodies
+  (`PLUS { ... }`) — that combined form lands with the
+  anonymous-classes phase. Calibration-recon impact:
+  MISSING dropped from 5 to 3 (the 1 wildcard and 1
+  enum fixtures unblocked); they landed in DIFFER
+  rather than MATCH due to fixture-vs-spec drifts
+  (enum fixture pre-dates spec B9's Allman rule for
+  constant bodies; tracked as calibration-phase
+  followup). PARTIAL bumped by 1
+  (`enum_constant with anonymous body` for the same
+  fixture).
 - Phase 2t type-use annotations: new `_emit_annotated_type`
   handler for the `annotated_type` node type, which the
   grammar uses to wrap `@Annotation TYPE` inline forms in
@@ -460,7 +489,12 @@ and this project adheres to
   default method, and interface with abstract method +
   throws clause, and (Phase 2t) type-use annotation tests
   covering single annotated_type in throws and multi
-  annotated_types in throws (174 tests total).
+  annotated_types in throws, and (Phase 2u) wildcard +
+  enum tests covering unbounded wildcard, extends-bound
+  wildcard, super-bound wildcard, simple enum constants,
+  enum constants with arguments, and enum with
+  constructor + field after constants
+  (180 tests total).
 
 ### Changed
 
@@ -521,8 +555,9 @@ Phase 2q (short-circuit Tier 1 collapse and brace
 synthesis for if-statements), Phase 2r (constructor
 declarations and static initializers, both with Allman
 braces per spec), Phase 2s (interface declarations
-and abstract method declarations), and Phase 2t (type-use
-annotations via annotated_type) have landed, but
+and abstract method declarations), Phase 2t (type-use
+annotations via annotated_type), and Phase 2u (wildcard
+and enum declarations) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

@@ -1170,6 +1170,90 @@ class TestFormatSourceSubset:
 
     # --- Type-use annotations (Phase 2t) ---
 
+    # --- Wildcard + enum declarations (Phase 2u) ---
+
+    def test_wildcard_unbounded(self) -> None:
+        out = format_java.format_source(
+            b"class A { List<?> any; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    List<?> any;\n"
+            b"}\n"
+        )
+
+    def test_wildcard_extends_bound(self) -> None:
+        # Spec A4: space after `?` before extends/super.
+        out = format_java.format_source(
+            b"class A { List<? extends Foo> bounded; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    List<? extends Foo> bounded;\n"
+            b"}\n"
+        )
+
+    def test_wildcard_super_bound(self) -> None:
+        out = format_java.format_source(
+            b"class A { List<? super Foo> bounded; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    List<? super Foo> bounded;\n"
+            b"}\n"
+        )
+
+    def test_enum_simple_constants(self) -> None:
+        out = format_java.format_source(
+            b"enum Color { RED, GREEN, BLUE; }"
+        )
+        # Per spec A2/B9: one constant per line; trailing
+        # `;` after last constant always emitted.
+        assert out == (
+            b"enum Color\n"
+            b"{\n"
+            b"    RED,\n"
+            b"    GREEN,\n"
+            b"    BLUE;\n"
+            b"}\n"
+        )
+
+    def test_enum_constants_with_arguments(self) -> None:
+        out = format_java.format_source(
+            b'enum E { ACTIVE("act"), INACTIVE("inact"); }'
+        )
+        assert out == (
+            b"enum E\n"
+            b"{\n"
+            b'    ACTIVE("act"),\n'
+            b'    INACTIVE("inact");\n'
+            b"}\n"
+        )
+
+    def test_enum_with_constructor_and_field(self) -> None:
+        # Per spec A2: blank line between the constants `;`
+        # and the non-constant members that follow.
+        out = format_java.format_source(
+            b"enum E { A, B; private final int x; "
+            b"E() { this.x = 0; } }"
+        )
+        assert out == (
+            b"enum E\n"
+            b"{\n"
+            b"    A,\n"
+            b"    B;\n"
+            b"\n"
+            b"    private final int x;\n"
+            b"    E()\n"
+            b"    {\n"
+            b"        this.x = 0;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     def test_annotated_type_in_throws(self) -> None:
         # Per spec A3 type-use annotations: annotation
         # inline immediately before the type with a single

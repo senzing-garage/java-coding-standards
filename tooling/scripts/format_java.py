@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2t — type-use annotations):
+Status (Phase 2u — wildcard + enum declarations):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -1684,6 +1684,167 @@ def _emit_assignment_expression(
     _emit_node(emitter, source, right_node)
 
 
+def _emit_wildcard(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `?` / `? extends T` / `? super T`.
+
+    Per spec A4 ("Whitespace and Operator Spacing"):
+    Space after `?` before `extends` / `super` keyword.
+    Grammar shape: `?` anonymous, optional `extends` or
+    `super` keyword (anonymous or named depending on form),
+    optional type child.
+    """
+    emitter.write("?")
+    for child in node.children:
+        if child.type == "?":
+            continue
+        emitter.write(" ")
+        if child.is_named:
+            _emit_node(emitter, source, child)
+        else:
+            emitter.write(child.type)
+
+
+def _emit_enum_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `[modifiers] enum NAME { body }` with Allman braces.
+
+    Per the spec's "Brace Placement / Allman Style" section,
+    enum definitions take Allman braces. Per spec A2 and B9,
+    the body emits each enum constant on its own line with a
+    `,` separator, a final `;` after the last constant
+    (always emitted regardless of whether more members
+    follow), then a blank line and any non-constant
+    members.
+
+    Refuses `extends_interfaces`, `permits`, and
+    `type_parameters` clauses — those land with the
+    "Class Headers" wrap-priority phase.
+    """
+    modifiers_node: Node | None = None
+    for child in node.named_children:
+        if child.type in (
+            "type_parameters",
+            "extends_interfaces",
+            "permits",
+            "super_interfaces",
+        ):
+            raise NotImplementedError(
+                f"enum_declaration child {child.type!r} is not "
+                "yet supported; that construct comes in a "
+                "later phase."
+            )
+        if child.type == "modifiers":
+            modifiers_node = child
+
+    name = node.child_by_field_name("name")
+    body = node.child_by_field_name("body")
+
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+    emitter.write("enum ")
+    if name is not None:
+        _emit_node(emitter, source, name)
+    emitter.newline()
+    emitter.write("{")
+    emitter.newline()
+    if body is not None:
+        _emit_enum_body_members(emitter, source, body)
+    emitter.write("}")
+    emitter.newline()
+
+
+def _emit_enum_body_members(
+    emitter: Emitter, source: bytes, body_node: Node
+) -> None:
+    """Emit the interior of an enum body.
+
+    Per spec B9: each enum constant on its own line with a
+    trailing `,`; the last constant gets `;` instead. Per
+    spec A2: one blank line between the constants block and
+    any non-constant members that follow. Caller emits the
+    opening `{` and closing `}`.
+    """
+    constants: list[Node] = []
+    extra_members: list[Node] = []
+    for child in body_node.named_children:
+        if child.type == "enum_constant":
+            constants.append(child)
+        elif child.type == "enum_body_declarations":
+            # The `;` separator and any non-constant members
+            # (methods, fields, constructors) live inside
+            # this wrapper node. The `;` itself is an
+            # anonymous child; skip it and collect the named
+            # children.
+            for grandchild in child.named_children:
+                extra_members.append(grandchild)
+
+    if not constants and not extra_members:
+        return
+
+    emitter.push_indent()
+    # Emit each constant. Last one gets `;` instead of `,`
+    # per spec B9 (always emit the trailing `;`).
+    for index, const in enumerate(constants):
+        emitter.write_indent()
+        _emit_node(emitter, source, const)
+        if index < len(constants) - 1:
+            emitter.write(",")
+        else:
+            emitter.write(";")
+        emitter.newline()
+
+    if extra_members:
+        # Spec A2: blank line between the constants `;` and
+        # the first non-constant member.
+        emitter.newline()
+        for member in extra_members:
+            emitter.write_indent()
+            _emit_node(emitter, source, member)
+            emitter.newline()
+    emitter.pop_indent()
+
+
+def _emit_enum_constant(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `[modifiers] NAME [(arguments)]`.
+
+    Refuses constants with anonymous class bodies
+    (`PLUS { ... }`) — that's the spec B9 combined form
+    where the constant has both arguments and a body; lands
+    with the anonymous-classes phase.
+    """
+    if node.child_by_field_name("body") is not None:
+        raise NotImplementedError(
+            "enum_constant with anonymous body "
+            "(`PLUS { ... }`) is not yet supported; that "
+            "construct lands with the anonymous-classes "
+            "phase."
+        )
+
+    modifiers_node: Node | None = None
+    for child in node.named_children:
+        if child.type == "modifiers":
+            modifiers_node = child
+            break
+
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+    name = node.child_by_field_name("name")
+    arguments = node.child_by_field_name("arguments")
+    if name is None:
+        raise NotImplementedError(
+            "enum_constant missing 'name' — grammar shape "
+            "unexpected."
+        )
+    _emit_node(emitter, source, name)
+    if arguments is not None:
+        _emit_node(emitter, source, arguments)
+
+
 def _emit_interface_declaration(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2307,6 +2468,9 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "constructor_declaration": _emit_constructor_declaration,
     "static_initializer": _emit_static_initializer,
     "interface_declaration": _emit_interface_declaration,
+    "enum_declaration": _emit_enum_declaration,
+    "enum_constant": _emit_enum_constant,
+    "wildcard": _emit_wildcard,
     # `constant_declaration` shares its grammar shape with
     # `field_declaration` (optional modifiers + type +
     # variable_declarator(s) + `;`); reuse the existing
