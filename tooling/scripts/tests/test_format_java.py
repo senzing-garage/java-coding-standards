@@ -758,15 +758,9 @@ class TestFormatSourceSubset:
                 b"class A { <T> void m(T x) {} }"
             )
 
-    def test_method_without_body_not_yet_supported(self) -> None:
-        # Abstract methods inside a class — the grammar exposes
-        # the method without a `body` field.
-        with pytest.raises(
-            NotImplementedError, match="without body"
-        ):
-            format_java.format_source(
-                b"abstract class A { abstract void m(); }"
-            )
+    # Abstract / interface methods (method_declaration without
+    # body field) are now supported (Phase 2s). Positive
+    # coverage in the interface tests below.
 
     def test_parameter_with_modifier_not_yet_supported(
         self,
@@ -1124,6 +1118,69 @@ class TestFormatSourceSubset:
             b"    {\n"
             b"        CODES = new HashMap<>();\n"
             b"    }\n"
+            b"}\n"
+        )
+
+    # --- Interface declarations (Phase 2s) ---
+
+    def test_empty_interface(self) -> None:
+        out = format_java.format_source(b"interface A {}")
+        assert out == b"interface A\n{\n}\n"
+
+    def test_interface_with_abstract_method(self) -> None:
+        # Abstract method emits as signature + `;` — no
+        # Allman brace, no body.
+        out = format_java.format_source(
+            b"public interface A { void m(); }"
+        )
+        assert out == (
+            b"public interface A\n"
+            b"{\n"
+            b"    void m();\n"
+            b"}\n"
+        )
+
+    def test_interface_with_constant_and_method(self) -> None:
+        out = format_java.format_source(
+            b"interface A { int VALUE = 42; void m(); }"
+        )
+        # `constant_declaration` reuses `_emit_field_declaration`
+        # since the grammar shape is identical.
+        assert out == (
+            b"interface A\n"
+            b"{\n"
+            b"    int VALUE = 42;\n"
+            b"    void m();\n"
+            b"}\n"
+        )
+
+    def test_interface_with_default_method(self) -> None:
+        out = format_java.format_source(
+            b"interface A { default void m() { x(); } }"
+        )
+        assert out == (
+            b"interface A\n"
+            b"{\n"
+            b"    default void m()\n"
+            b"    {\n"
+            b"        x();\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_interface_abstract_method_with_throws(self) -> None:
+        out = format_java.format_source(
+            b"public interface Foo { "
+            b"void method() throws AlphaException; }"
+        )
+        # Abstract method with throws: signature line +
+        # indented throws line with `;` at end. No Allman
+        # brace.
+        assert out == (
+            b"public interface Foo\n"
+            b"{\n"
+            b"    void method()\n"
+            b"        throws AlphaException;\n"
             b"}\n"
         )
 

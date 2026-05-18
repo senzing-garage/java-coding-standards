@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2r — constructors + static initializers):
+Status (Phase 2s — interfaces + abstract methods):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -686,13 +686,6 @@ def _emit_method_declaration(
             throws_node = child
 
     body = node.child_by_field_name("body")
-    if body is None:
-        raise NotImplementedError(
-            "method_declaration without body (abstract / "
-            "interface method) is not yet supported; interface "
-            "bodies and abstract methods land in a later phase."
-        )
-
     type_node = node.child_by_field_name("type")
     name_node = node.child_by_field_name("name")
     parameters_node = node.child_by_field_name("parameters")
@@ -712,7 +705,7 @@ def _emit_method_declaration(
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
     _emit_node(emitter, source, parameters_node)
-    emitter.newline()
+
     # Per "Method and Constructor Declarations / Throws
     # Clause", `throws` goes on its own line single-indented
     # (4 spaces from the method declaration). Single-line
@@ -720,6 +713,23 @@ def _emit_method_declaration(
     # types left-aligned with a comma after all but the
     # last" priority-2 form from the same spec subsection)
     # lands with the wrap-priority phase.
+
+    if body is None:
+        # Abstract / interface method: signature [+ throws];
+        # — no Allman braces, no body. The `;` terminates the
+        # declaration (on the throws line if throws is
+        # present, on the signature line otherwise).
+        if throws_node is not None:
+            emitter.newline()
+            emitter.push_indent()
+            emitter.write_indent()
+            _emit_node(emitter, source, throws_node)
+            emitter.pop_indent()
+        emitter.write(";")
+        return
+
+    # Concrete method: Allman brace + body + closing `}`.
+    emitter.newline()
     if throws_node is not None:
         emitter.push_indent()
         emitter.write_indent()
@@ -1674,6 +1684,76 @@ def _emit_assignment_expression(
     _emit_node(emitter, source, right_node)
 
 
+def _emit_interface_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit an interface declaration with Allman brace placement.
+
+    Shares its emission shape with `_emit_class_declaration`:
+    `[modifiers] interface NAME { body }`. Per the spec's
+    "Brace Placement / Allman Style" section, interface
+    definitions take Allman braces.
+
+    Refuses `type_parameters`, `extends_interfaces`, and
+    `permits` clauses on the interface header — those have
+    their own priority-by-line-length wrapping rules in the
+    "Class Headers" spec section that the current emitter
+    doesn't yet handle.
+    """
+    modifiers_node: Node | None = None
+    for child in node.named_children:
+        if child.type in (
+            "type_parameters",
+            "extends_interfaces",
+            "permits",
+        ):
+            raise NotImplementedError(
+                f"interface_declaration child {child.type!r} is "
+                "not yet supported; that construct comes in a "
+                "later phase."
+            )
+        if child.type == "modifiers":
+            modifiers_node = child
+
+    name = node.child_by_field_name("name")
+    body = node.child_by_field_name("body")
+
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+    emitter.write("interface ")
+    if name is not None:
+        _emit_node(emitter, source, name)
+    emitter.newline()
+    emitter.write("{")
+    emitter.newline()
+    if body is not None:
+        _emit_interface_body_members(emitter, source, body)
+    emitter.write("}")
+    emitter.newline()
+
+
+def _emit_interface_body_members(
+    emitter: Emitter, source: bytes, body_node: Node
+) -> None:
+    """Emit the members of an interface body, indented one level.
+
+    Shape mirrors `_emit_class_body_members`: open and close
+    braces are emitted by the caller, this function emits the
+    interior. Members are typically abstract method
+    declarations, constant declarations, default / static
+    methods, nested types, etc.
+    """
+    members = list(body_node.named_children)
+    if not members:
+        return
+    emitter.push_indent()
+    for member in members:
+        emitter.write_indent()
+        _emit_node(emitter, source, member)
+        emitter.newline()
+    emitter.pop_indent()
+
+
 def _emit_constructor_declaration(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2204,6 +2284,12 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "method_declaration": _emit_method_declaration,
     "constructor_declaration": _emit_constructor_declaration,
     "static_initializer": _emit_static_initializer,
+    "interface_declaration": _emit_interface_declaration,
+    # `constant_declaration` shares its grammar shape with
+    # `field_declaration` (optional modifiers + type +
+    # variable_declarator(s) + `;`); reuse the existing
+    # emitter.
+    "constant_declaration": _emit_field_declaration,
     "throws": _emit_throws,
     "formal_parameters": _emit_formal_parameters,
     "formal_parameter": _emit_formal_parameter,

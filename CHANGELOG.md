@@ -80,6 +80,27 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2s interface declarations + abstract methods:
+  `_emit_interface_declaration` emits
+  `[modifiers] interface NAME { body }` with Allman
+  braces (matching the spec's "Brace Placement / Allman
+  Style" bullet for interface definitions).
+  `_emit_interface_body_members` mirrors the existing
+  class-body member emission. `constant_declaration`
+  registered to reuse `_emit_field_declaration` since the
+  grammar shapes are identical (optional modifiers + type
+  + variable_declarator(s) + `;`). `_emit_method_-
+  declaration` extended to handle the abstract-method
+  case (no `body` field): emits `signature [throws];`
+  with the indented throws-line carrying the trailing
+  `;`, no Allman braces. Refuses `type_parameters`,
+  `extends_interfaces`, and `permits` clauses on the
+  interface header — those land with the "Class Headers"
+  wrap-priority phase. Calibration-recon impact: all 4
+  `interface_declaration` fixtures moved straight into
+  MATCH; the formerly-deferred abstract-method case is
+  now supported. MATCH count bumped 34 → 38 of 83
+  fixtures.
 - Phase 2r constructor declarations + static initializers:
   `_emit_constructor_declaration` handles the
   `[modifiers] NAME(params) [throws] { body }` shape with
@@ -424,7 +445,11 @@ and this project adheres to
   static-initializer tests covering no-args constructor,
   args + body, throws, Allman static initializer with
   one statement, and static initializer with multiple
-  statements (168 tests total).
+  statements, and (Phase 2s) interface tests covering
+  empty interface, interface with abstract method,
+  interface with constant + method, interface with
+  default method, and interface with abstract method +
+  throws clause (172 tests total).
 
 ### Changed
 
@@ -482,9 +507,10 @@ and arg-bearing forms), Phase 2o (line + block
 comment verbatim emission, no reflow yet), Phase 2p
 (throws clauses on method declarations, single-line form),
 Phase 2q (short-circuit Tier 1 collapse and brace
-synthesis for if-statements), and Phase 2r (constructor
+synthesis for if-statements), Phase 2r (constructor
 declarations and static initializers, both with Allman
-braces per spec) have landed, but
+braces per spec), and Phase 2s (interface declarations
+and abstract method declarations) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh
