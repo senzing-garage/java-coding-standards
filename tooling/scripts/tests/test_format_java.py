@@ -1066,6 +1066,82 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    # --- Constructors + static initializers (Phase 2r) ---
+
+    def test_constructor_no_args(self) -> None:
+        out = format_java.format_source(
+            b"class A { public A() {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public A()\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_constructor_with_args_and_body(self) -> None:
+        out = format_java.format_source(
+            b"class A { "
+            b"public A(int x) { this.x = x; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public A(int x)\n"
+            b"    {\n"
+            b"        this.x = x;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_constructor_with_throws(self) -> None:
+        out = format_java.format_source(
+            b"class A { A() throws IOException {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    A()\n"
+            b"        throws IOException\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_static_initializer_allman(self) -> None:
+        # Per spec B10: static keyword on its own line,
+        # opening `{` on the next line at the same column.
+        out = format_java.format_source(
+            b"class A { static "
+            b"{ CODES = new HashMap<>(); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    static\n"
+            b"    {\n"
+            b"        CODES = new HashMap<>();\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_static_initializer_multiple_statements(self) -> None:
+        out = format_java.format_source(
+            b"class A { static { x = 1; y = 2; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    static\n"
+            b"    {\n"
+            b"        x = 1;\n"
+            b"        y = 2;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     def test_if_else_inhibits_tier1_short_circuit(self) -> None:
         # Per the spec's "if/else pairs always use braces"
         # rule, the presence of any else clause forces braces

@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2q — short-circuit Tier 1 collapse):
+Status (Phase 2r — constructors + static initializers):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -1674,6 +1674,119 @@ def _emit_assignment_expression(
     _emit_node(emitter, source, right_node)
 
 
+def _emit_constructor_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a constructor declaration with Allman brace placement.
+
+    Constructors share their grammar shape with methods minus
+    the return-type field: `[modifiers] NAME(params) [throws]
+    { body }`. Per the "Brace Placement / Allman Style" spec
+    section, constructor definitions use Allman braces (same
+    rule that applies to method definitions).
+
+    Refuses constructors carrying type parameters
+    (`<T> A()`) until the generic-types phase.
+    """
+    modifiers_node: Node | None = None
+    throws_node: Node | None = None
+    for child in node.named_children:
+        if child.type == "type_parameters":
+            raise NotImplementedError(
+                "constructor_declaration with type parameters "
+                "(`<T> A(...)`) is not yet supported; that "
+                "construct lands with the generic-type phase."
+            )
+        if child.type == "modifiers":
+            modifiers_node = child
+        elif child.type == "throws":
+            throws_node = child
+
+    name_node = node.child_by_field_name("name")
+    parameters_node = node.child_by_field_name("parameters")
+    body = node.child_by_field_name("body")
+    if name_node is None or parameters_node is None or body is None:
+        raise NotImplementedError(
+            "constructor_declaration missing 'name', "
+            "'parameters', or 'body' — grammar shape "
+            "unexpected."
+        )
+
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+    _emit_node(emitter, source, name_node)
+    _emit_node(emitter, source, parameters_node)
+    emitter.newline()
+    if throws_node is not None:
+        emitter.push_indent()
+        emitter.write_indent()
+        _emit_node(emitter, source, throws_node)
+        emitter.newline()
+        emitter.pop_indent()
+    emitter.write_indent()
+    emitter.write("{")
+    emitter.newline()
+
+    statements = list(body.named_children)
+    if statements:
+        emitter.push_indent()
+        for stmt in statements:
+            emitter.write_indent()
+            _emit_node(emitter, source, stmt)
+            emitter.newline()
+        emitter.pop_indent()
+
+    emitter.write_indent()
+    emitter.write("}")
+    # Caller appends the trailing newline.
+
+
+def _emit_static_initializer(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `static { ... }` with Allman brace placement.
+
+    Per spec B10 ("Static and Instance Initializer Blocks"),
+    `static` sits on its own line, opening `{` on the next
+    line at the same column, body indented +4, closing `}`
+    on its own line at the same column. Static initializer
+    blocks are declaration-level members (like methods and
+    constructors), not control flow, so they take Allman
+    braces.
+
+    Grammar: `static` anonymous keyword followed by a `block`
+    named child (no field name).
+    """
+    block: Node | None = None
+    for child in node.named_children:
+        if child.type == "block":
+            block = child
+            break
+    if block is None:
+        raise NotImplementedError(
+            "static_initializer missing block — grammar shape "
+            "unexpected."
+        )
+    emitter.write("static")
+    emitter.newline()
+    emitter.write_indent()
+    emitter.write("{")
+    emitter.newline()
+
+    statements = list(block.named_children)
+    if statements:
+        emitter.push_indent()
+        for stmt in statements:
+            emitter.write_indent()
+            _emit_node(emitter, source, stmt)
+            emitter.newline()
+        emitter.pop_indent()
+
+    emitter.write_indent()
+    emitter.write("}")
+    # Caller appends the trailing newline.
+
+
 def _emit_throws(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2089,6 +2202,8 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "annotation_argument_list": _emit_annotation_argument_list,
     "element_value_pair": _emit_element_value_pair,
     "method_declaration": _emit_method_declaration,
+    "constructor_declaration": _emit_constructor_declaration,
+    "static_initializer": _emit_static_initializer,
     "throws": _emit_throws,
     "formal_parameters": _emit_formal_parameters,
     "formal_parameter": _emit_formal_parameter,

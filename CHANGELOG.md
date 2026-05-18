@@ -80,6 +80,30 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2r constructor declarations + static initializers:
+  `_emit_constructor_declaration` handles the
+  `[modifiers] NAME(params) [throws] { body }` shape with
+  Allman braces per the spec's "Brace Placement / Allman
+  Style" section (which lists constructor definitions
+  alongside method definitions). Constructor body
+  (`constructor_body`) is emitted inline by the same
+  loop pattern method_declaration uses — no separate
+  `constructor_body` entry in the dispatch table.
+  `_emit_static_initializer` emits `static\n{\n    body\n}`
+  with Allman braces per spec B10 ("Static and Instance
+  Initializer Blocks": declaration-level, not control
+  flow, so Allman). Refuses constructors with type
+  parameters (`<T> A()`) until the generic-types phase.
+  Calibration-recon impact: 3 fixtures moved out of
+  MISSING (2 constructor + 1 static_initializer); all 3
+  landed in DIFFER rather than MATCH because of small
+  formatting drifts in the fixtures or the body content
+  itself. Notable finding for the calibration phase: the
+  `allman_braces/14_static_initializer` fixture's
+  `expected.java` shows `static {` (same-line brace)
+  rather than the spec-mandated Allman shape — the fixture
+  pre-dates the Phase 1 spec edits and needs updating to
+  match B10. Captured as a calibration-phase followup.
 - Phase 2q short-circuit Tier 1 collapse + brace synthesis
   in `if_statement`: per the spec's "Short-Circuit
   Conditionals" section, `_emit_if_statement` now collapses
@@ -396,7 +420,11 @@ and this project adheres to
   Tier 1 tests covering braceless-non-short-circuit
   wrapping, braceless-short-circuit-stays-Tier-1,
   braced-short-circuit-collapses-to-Tier-1, and
-  if/else-inhibits-Tier-1 (163 tests total).
+  if/else-inhibits-Tier-1, and (Phase 2r) constructor +
+  static-initializer tests covering no-args constructor,
+  args + body, throws, Allman static initializer with
+  one statement, and static initializer with multiple
+  statements (168 tests total).
 
 ### Changed
 
@@ -453,8 +481,10 @@ object-creation, and generic types), Phase 2n
 and arg-bearing forms), Phase 2o (line + block
 comment verbatim emission, no reflow yet), Phase 2p
 (throws clauses on method declarations, single-line form),
-and Phase 2q (short-circuit Tier 1 collapse and brace
-synthesis for if-statements) have landed, but
+Phase 2q (short-circuit Tier 1 collapse and brace
+synthesis for if-statements), and Phase 2r (constructor
+declarations and static initializers, both with Allman
+braces per spec) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh
