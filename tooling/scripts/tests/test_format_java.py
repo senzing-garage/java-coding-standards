@@ -1168,6 +1168,41 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    # --- Type-use annotations (Phase 2t) ---
+
+    def test_annotated_type_in_throws(self) -> None:
+        # Per spec A3 type-use annotations: annotation
+        # inline immediately before the type with a single
+        # space between annotation and type.
+        out = format_java.format_source(
+            b"class A { void m() throws @NonNull IOException {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"        throws @NonNull IOException\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_annotated_type_multi_in_throws(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() throws "
+            b"@NonNull IOException, @Nullable SQLException {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"        throws @NonNull IOException, "
+            b"@Nullable SQLException\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     def test_interface_abstract_method_with_throws(self) -> None:
         out = format_java.format_source(
             b"public interface Foo { "

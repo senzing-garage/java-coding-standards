@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2s — interfaces + abstract methods):
+Status (Phase 2t — type-use annotations):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -1867,6 +1867,28 @@ def _emit_static_initializer(
     # Caller appends the trailing newline.
 
 
+def _emit_annotated_type(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `@Annotation [@Annotation ...] TYPE` for a type-use annotation.
+
+    Per spec A3 ("Type-use annotations"): annotations sit
+    inline immediately before the type they annotate, with a
+    single space between annotation and type. Multiple
+    annotations are likewise separated by a single space.
+
+    Grammar: one or more annotation children
+    (`marker_annotation`, `annotation`) followed by the type
+    node (`type_identifier`, `generic_type`, or
+    `scoped_type_identifier`).
+    """
+    children = list(node.named_children)
+    for index, child in enumerate(children):
+        if index > 0:
+            emitter.write(" ")
+        _emit_node(emitter, source, child)
+
+
 def _emit_throws(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2291,6 +2313,7 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     # emitter.
     "constant_declaration": _emit_field_declaration,
     "throws": _emit_throws,
+    "annotated_type": _emit_annotated_type,
     "formal_parameters": _emit_formal_parameters,
     "formal_parameter": _emit_formal_parameter,
     "array_type": _emit_array_type,

@@ -80,6 +80,15 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2t type-use annotations: new `_emit_annotated_type`
+  handler for the `annotated_type` node type, which the
+  grammar uses to wrap `@Annotation TYPE` inline forms in
+  contexts like throws clauses, generic type arguments, and
+  return types. Per spec A3 ("Type-use annotations"):
+  annotation sits inline immediately before the type with a
+  single space between them, no own-line emission.
+  Calibration-recon impact: both `annotated_type` fixtures
+  unblocked from MISSING; MATCH 38 → 39, MISSING 7 → 5.
 - Phase 2s interface declarations + abstract methods:
   `_emit_interface_declaration` emits
   `[modifiers] interface NAME { body }` with Allman
@@ -449,7 +458,9 @@ and this project adheres to
   empty interface, interface with abstract method,
   interface with constant + method, interface with
   default method, and interface with abstract method +
-  throws clause (172 tests total).
+  throws clause, and (Phase 2t) type-use annotation tests
+  covering single annotated_type in throws and multi
+  annotated_types in throws (174 tests total).
 
 ### Changed
 
@@ -509,8 +520,9 @@ comment verbatim emission, no reflow yet), Phase 2p
 Phase 2q (short-circuit Tier 1 collapse and brace
 synthesis for if-statements), Phase 2r (constructor
 declarations and static initializers, both with Allman
-braces per spec), and Phase 2s (interface declarations
-and abstract method declarations) have landed, but
+braces per spec), Phase 2s (interface declarations
+and abstract method declarations), and Phase 2t (type-use
+annotations via annotated_type) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh
