@@ -80,6 +80,28 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2v lambda expressions (single-line form): new
+  `_emit_lambda_expression` handles `PARAMS -> BODY` with
+  single space on each side of `->` per spec B5. The
+  parameters field can be a bare `identifier` (single
+  inferred-type param: `s -> body`), an
+  `inferred_parameters` node (multi inferred-type:
+  `(x, y) -> body`), or a `formal_parameters` node
+  (explicit-typed: `(int x) -> body`). The body can be
+  any expression OR a `block`; block bodies dispatch
+  through the existing `_emit_block` which uses
+  same-line opening brace per the spec's same-line-brace
+  bullet for lambda expressions. New companion emitter
+  `_emit_inferred_parameters` handles the `(x, y)` shape
+  with comma-space separator. Phase 2v emits the
+  single-line form unconditionally; the universal `->`
+  placement rule from spec B5 (breaking before `->`
+  when the parameter list itself wraps) and the
+  multi-line lambda body wrap rules land with the
+  wrap-priority phase. Calibration-recon impact: the
+  single `lambda_expression` fixture moved out of
+  MISSING straight into MATCH. MATCH 39 → 40, MISSING
+  3 → 2.
 - Phase 2u wildcard + enum declarations:
   `_emit_wildcard` handles `?`, `? extends Foo`, and
   `? super Foo` with single space around the bound
@@ -493,8 +515,10 @@ and this project adheres to
   enum tests covering unbounded wildcard, extends-bound
   wildcard, super-bound wildcard, simple enum constants,
   enum constants with arguments, and enum with
-  constructor + field after constants
-  (180 tests total).
+  constructor + field after constants, and (Phase 2v)
+  lambda tests covering zero args, single inferred-type
+  param, multi inferred-type params, explicit-typed
+  param, and lambda with block body (185 tests total).
 
 ### Changed
 
@@ -556,8 +580,9 @@ synthesis for if-statements), Phase 2r (constructor
 declarations and static initializers, both with Allman
 braces per spec), Phase 2s (interface declarations
 and abstract method declarations), Phase 2t (type-use
-annotations via annotated_type), and Phase 2u (wildcard
-and enum declarations) have landed, but
+annotations via annotated_type), Phase 2u (wildcard
+and enum declarations), and Phase 2v (lambda
+expressions, single-line form) have landed, but
 `format_java.py` is not yet wired into the format-on-save /
 pre-commit hook — the legacy JDT-plus-six-script pipeline at
 `format_file.py` is still the active entry point. FAQ refresh

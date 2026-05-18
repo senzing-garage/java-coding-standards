@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2u — wildcard + enum declarations):
+Status (Phase 2v — lambda expressions, single-line):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -1684,6 +1684,61 @@ def _emit_assignment_expression(
     _emit_node(emitter, source, right_node)
 
 
+def _emit_lambda_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `PARAMS -> BODY`.
+
+    Per spec B5 ("Lambdas"): single space on each side of
+    `->`. The parameters field can be:
+        - `identifier` — single inferred-type param
+          (`x -> body`)
+        - `inferred_parameters` — multi inferred-type params
+          (`(x, y) -> body`)
+        - `formal_parameters` — explicit-typed params
+          (`(int x) -> body`)
+    The body field can be an expression (`x + 1`) or a
+    block (`{ stmt; stmt; }`). When the body is a block, it
+    dispatches through `_emit_block` which uses same-line
+    opening brace per the spec's "Brace Placement /
+    Same-Line Style" bullet for lambda expressions.
+
+    Phase 2v emits the single-line form unconditionally.
+    Multi-line wrap rules (the universal `->` placement
+    rule from spec B5, including breaking before `->` when
+    the parameter list itself wraps) land with the
+    wrap-priority phase.
+    """
+    parameters = node.child_by_field_name("parameters")
+    body = node.child_by_field_name("body")
+    if parameters is None or body is None:
+        raise NotImplementedError(
+            "lambda_expression missing 'parameters' or "
+            "'body' — grammar shape unexpected."
+        )
+    _emit_node(emitter, source, parameters)
+    emitter.write(" -> ")
+    _emit_node(emitter, source, body)
+
+
+def _emit_inferred_parameters(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `(x, y, ...)` for a multi-arg inferred-type lambda.
+
+    Comma-space separator per spec A4 ("After commas").
+    """
+    names = [
+        c for c in node.children if c.is_named and c.type == "identifier"
+    ]
+    emitter.write("(")
+    for index, name in enumerate(names):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, name)
+    emitter.write(")")
+
+
 def _emit_wildcard(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2471,6 +2526,8 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "enum_declaration": _emit_enum_declaration,
     "enum_constant": _emit_enum_constant,
     "wildcard": _emit_wildcard,
+    "lambda_expression": _emit_lambda_expression,
+    "inferred_parameters": _emit_inferred_parameters,
     # `constant_declaration` shares its grammar shape with
     # `field_declaration` (optional modifiers + type +
     # variable_declarator(s) + `;`); reuse the existing

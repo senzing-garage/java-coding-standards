@@ -1170,6 +1170,97 @@ class TestFormatSourceSubset:
 
     # --- Type-use annotations (Phase 2t) ---
 
+    # --- Lambda expressions (Phase 2v, single-line form) ---
+
+    def test_lambda_zero_args(self) -> None:
+        # Spec B5: single space on each side of `->`.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"Runnable r = () -> doWork(); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        Runnable r = () -> doWork();\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_lambda_single_inferred_param_no_parens(self) -> None:
+        # `s -> body` form — parameters is a bare identifier.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"Consumer<String> c = s -> print(s); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        Consumer<String> c = s -> print(s);\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_lambda_multi_inferred_params(self) -> None:
+        # `(x, y) -> body` form — inferred_parameters.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"BiFunction<Integer, Integer, Integer> f = "
+            b"(x, y) -> x + y; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        BiFunction<Integer, Integer, Integer> f"
+            b" = (x, y) -> x + y;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_lambda_explicit_typed_param(self) -> None:
+        # `(Integer x) -> body` form — formal_parameters.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"Function<Integer, Integer> g = "
+            b"(Integer x) -> x * 2; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        Function<Integer, Integer> g = "
+            b"(Integer x) -> x * 2;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_lambda_block_body(self) -> None:
+        # Lambda with a block body — same-line opening brace
+        # per spec's same-line-brace rule for lambda
+        # expressions.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"Runnable r = () -> { doA(); doB(); }; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        Runnable r = () -> {\n"
+            b"            doA();\n"
+            b"            doB();\n"
+            b"        };\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     # --- Wildcard + enum declarations (Phase 2u) ---
 
     def test_wildcard_unbounded(self) -> None:
