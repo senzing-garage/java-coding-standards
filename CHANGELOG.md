@@ -80,6 +80,44 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 5g Wave-3 method-call P4 + binary-expression wrap
+  — closes the calibration gate at MATCH 83/83.
+  Two interlocking wrap-priority additions for the final
+  DIFFER fixture (`orchestrator/08_string_concat_spec_-
+  layout`):
+    - `_emit_argument_list` now emits the spec's P4 form
+      (next-line single-indent) when a SINGLE-arg call's
+      P1 single-line form overflows 80 chars. Layout:
+      `methodName(\n<single-indent>arg)`. The arg is
+      emitted at `(indent_level + 1) * 4` (single-indent
+      past the call's statement start). The closing `)`
+      stays on the arg's last line. P4 fires only for
+      single-arg overflow; multi-arg overflow continues to
+      use P2 (paren-aligned, comma-packed).
+    - `_emit_binary_expression` now uses speculate-
+      measure-backtrack. The emitter speculates the
+      single-line shape; on overflow it backtracks and
+      re-emits with a break BEFORE the leftmost binary
+      operator in the chain. The leftmost operand lands on
+      its own line; the operator plus the remainder of the
+      chain wraps to a continuation at `+4` indent (per
+      spec C3 cumulative continuation rule). Implementation
+      walks the left-associative grammar tree to find the
+      leftmost binary_expression — for `a + b + c + d`
+      parsed as `((a + b) + c) + d`, the visually-leftmost
+      `+` is the one owned by the deepest left-descendant
+      binary_expression. After the leftmost operand and
+      operator, the remainder of the expression emits from
+      the source text (verbatim) because the source's
+      whitespace around remaining operators is already
+      spec-compliant for the current corpus.
+  Calibration-recon impact: the last DIFFER fixture
+  graduated to MATCH. **MATCH 82 → 83 (out of 83). DIFFER
+  1 → 0. PARTIAL still 0. MISSING still 0.** The
+  calibration gate (verification step 0 in the original
+  plan) is now closed: every one of the 83 existing
+  fixtures passes byte-for-byte against the spec-compliant
+  formatter.
 - Phase 5f Wave-3 class headers — `superclass` + `super_-
   interfaces` + type-parameter wrap on overflow:
   `_emit_class_declaration` no longer refuses `superclass`

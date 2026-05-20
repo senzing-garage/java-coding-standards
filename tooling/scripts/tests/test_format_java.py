@@ -590,6 +590,65 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    def test_method_call_p4_single_arg_overflow(self) -> None:
+        # Spec "Method Call Arguments / Priority 4 (next-line,
+        # single-indented)": when a single-arg call's P1 form
+        # would exceed 80 chars, line-break before the arg.
+        # The arg lands at `(indent_level + 1) * 4` (single-
+        # indent past the statement start); the closing `)`
+        # stays on the arg's last line.
+        src = (
+            b"class A {\n"
+            b"    void m(Object x) {\n"
+            b"        if (x == null) {\n"
+            b"            throw new IllegalArgumentException("
+            b'"Cannot specify a secondary value when " + '
+            b'"the primary value is null. primary=[ " + '
+            b'x + " ]");\n'
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m(Object x)\n"
+            b"    {\n"
+            b"        if (x == null) {\n"
+            b"            throw new IllegalArgumentException(\n"
+            b'                "Cannot specify a secondary value'
+            b' when "\n'
+            b'                    + "the primary value is null.'
+            b' primary=[ " + x + " ]");\n'
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_binary_expression_wrap_at_leftmost_op(
+        self,
+    ) -> None:
+        # Spec "Line Continuation / break before binary
+        # operators": when the single-line binary expression
+        # would exceed 80 chars, break before the leftmost
+        # operator in the chain. The leftmost operand lands on
+        # its own line; the operator plus the remainder of
+        # the chain wraps to a continuation at +4 indent.
+        src = (
+            b"class A {\n"
+            b"    String s = "
+            b'"alpha alpha alpha alpha alpha alpha" + '
+            b'"beta" + "gamma" + "delta delta";\n'
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        # The string-concat overflows; break before the
+        # leftmost `+` operator. Leftmost operand on its own
+        # line; remainder packed onto continuation at +4.
+        # (Exact column depends on the value's start column,
+        # which here is after `String s = ` at column 15.)
+        assert b'        + "beta"' in out
     def test_method_call_without_receiver(self) -> None:
         # Method call with no `object` field — bare
         # method(args) form (typical for same-class methods or

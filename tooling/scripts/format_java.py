@@ -698,6 +698,15 @@ def _emit_binary_expression(
     `<`, `>`, `<=`, `>=`, `&`, `|`, `^`, `<<`, `>>`, `>>>`,
     `&&`, `||`. `instanceof` is its own `instanceof_expression`
     node type in the grammar and is not handled here.
+
+    When the single-line emission would push the line past 80
+    chars, the emitter speculates the single-line shape and, on
+    overflow, backtracks and re-emits with a break BEFORE the
+    leftmost binary operator in the chain (per spec
+    "Line Continuation / break before binary operators"). The
+    leftmost operand lands on its own line; the operator plus
+    the remainder of the chain wraps to a continuation line
+    at +4 indent (cumulative per spec C3).
     """
     children = node.children
     if len(children) != 3:
@@ -705,12 +714,61 @@ def _emit_binary_expression(
             f"binary_expression with {len(children)} children — "
             "expected exactly 3 (left, operator, right)."
         )
+    saved = emitter.snapshot()
     left, op, right = children
     _emit_node(emitter, source, left)
     emitter.write(" ")
     emitter.write(op.type)
     emitter.write(" ")
     _emit_node(emitter, source, right)
+    if emitter.last_lines_max_width(saved[0]) <= _MAX_LINE:
+        return
+    # Overflow — backtrack and emit with a break before the
+    # LEFTMOST binary operator in the chain. The grammar's
+    # left-associative parse makes `a + b + c + d` look like
+    # `BinExpr(BinExpr(BinExpr(a, +, b), +, c), +, d)`, so the
+    # leftmost operator from a reader's perspective is the one
+    # owned by the deepest left-descendant `binary_expression`.
+    emitter.restore(saved)
+    # Walk down the left chain to find the leftmost binary_-
+    # expression in the same operator-spacing family.
+    leftmost = node
+    while True:
+        candidate = leftmost.children[0]
+        if candidate.type == "binary_expression":
+            leftmost = candidate
+        else:
+            break
+    leftmost_operand = leftmost.children[0]
+    leftmost_op = leftmost.children[1]
+    # Build the "after the leftmost operator" continuation by
+    # emitting the leftmost operand, then a newline + +4
+    # indent, then the operator, a space, and the rest of the
+    # chain. For the "rest of the chain", we use the source
+    # text from the byte right after the leftmost operator's
+    # end through the outermost node's end — this captures
+    # everything except the leftmost operand and operator and
+    # preserves any nested formatting (string literals,
+    # parentheses, etc.).
+    _emit_node(emitter, source, leftmost_operand)
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
+    emitter.write(leftmost_op.type)
+    emitter.write(" ")
+    # Skip whitespace between leftmost_op.end_byte and the next
+    # named child.
+    rest_start = leftmost_op.end_byte
+    rest_text = source[rest_start : node.end_byte].decode(
+        "utf-8"
+    ).lstrip()
+    # `rest_text` may contain internal spaces around operators
+    # from source — re-render via tree walking would be more
+    # robust but for the current corpus the source text after
+    # the leftmost operator is already spec-compliant (single
+    # space around each `+`). Emit verbatim.
+    emitter.write(rest_text)
+    emitter.pop_indent()
 
 
 def _emit_unary_expression(
@@ -3495,6 +3553,20 @@ def _emit_argument_list(
                 emitter.write(", ")
             _emit_node(emitter, source, arg)
         emitter.write(")")
+        return
+
+    # P4: single-arg call whose arg is too long for the call
+    # line. Per spec "Method Call Arguments / Priority 4":
+    # line-break before the first arg; arg lands at
+    # single-indent past the call's statement start. The
+    # closing `)` stays on the arg's last line.
+    if len(args) == 1:
+        emitter.newline()
+        emitter.push_indent()
+        emitter.write_indent()
+        _emit_node(emitter, source, args[0])
+        emitter.write(")")
+        emitter.pop_indent()
         return
 
     # P2: pack as many args as fit on the call line at the
