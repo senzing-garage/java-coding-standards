@@ -80,6 +80,51 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 3a real formatter bug fixes (three bugs surfaced by
+  DIFFER-fixture diagnosis after Phase 2z):
+    - Tier 1 short-circuit collapse no longer fires on an
+      `if_statement` that is the `alternative` of a parent
+      `if_statement` (i.e. an `else if` branch). Per spec
+      "Short-Circuit Conditionals / `if`/`else` pairs always
+      use braces" — once any branch in an if/else chain has
+      an `else`, every branch is braced, INCLUDING
+      intermediate `else if` branches whose body would
+      otherwise be Tier-1-eligible. New helper
+      `_is_else_branch_if(node)` performs the check; the
+      Tier 1 condition in `_emit_if_statement` adds it as a
+      third clause. (Tree-sitter Node objects don't support
+      Python `is` identity since each accessor returns a
+      fresh wrapper; comparison uses `==` which the binding
+      implements as structural equality on the underlying
+      node id.)
+    - Tier 1 collapse from a source Tier 2 block is now
+      inhibited when the developer authored a blank line
+      between the opening `{` and the short-circuit
+      statement. The blank line is a deliberate visual-
+      separation cue that single-line form would erase. The
+      `_short_circuit_body` helper now compares the brace's
+      source row to the statement's row and returns None
+      (refusing collapse) when there is at least one empty
+      line between them.
+    - `_emit_block` now preserves a developer-authored blank
+      line between the opening `{` and the first statement
+      AND emits inline side-comments on the brace line. A
+      `line_comment` or `block_comment` child whose source
+      row equals the opening `{`'s row is emitted on the
+      same line as the brace, separated by exactly two
+      spaces per spec C6 ("End-of-line side comments").
+      Subsequent statements emit on their own lines as
+      normal.
+  Calibration-recon impact: two previously-DIFFER fixtures
+  graduated to MATCH (`need_braces/18_braced_else_if_chain_-
+  kept` and `need_braces/19_braced_short_circuit_with_blank_-
+  line_kept`). MATCH 43 → 45. DIFFER 39 → 37. PARTIAL
+  unchanged at 1. The third targeted fixture
+  (`allman_braces/11_if_with_inline_comment`) remains DIFFER
+  by exactly 1 byte — the fixture has one space between `{`
+  and `//`, the spec C6 rule requires two, and the formatter
+  now emits two. Fixture-vs-spec drift; the fixture itself
+  needs updating in the Wave-1 fixture-cleanup commit.
 - Phase 2z enum constants with anonymous bodies:
   `_emit_enum_constant` now dispatches the optional body
   rather than refusing it. Per spec B9 ("Enum Constant

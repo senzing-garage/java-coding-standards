@@ -1643,6 +1643,88 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    def test_else_if_chain_inhibits_tier1(self) -> None:
+        # Per spec's "once any branch has an `else`, every
+        # branch is braced", an `else if` branch is part of
+        # the chain even if its own body would otherwise be
+        # Tier-1-eligible. The inner if_statement (the
+        # alternative of the outer) must keep its braces.
+        out = format_java.format_source(
+            b"class A { int m(int a, int b) { "
+            b"if (a == 0) { return 1; } "
+            b"else if (b == 0) { return 2; } "
+            b"return 3; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    int m(int a, int b)\n"
+            b"    {\n"
+            b"        if (a == 0) {\n"
+            b"            return 1;\n"
+            b"        } else if (b == 0) {\n"
+            b"            return 2;\n"
+            b"        }\n"
+            b"        return 3;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_tier1_inhibited_by_blank_line_in_body(self) -> None:
+        # A source-authored blank line between the opening `{`
+        # and the short-circuit statement is a deliberate
+        # visual-separation cue. Tier 1 collapse would erase
+        # it, so the formatter keeps the Tier 2 braced form
+        # AND preserves the blank line inside the body.
+        out = format_java.format_source(
+            b"class A {\n"
+            b"    Object m(Object x) {\n"
+            b"        if (x == null) {\n"
+            b"\n"
+            b"            return null;\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    Object m(Object x)\n"
+            b"    {\n"
+            b"        if (x == null) {\n"
+            b"\n"
+            b"            return null;\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_inline_side_comment_on_brace_line(self) -> None:
+        # Per spec C6 ("End-of-line side comments"), a
+        # line_comment on the same source row as a preceding
+        # `{` stays inline with the brace, separated by
+        # exactly two spaces, with a single space after `//`.
+        out = format_java.format_source(
+            b"class A {\n"
+            b"    void m() {\n"
+            b"        if (x == null) { // inline comment\n"
+            b"            return;\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (x == null) {  // inline comment\n"
+            b"            return;\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     def test_if_with_empty_block(self) -> None:
         # Empty consequence block should still emit cleanly
         # with the opening `{` on the if-line and the closing

@@ -784,15 +784,46 @@ def _emit_block(
     emitted at the caller's level. The emitter ends mid-line at
     the closing `}` so the caller's `newline()` finalizes it.
 
+    Per spec C6 ("Comment placement / End-of-line side
+    comments"), a `line_comment` child whose source-row equals
+    the opening `{`'s source-row is emitted INLINE on the `{`
+    line — `{  // comment` — with exactly two spaces between
+    the brace and `//`. Subsequent statements emit on their own
+    lines as normal.
+
     Method-declaration bodies use the Allman form (opening `{`
     on its own line) and emit their body inline from
     `_emit_method_declaration` rather than dispatching here.
     """
     statements = list(node.named_children)
+    brace_row = node.start_point[0]
     emitter.write("{")
+    # Detect and emit any leading side-comment on the brace line.
+    # Only consume children that share the brace's row AND are
+    # comments — anything else (a statement on the same source
+    # row, which is rare) emits normally below.
+    consumed = 0
+    while (
+        consumed < len(statements)
+        and statements[consumed].type
+        in ("line_comment", "block_comment")
+        and statements[consumed].start_point[0] == brace_row
+    ):
+        emitter.write("  ")
+        _emit_node(emitter, source, statements[consumed])
+        consumed += 1
     emitter.newline()
+    # Preserve a developer-authored leading blank line between
+    # the opening `{` and the first statement (source row of
+    # the statement is `brace_row + 2` or more, meaning at
+    # least one empty line sits between them). Per spec A2's
+    # blank-line normalization, multiple consecutive blanks
+    # condense to a single blank.
     emitter.push_indent()
-    for stmt in statements:
+    remaining = statements[consumed:]
+    if remaining and remaining[0].start_point[0] - brace_row > 1:
+        emitter.newline()
+    for stmt in remaining:
         emitter.write_indent()
         _emit_node(emitter, source, stmt)
         emitter.newline()
@@ -821,6 +852,12 @@ def _short_circuit_body(node: Node) -> Node | None:
     (`if (x) { return; }` — needs collapse). Returns the
     short-circuit statement node, or None when Tier 1
     doesn't apply.
+
+    Tier 1 collapse from a source Tier 2 block is also
+    inhibited when the developer authored a blank line
+    inside the braces between `{` and the short-circuit
+    statement, since the blank line is a deliberate visual-
+    separation cue that single-line form would erase.
     """
     if node.type in _SHORT_CIRCUIT_STATEMENT_TYPES:
         return node
@@ -830,8 +867,40 @@ def _short_circuit_body(node: Node) -> Node | None:
             len(stmts) == 1
             and stmts[0].type in _SHORT_CIRCUIT_STATEMENT_TYPES
         ):
-            return stmts[0]
+            # Reject the collapse when the source has a blank
+            # line between the opening `{` and the first
+            # statement (start row diff > 1). Preserves
+            # developer-authored visual separation.
+            stmt = stmts[0]
+            brace_row = node.start_point[0]
+            if stmt.start_point[0] - brace_row > 1:
+                return None
+            return stmt
     return None
+
+
+def _is_else_branch_if(node: Node) -> bool:
+    """Return True when `node` is an if_statement serving as the
+    `alternative` of a parent if_statement (i.e. an `else if`
+    branch of a chain).
+
+    Per spec "Short-Circuit Conditionals / `if`/`else` pairs
+    always use braces": once any branch in an if/else chain
+    has an `else`, every branch is braced — including
+    intermediate `else if` branches whose own body would
+    otherwise be Tier-1-eligible. This helper detects that
+    chain-membership case so the caller can inhibit Tier 1
+    collapse.
+    """
+    parent = node.parent
+    if parent is None or parent.type != "if_statement":
+        return False
+    # Tree-sitter Node objects don't support `is` identity
+    # (each accessor returns a fresh wrapper around the same
+    # underlying node), so compare by `==` which the binding
+    # implements as structural equality on the underlying
+    # node id.
+    return parent.child_by_field_name("alternative") == node
 
 
 def _emit_branch_as_block(
@@ -924,10 +993,20 @@ def _emit_if_statement(
         )
 
     short_circuit = _short_circuit_body(consequence)
-    if alternative is None and short_circuit is not None:
+    if (
+        alternative is None
+        and short_circuit is not None
+        and not _is_else_branch_if(node)
+    ):
         # Tier 1: `if (cond) STMT;`. The short-circuit
         # statement emitters (`return`/`continue`/`break`/
-        # `throw`) write their own trailing `;`.
+        # `throw`) write their own trailing `;`. Per the spec's
+        # "`if`/`else` pairs always use braces" rule, the
+        # presence of any `else` clause inhibits Tier 1 — and
+        # that includes the case where THIS if_statement is
+        # itself an `else if` branch of a parent (the
+        # `_is_else_branch_if` check), since "once any branch
+        # has an `else`, every branch is braced".
         emitter.write("if ")
         _emit_node(emitter, source, condition)
         emitter.write(" ")
