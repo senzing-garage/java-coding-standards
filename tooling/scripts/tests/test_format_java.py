@@ -748,15 +748,9 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_method_with_type_parameters_not_yet_supported(
-        self,
-    ) -> None:
-        with pytest.raises(
-            NotImplementedError, match="type parameters"
-        ):
-            format_java.format_source(
-                b"class A { <T> void m(T x) {} }"
-            )
+    # Methods with type parameters (`<T> void m(T x)`) are
+    # now supported as of Phase 2x. Positive coverage in the
+    # type-parameters tests below.
 
     # Abstract / interface methods (method_declaration without
     # body field) are now supported (Phase 2s). Positive
@@ -1294,6 +1288,116 @@ class TestFormatSourceSubset:
             b"class A\n"
             b"{\n"
             b"    List<? super Foo> bounded;\n"
+            b"}\n"
+        )
+
+    # --- type parameters on declarations (Phase 2x) ---
+
+    def test_type_parameters_class_single(self) -> None:
+        # Spec B11: `<T>` adjacent to the class name (no space)
+        # for a single type parameter.
+        out = format_java.format_source(
+            b"public class A<T> { }"
+        )
+        assert out == (
+            b"public class A<T>\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_type_parameters_class_multiple(self) -> None:
+        # Spec A4 / B11: comma-space between type parameters,
+        # no spaces inside `<>`.
+        out = format_java.format_source(
+            b"public class A<T, U, V> { }"
+        )
+        assert out == (
+            b"public class A<T, U, V>\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_type_parameters_class_bounded(self) -> None:
+        # Spec B11: single space around `extends`.
+        out = format_java.format_source(
+            b"public class A<T extends Foo> { }"
+        )
+        assert out == (
+            b"public class A<T extends Foo>\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_type_parameters_class_multi_bound(self) -> None:
+        # Spec B11: single space around `&` for multi-bound
+        # types.
+        out = format_java.format_source(
+            b"class A<T extends Foo & Bar & Baz> { }"
+        )
+        assert out == (
+            b"class A<T extends Foo & Bar & Baz>\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_type_parameters_interface(self) -> None:
+        # Interface declarations follow the same rule as class
+        # declarations — `<T>` adjacent to the interface name.
+        out = format_java.format_source(
+            b"public interface I<T> { }"
+        )
+        assert out == (
+            b"public interface I<T>\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_type_parameters_method(self) -> None:
+        # Spec B11: `<T>` BEFORE the return type, followed by
+        # a single space.
+        out = format_java.format_source(
+            b"class A { public <T> T m(T x) { return x; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public <T> T m(T x)\n"
+            b"    {\n"
+            b"        return x;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_type_parameters_method_bounded(self) -> None:
+        # Method with a bounded type parameter — combines the
+        # B11 type-parameter placement with the bound spacing.
+        out = format_java.format_source(
+            b"class A { "
+            b"<T extends Foo> T m(T x) { return x; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    <T extends Foo> T m(T x)\n"
+            b"    {\n"
+            b"        return x;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_type_parameters_constructor(self) -> None:
+        # Spec B11: `<T>` BEFORE the constructor name (after
+        # modifiers, with a single space after the closing
+        # `>`).
+        out = format_java.format_source(
+            b"class A { public <T> A(T x) { } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    public <T> A(T x)\n"
+            b"    {\n"
+            b"    }\n"
             b"}\n"
         )
 

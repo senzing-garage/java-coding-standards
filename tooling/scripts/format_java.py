@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2w — try-with-resources):
+Status (Phase 2x — type parameters on declarations):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -430,9 +430,9 @@ def _emit_class_declaration(
     # wrapping in the "Class Headers" spec section that the
     # current emitter doesn't yet handle.
     modifiers_node: Node | None = None
+    type_parameters_node: Node | None = None
     for child in node.named_children:
         if child.type in (
-            "type_parameters",
             "superclass",
             "super_interfaces",
             "permits",
@@ -444,6 +444,8 @@ def _emit_class_declaration(
             )
         if child.type == "modifiers":
             modifiers_node = child
+        elif child.type == "type_parameters":
+            type_parameters_node = child
 
     name = node.child_by_field_name("name")
     body = node.child_by_field_name("body")
@@ -457,6 +459,10 @@ def _emit_class_declaration(
     emitter.write("class ")
     if name is not None:
         _emit_node(emitter, source, name)
+    if type_parameters_node is not None:
+        # Per spec B11: `<...>` comes immediately after the
+        # class name with no intervening space.
+        _emit_node(emitter, source, type_parameters_node)
     emitter.newline()
     emitter.write("{")
     emitter.newline()
@@ -673,20 +679,16 @@ def _emit_method_declaration(
     trailing newline that separates this member from whatever
     follows.
     """
-    # Locate the optional modifiers and throws children;
-    # refuse type_parameters (those land with the generic-
-    # type phase).
+    # Locate the optional modifiers, type_parameters, and
+    # throws children.
     modifiers_node: Node | None = None
+    type_parameters_node: Node | None = None
     throws_node: Node | None = None
     for child in node.named_children:
-        if child.type == "type_parameters":
-            raise NotImplementedError(
-                "method_declaration with type parameters "
-                "(`<T> void m()`) is not yet supported; that "
-                "construct lands with the generic-type phase."
-            )
         if child.type == "modifiers":
             modifiers_node = child
+        elif child.type == "type_parameters":
+            type_parameters_node = child
         elif child.type == "throws":
             throws_node = child
 
@@ -706,6 +708,11 @@ def _emit_method_declaration(
         # indent (for annotation-only modifiers), so the
         # caller does not write a separator here.
         _emit_node(emitter, source, modifiers_node)
+    if type_parameters_node is not None:
+        # Per spec B11: `<T>` comes BEFORE the return type, with
+        # a single space after the closing `>`.
+        _emit_node(emitter, source, type_parameters_node)
+        emitter.write(" ")
     _emit_node(emitter, source, type_node)
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
@@ -1873,6 +1880,100 @@ def _emit_wildcard(
             emitter.write(child.type)
 
 
+def _emit_type_parameters(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `<T1, T2, ...>` for a generic declaration.
+
+    Per spec A4 ("Whitespace and Operator Spacing"): no space
+    inside or around `<>`; comma-space between type parameters.
+    Phase 2x emits the single-line form unconditionally. The
+    spec B11 multi-line wraps (P2 paren-aligned with the first
+    parameter, P3 next-line single-indented with each parameter
+    on its own line) land with the wrap-priority phase.
+
+    Used by `_emit_class_declaration`, `_emit_interface_-
+    declaration`, `_emit_method_declaration`, and `_emit_-
+    constructor_declaration` to render the `<...>` clause.
+    """
+    params = [c for c in node.named_children if c.type == "type_parameter"]
+    if not params:
+        raise NotImplementedError(
+            "type_parameters node with no type_parameter "
+            "children — grammar shape unexpected."
+        )
+    emitter.write("<")
+    for index, param in enumerate(params):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, param)
+    emitter.write(">")
+
+
+def _emit_type_parameter(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a single type parameter: `T`, `T extends Foo`,
+    `T extends Foo & Bar`, or `@Ann T extends Foo`.
+
+    Grammar shape: optional annotation(s) (`marker_annotation`
+    / `annotation`), then `type_identifier` for the parameter
+    name, then optional `type_bound`. Per spec B11 / A4:
+
+        - Single space between annotation and identifier.
+        - Single space between identifier and `extends` keyword
+          (emitted by `_emit_type_bound`).
+        - Single space around `&` for multi-bound types
+          (emitted by `_emit_type_bound`).
+    """
+    emitted_anything = False
+    for child in node.named_children:
+        if child.type in ("marker_annotation", "annotation"):
+            if emitted_anything:
+                emitter.write(" ")
+            _emit_node(emitter, source, child)
+            emitted_anything = True
+        elif child.type == "type_identifier":
+            if emitted_anything:
+                emitter.write(" ")
+            _emit_node(emitter, source, child)
+            emitted_anything = True
+        elif child.type == "type_bound":
+            emitter.write(" ")
+            _emit_node(emitter, source, child)
+        else:
+            raise NotImplementedError(
+                f"type_parameter child {child.type!r} is not "
+                "yet supported."
+            )
+
+
+def _emit_type_bound(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `extends Type` or `extends A & B & ...`.
+
+    Grammar shape: anonymous `extends` keyword followed by one
+    or more type nodes (named children) separated by anonymous
+    `&` tokens. Per spec B11 / A4: single space on each side
+    of `extends`; single space on each side of `&`.
+
+    Caller positions the leading space; this emitter writes
+    `extends ` + type1 [+ ` & ` + typeN]....
+    """
+    type_children = [c for c in node.named_children]
+    if not type_children:
+        raise NotImplementedError(
+            "type_bound with no named type children — grammar "
+            "shape unexpected."
+        )
+    emitter.write("extends ")
+    for index, type_child in enumerate(type_children):
+        if index > 0:
+            emitter.write(" & ")
+        _emit_node(emitter, source, type_child)
+
+
 def _emit_enum_declaration(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2022,16 +2123,17 @@ def _emit_interface_declaration(
     "Brace Placement / Allman Style" section, interface
     definitions take Allman braces.
 
-    Refuses `type_parameters`, `extends_interfaces`, and
-    `permits` clauses on the interface header — those have
-    their own priority-by-line-length wrapping rules in the
-    "Class Headers" spec section that the current emitter
-    doesn't yet handle.
+    Single-line `<T>` / `<T extends Foo>` type parameters
+    (spec B11) are emitted by `_emit_type_parameters`.
+    `extends_interfaces` and `permits` clauses still refuse —
+    they have their own priority-by-line-length wrapping
+    rules in the "Class Headers" spec section that the
+    current emitter doesn't yet handle.
     """
     modifiers_node: Node | None = None
+    type_parameters_node: Node | None = None
     for child in node.named_children:
         if child.type in (
-            "type_parameters",
             "extends_interfaces",
             "permits",
         ):
@@ -2042,6 +2144,8 @@ def _emit_interface_declaration(
             )
         if child.type == "modifiers":
             modifiers_node = child
+        elif child.type == "type_parameters":
+            type_parameters_node = child
 
     name = node.child_by_field_name("name")
     body = node.child_by_field_name("body")
@@ -2051,6 +2155,8 @@ def _emit_interface_declaration(
     emitter.write("interface ")
     if name is not None:
         _emit_node(emitter, source, name)
+    if type_parameters_node is not None:
+        _emit_node(emitter, source, type_parameters_node)
     emitter.newline()
     emitter.write("{")
     emitter.newline()
@@ -2093,20 +2199,20 @@ def _emit_constructor_declaration(
     section, constructor definitions use Allman braces (same
     rule that applies to method definitions).
 
-    Refuses constructors carrying type parameters
-    (`<T> A()`) until the generic-types phase.
+    Single-line `<T>` / `<T extends Foo>` type parameters
+    (spec B11) are emitted by `_emit_type_parameters`. The
+    `<...>` clause sits between any modifiers and the
+    constructor name, with a single space after the closing
+    `>`.
     """
     modifiers_node: Node | None = None
+    type_parameters_node: Node | None = None
     throws_node: Node | None = None
     for child in node.named_children:
-        if child.type == "type_parameters":
-            raise NotImplementedError(
-                "constructor_declaration with type parameters "
-                "(`<T> A(...)`) is not yet supported; that "
-                "construct lands with the generic-type phase."
-            )
         if child.type == "modifiers":
             modifiers_node = child
+        elif child.type == "type_parameters":
+            type_parameters_node = child
         elif child.type == "throws":
             throws_node = child
 
@@ -2122,6 +2228,11 @@ def _emit_constructor_declaration(
 
     if modifiers_node is not None:
         _emit_node(emitter, source, modifiers_node)
+    if type_parameters_node is not None:
+        # Per spec B11: `<T>` comes BEFORE the constructor name,
+        # with a single space after the closing `>`.
+        _emit_node(emitter, source, type_parameters_node)
+        emitter.write(" ")
     _emit_node(emitter, source, name_node)
     _emit_node(emitter, source, parameters_node)
     emitter.newline()
@@ -2638,6 +2749,9 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "enum_declaration": _emit_enum_declaration,
     "enum_constant": _emit_enum_constant,
     "wildcard": _emit_wildcard,
+    "type_parameters": _emit_type_parameters,
+    "type_parameter": _emit_type_parameter,
+    "type_bound": _emit_type_bound,
     "lambda_expression": _emit_lambda_expression,
     "inferred_parameters": _emit_inferred_parameters,
     # `constant_declaration` shares its grammar shape with

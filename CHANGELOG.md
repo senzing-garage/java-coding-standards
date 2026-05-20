@@ -80,6 +80,33 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2x type parameters on declarations: three new emitters
+  cover the single-line `<T>` / `<T, U>` / `<T extends Foo>` /
+  `<T extends Foo & Bar>` / `<@Ann T extends Foo>` shapes per
+  spec B11. `_emit_type_parameters` emits the `<...>` list
+  with comma-space between parameters per spec A4
+  ("Whitespace and Operator Spacing"); `_emit_type_parameter`
+  handles a single parameter (optional annotation(s),
+  identifier, optional `type_bound`) with single-space
+  separators; `_emit_type_bound` handles `extends Type` and
+  multi-bound `extends A & B & ...` with single space around
+  `extends` and around `&` per spec B11 / A4. The four
+  declaration emitters that previously refused
+  `type_parameters` now dispatch through:
+  `_emit_class_declaration` and `_emit_interface_declaration`
+  emit `<...>` immediately after the type name with no
+  intervening space; `_emit_method_declaration` and
+  `_emit_constructor_declaration` emit `<...>` BEFORE the
+  return type / constructor name, with a single space after
+  the closing `>`. `_emit_enum_declaration` continues to
+  refuse `type_parameters` defensively (Java forbids generic
+  enum declarations). The B11 multi-line wraps (P2 paren-
+  aligned with the first parameter, P3 next-line single-
+  indented with each parameter on its own line, plus the
+  bound-clause-overflow `&` alignment) land with the wrap-
+  priority phase. Calibration-recon impact: the previously-
+  PARTIAL `throws_alignment/11_generic_type_parameter_in_-
+  throws` fixture moved straight into MATCH. MATCH 42 → 43.
 - Phase 2w try-with-resources: new
   `_emit_try_with_resources_statement` and `_emit_resource`
   emitters cover both shapes from spec B8. A single resource
