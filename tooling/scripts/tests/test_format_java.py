@@ -736,9 +736,9 @@ class TestFormatSourceSubset:
         )
 
     def test_method_with_multi_throws_single_line(self) -> None:
-        # Multi-exception throws on one line (Phase 2p covers
-        # only the single-line form; wrap-priority phase
-        # handles the priority-2 one-per-line form).
+        # Spec P1 (single line) — the resulting line fits within
+        # 80 chars, so the comma-space-separated form stays on
+        # one line.
         out = format_java.format_source(
             b"class A { void m() "
             b"throws IOException, SQLException {} }"
@@ -748,6 +748,33 @@ class TestFormatSourceSubset:
             b"{\n"
             b"    void m()\n"
             b"        throws IOException, SQLException\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_method_with_multi_throws_wraps_column_aligned(
+        self,
+    ) -> None:
+        # Spec P2 (one per line, column-aligned with the first
+        # type after `throws `) — when the P1 single-line form
+        # would exceed 80 chars from the throws-line's start
+        # column. Each line but the last carries `,`; the last
+        # has no terminator. Continuation column = throws-line
+        # indent + len("throws ").
+        out = format_java.format_source(
+            b"class A { void method() "
+            b"throws AReallyLongExceptionTypeNameOne, "
+            b"AReallyLongExceptionTypeNameTwo, "
+            b"AReallyLongExceptionTypeNameThree {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void method()\n"
+            b"        throws AReallyLongExceptionTypeNameOne,\n"
+            b"               AReallyLongExceptionTypeNameTwo,\n"
+            b"               AReallyLongExceptionTypeNameThree\n"
             b"    {\n"
             b"    }\n"
             b"}\n"

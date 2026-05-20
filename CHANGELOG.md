@@ -80,6 +80,27 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 5a Wave-3 throws-clause wrap-priority (start of the
+  wrap-priority engine): `_emit_throws` now measures the
+  would-be single-line P1 width (caller's leading-indent
+  column + `throws ` + sum of type source widths +
+  comma-space separators) and chooses between P1 (single
+  line) and P2 (one type per line, column-aligned with the
+  first type after `throws `). When P1 overflows 80 chars,
+  the emitter falls through to P2 — each type on its own
+  line at `cont_col = start_col + len("throws ")`; each
+  line but the last carries a trailing `,`. The P3/P4
+  fallbacks (next-line double-indented if even P2 overflows
+  the column-aligned line; CSOFF/CSON warning emission) are
+  not exercised by the current corpus and remain TODO
+  pending fixtures. Calibration-recon impact: all five
+  throws-overflow fixtures graduated to MATCH —
+  `throws_alignment/04_multi_exception_wraps_column_-
+  aligned`, `/05_compact_packed_input_re_aligns`,
+  `/07_already_correct_idempotent`, `/12_constructor_-
+  throws_wraps_column_aligned`, and `orchestrator/13_-
+  throws_clause_multi_exception_wraps_column_aligned`.
+  MATCH 65 → 70. DIFFER 17 → 12. PARTIAL unchanged at 1.
 - Phase 4b Wave-2 javadoc reflow port: `_emit_comment` now
   dispatches block comments whose text begins with `/**`
   to the new `_emit_javadoc_block` emitter, which ports the

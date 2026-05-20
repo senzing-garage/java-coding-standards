@@ -2909,25 +2909,74 @@ def _emit_annotated_type(
 def _emit_throws(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `throws TYPE [, TYPE]...` on a single line.
+    """Emit `throws TYPE [, TYPE]...` with wrap-priority selection.
 
     Caller is responsible for positioning this emitter on
     its own line single-indented from the method declaration
     (per the "Method and Constructor Declarations / Throws
     Clause" spec section). This emitter writes the keyword,
-    a single space, and the comma-space-separated type list;
-    it does NOT add a leading or trailing newline.
+    a single space, and the type list; it does NOT add a
+    leading or trailing newline.
 
-    Single-line form only — the multi-line priority-2 form
-    ("one per line, types left-aligned with a comma after
-    all but the last") lands with the wrap-priority phase.
+    Two forms per spec "Throws Clause / Wrap Priority":
+        - P1 (single line): `throws TypeA, TypeB, TypeC` when
+          the resulting line — counting the caller's leading
+          indent and the `throws ` keyword and all types and
+          their separators — fits within 80 characters.
+        - P2 (column-aligned multi-line): each type on its
+          own line, with continuation lines aligned to the
+          column right after `throws ` (i.e. the column where
+          the FIRST type starts). Each line but the last
+          carries a trailing `,`; the last carries no
+          terminator.
+
+    The P3/P4 fallbacks (next-line double-indented if even
+    P2 overflows; CSOFF/CSON warning emission) land with
+    later wrap-priority phases — for the current corpus, no
+    fixture pushes past P2.
     """
-    types = [c for c in node.named_children]
+    types = list(node.named_children)
+    if not types:
+        emitter.write("throws")
+        return
+
+    # Measure the would-be P1 single-line width. `emitter.column`
+    # is the current line position right before we emit "throws".
+    # That's the leading-indent column for the throws line. The
+    # P1 width therefore equals indent + `throws ` + sum of type
+    # source widths + 2*(n-1) comma-space separators.
+    start_col = emitter.column
+    type_widths = [
+        len(_node_source_text(source, t)) for t in types
+    ]
+    single_line_width = (
+        start_col
+        + len("throws ")
+        + sum(type_widths)
+        + 2 * (len(types) - 1)
+    )
+
     emitter.write("throws ")
+    # `emitter.column` is now start_col + 7 — the continuation
+    # column for P2 lines.
+    cont_col = emitter.column
+
+    if single_line_width <= _MAX_LINE:
+        # P1: all types on one line, comma-space separated.
+        for index, t in enumerate(types):
+            if index > 0:
+                emitter.write(", ")
+            _emit_node(emitter, source, t)
+        return
+
+    # P2: one type per line, continuation aligned at `cont_col`.
     for index, t in enumerate(types):
         if index > 0:
-            emitter.write(", ")
+            emitter.newline()
+            emitter.write(" " * cont_col)
         _emit_node(emitter, source, t)
+        if index < len(types) - 1:
+            emitter.write(",")
 
 
 def _emit_formal_parameters(
