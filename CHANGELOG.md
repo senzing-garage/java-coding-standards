@@ -80,6 +80,29 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 5d Wave-3 variable-declarator wrap at `=`:
+  `_emit_variable_declarator` now uses a try-emit-and-
+  measure pattern to decide between inline (`NAME = VALUE`)
+  and broken (`NAME\n    = VALUE`) forms. The break-at-`=`
+  form is the spec's continuation rule for long
+  assignments: break BEFORE the `=` operator (per "Line
+  Continuation / break before binary operators"); place
+  the `=` at the start of the continuation line indented
+  `+4` from the statement's indent (single-indent past the
+  statement start). New `Emitter.snapshot()` and
+  `Emitter.restore()` capture/restore the lines buffer +
+  current line + indent; new `Emitter.last_lines_max_width
+  (since)` reports the max width across all lines
+  finalized after a snapshot, so the wrap-priority engine
+  can detect overflow. The variable-declarator emitter
+  speculates the inline form, measures, and backtracks to
+  the break form when any rendered line (accounting for
+  the trailing `;` the caller will write) exceeds 80
+  chars. Calibration-recon impact: MATCH 78 → 80.
+  DIFFER 4 → 2. PARTIAL unchanged at 1. Both
+  `orchestrator/09_long_assignment_wraps_at_eq` and
+  `/11_long_generic_var_decl_wraps_at_eq` graduated to
+  MATCH.
 - Phase 5c Wave-3 method-call args wrap (P1 → P2 paren-
   aligned): `_emit_argument_list` now measures the would-be
   P1 single-line width and falls through to P2 (two-line,

@@ -269,6 +269,57 @@ class Emitter:
         self._lines.append(self._current.rstrip(" "))
         self._current = ""
 
+    def snapshot(self) -> tuple[int, str, int]:
+        """Capture the emitter state for speculative emission.
+
+        Returns a tuple `(lines_count, current, indent)`
+        suitable for `restore()`. The wrap-priority engines use
+        the pattern:
+
+            saved = emitter.snapshot()
+            <try emitting in some shape>
+            if overflowed:
+                emitter.restore(saved)
+                <emit in the next-priority shape>
+
+        Cheap because the lines list is immutable from the
+        perspective of restore (we capture its length, not its
+        contents).
+        """
+        return (len(self._lines), self._current, self._indent)
+
+    def restore(
+        self, snap: tuple[int, str, int]
+    ) -> None:
+        """Restore a previously-captured state from `snapshot()`.
+
+        Truncates the lines list back to its captured length
+        and resets the current line + indent. Any text emitted
+        after the snapshot is discarded.
+        """
+        lines_count, current, indent = snap
+        del self._lines[lines_count:]
+        self._current = current
+        self._indent = indent
+
+    def last_lines_max_width(self, since: int) -> int:
+        """Return the maximum width across all lines finalized
+        after the snapshot at `since` (the `lines_count` value
+        returned by `snapshot()`) plus the in-progress line.
+
+        Used by wrap-priority engines to detect overflow after
+        a speculative emit: if `last_lines_max_width(saved[0])`
+        exceeds 80, the speculation overflowed and needs
+        backtracking.
+        """
+        m = 0
+        for line in self._lines[since:]:
+            if len(line) > m:
+                m = len(line)
+        if len(self._current) > m:
+            m = len(self._current)
+        return m
+
     def write_raw_lines(self, text: str) -> None:
         """Append text that may contain newlines, preserved verbatim.
 
@@ -3442,11 +3493,32 @@ def _emit_modifiers(
 def _emit_variable_declarator(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `NAME` or `NAME = VALUE`.
+    """Emit `NAME` or `NAME = VALUE`, optionally wrapping at `=`.
 
-    Spaces around `=` are spec-required (the
-    "Whitespace and Operator Spacing" section's row for
-    assignment operators).
+    Spaces around `=` are spec-required (per "Whitespace and
+    Operator Spacing"). When the single-line `NAME = VALUE;`
+    form (accounting for the trailing `;` the caller will
+    write) would exceed 80 chars, break BEFORE `=` per the
+    spec's "Line Continuation / break before binary
+    operators" rule. The `=` lands at the start of the
+    continuation line, at the statement's start column + 4
+    (single-indent past the statement start, NOT paren-
+    aligned — paren-alignment doesn't apply to top-level
+    `=` since there's no enclosing paren).
+
+    Layout:
+
+        TYPE NAME
+            = VALUE;
+
+    The continuation indent is computed from the EMITTER's
+    current indent level (`indent_level * 4`) rather than
+    the source's leading whitespace. This is correct because
+    by the time `_emit_variable_declarator` is dispatched,
+    the caller (field_declaration / local_variable_declar-
+    ation) has already written the indent + modifiers +
+    type, so the emitter's column reflects the source's
+    "statement start + leading text".
     """
     name = node.child_by_field_name("name")
     value = node.child_by_field_name("value")
@@ -3456,9 +3528,30 @@ def _emit_variable_declarator(
             "shape unexpected."
         )
     _emit_node(emitter, source, name)
-    if value is not None:
-        emitter.write(" = ")
-        _emit_node(emitter, source, value)
+    if value is None:
+        return
+    # Try-emit-and-measure: speculate the inline form. If any
+    # resulting line exceeds 80 chars (accounting for the
+    # trailing `;` the caller will write), backtrack and break
+    # before `=` with continuation at `indent_level + 1`.
+    saved = emitter.snapshot()
+    emitter.write(" = ")
+    _emit_node(emitter, source, value)
+    # Add 1 to last line for the caller's trailing `;`.
+    inline_overflow = (
+        emitter.last_lines_max_width(saved[0]) > _MAX_LINE
+        or len(emitter._current) + 1 > _MAX_LINE
+    )
+    if not inline_overflow:
+        return
+    # Backtrack and emit break-at-`=` form.
+    emitter.restore(saved)
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
+    emitter.write("= ")
+    _emit_node(emitter, source, value)
+    emitter.pop_indent()
 
 
 # Maps tree-sitter-java node type to its emitter. Adding a new
