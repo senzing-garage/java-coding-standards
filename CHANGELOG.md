@@ -80,6 +80,19 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 5e Wave-3 argument-list source-preservation:
+  `_emit_argument_list` now preserves a source-authored
+  multi-row argument list verbatim (via
+  `write_raw_lines(_node_source_text(node))`) before
+  attempting any wrap-priority decision. This handles cases
+  like a method call inside a try-with-resources resource
+  value whose source already wraps `(\n    "arg" ...)`
+  across multiple rows — the formatter respects the
+  developer's authored layout instead of collapsing and
+  re-wrapping at a different shape. Calibration-recon
+  impact: `allman_braces/08_try_with_resources_nested`
+  graduated to MATCH. MATCH 80 → 81. DIFFER 2 → 1.
+  PARTIAL unchanged at 1.
 - Phase 5d Wave-3 variable-declarator wrap at `=`:
   `_emit_variable_declarator` now uses a try-emit-and-
   measure pattern to decide between inline (`NAME = VALUE`)

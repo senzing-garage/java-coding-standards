@@ -3341,6 +3341,17 @@ def _emit_argument_list(
         emitter.write("()")
         return
 
+    # Source-preservation for already-wrapped argument lists.
+    # When the source already spans multiple rows, preserve
+    # the developer-authored layout verbatim rather than
+    # collapsing then re-wrapping. This handles cases like
+    # multi-line `executeQuery("SELECT ...")` arguments
+    # inside a try-with-resources resource, where the source
+    # layout encodes the spec's P4 form.
+    if _node_spans_multiple_rows(node):
+        emitter.write_raw_lines(_node_source_text(source, node))
+        return
+
     # Capture column at start of `(` for paren-alignment.
     open_col = emitter.column
     emitter.write("(")
