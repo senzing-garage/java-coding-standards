@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2v — lambda expressions, single-line):
+Status (Phase 2w — try-with-resources):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -49,8 +49,13 @@ Status (Phase 2v — lambda expressions, single-line):
       `continue_statement` (each with optional label per
       spec C7), and `labeled_statement` (label on its own
       line, statement on the next at the same indent per
-      spec C7). Remaining control-flow constructs (`switch`,
-      try-with-resources, `synchronized`) refuse until
+      spec C7). `try_with_resources_statement` covers both
+      single-resource (same-line brace) and multi-resource
+      (one resource per line, paren-aligned with the first,
+      Allman brace) forms per spec B8; the break-on-`=`
+      wrap for a resource that overflows its own line lands
+      with the wrap-priority phase. Remaining control-flow
+      constructs (`switch`, `synchronized`) refuse until
       subsequent phases.
     - Expression emitters cover `binary_expression`,
       `unary_expression`, `update_expression`,
@@ -1684,6 +1689,113 @@ def _emit_assignment_expression(
     _emit_node(emitter, source, right_node)
 
 
+def _emit_try_with_resources_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `try (resources) BODY [catches] [finally]`.
+
+    Per spec B8 ("Try-with-resources"):
+        - Single resource fitting on one line: same-line
+          opening brace — `try (Resource r = expr) {`.
+        - Multi-resource: ALWAYS multi-line. Each resource
+          on its own line; subsequent resources paren-aligned
+          with the first (the column right after `try (`).
+          Each resource but the last ends with `;`; the
+          last ends with `)`. The opening `{` then goes on
+          its own line (Allman) because the try condition
+          spans multiple lines.
+
+    Phase 2w emits both shapes. The single-resource
+    break-on-`=` wrap (when the resource overflows on its
+    own line) lands with the wrap-priority phase.
+
+    `catch_clause` and `finally_clause` children, if
+    present, cuddle with the closing `}` of the body block
+    per spec's "Closing Brace Rules" — same as the regular
+    `try_statement` emitter.
+    """
+    resources_node = node.child_by_field_name("resources")
+    body = node.child_by_field_name("body")
+    if resources_node is None or body is None:
+        raise NotImplementedError(
+            "try_with_resources_statement missing 'resources' "
+            "or 'body' — grammar shape unexpected."
+        )
+
+    resources = [
+        c for c in resources_node.named_children
+        if c.type == "resource"
+    ]
+    if not resources:
+        raise NotImplementedError(
+            "try_with_resources_statement with no resource "
+            "children — grammar shape unexpected."
+        )
+
+    emitter.write("try (")
+    # Column right after the opening `(`; subsequent resource
+    # lines align here.
+    align_col = emitter.column
+    for index, resource in enumerate(resources):
+        if index > 0:
+            emitter.write(";")
+            emitter.newline()
+            emitter.write(" " * align_col)
+        _emit_node(emitter, source, resource)
+    emitter.write(")")
+
+    if len(resources) > 1:
+        # Allman brace because the try condition is
+        # multi-line.
+        emitter.newline()
+        emitter.write_indent()
+        _emit_node(emitter, source, body)
+    else:
+        # Single resource on one line — same-line brace.
+        emitter.write(" ")
+        _emit_node(emitter, source, body)
+
+    # Optional catch and finally clauses cuddle with the
+    # closing `}` of the body. Same shape as
+    # `_emit_try_statement`.
+    for child in node.children:
+        if child.type in ("catch_clause", "finally_clause"):
+            emitter.write(" ")
+            _emit_node(emitter, source, child)
+
+
+def _emit_resource(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `TYPE NAME = VALUE` for a try-with-resources resource.
+
+    Caller positions the resource on its line; this emitter
+    writes only the declaration itself, no trailing `;` or
+    newline (the parent `_emit_try_with_resources_statement`
+    handles separators).
+
+    Phase 2w covers the standard `TYPE name = value` form.
+    The Java 9+ shorthand where a previously-declared
+    `final` variable can be used directly (`try (conn) { ...
+    }`) isn't yet exercised; that form may surface as a
+    different grammar shape.
+    """
+    type_node = node.child_by_field_name("type")
+    name_node = node.child_by_field_name("name")
+    value_node = node.child_by_field_name("value")
+    if type_node is None or name_node is None or value_node is None:
+        raise NotImplementedError(
+            "resource missing 'type' / 'name' / 'value' — "
+            "shorthand resource form (Java 9+ effectively-"
+            "final variable) is not yet supported."
+        )
+    _emit_node(emitter, source, type_node)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
+    emitter.write(" = ")
+    _emit_node(emitter, source, value_node)
+
+
 def _emit_lambda_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2551,6 +2663,8 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "while_statement": _emit_while_statement,
     "do_statement": _emit_do_statement,
     "try_statement": _emit_try_statement,
+    "try_with_resources_statement": _emit_try_with_resources_statement,
+    "resource": _emit_resource,
     "catch_clause": _emit_catch_clause,
     "catch_formal_parameter": _emit_catch_formal_parameter,
     "catch_type": _emit_catch_type,

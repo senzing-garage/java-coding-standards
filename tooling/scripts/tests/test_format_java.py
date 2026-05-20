@@ -1692,18 +1692,126 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_try_with_resources_not_yet_supported(self) -> None:
-        # `try (Resource r = open())` is a separate
-        # `try_with_resources_statement` node in the grammar;
-        # it refuses cleanly via the dispatcher's "no emitter
-        # registered" path until the resource-management phase.
+    def test_try_with_resources_single_resource(self) -> None:
+        # Spec B8: single resource fitting on one line uses
+        # same-line opening brace.
+        out = format_java.format_source(
+            b"class A { void m() throws Exception { "
+            b"try (FileInputStream in = new FileInputStream(file)) "
+            b"{ process(in); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"        throws Exception\n"
+            b"    {\n"
+            b"        try (FileInputStream in"
+            b" = new FileInputStream(file)) {\n"
+            b"            process(in);\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_try_with_resources_multi_resource(self) -> None:
+        # Spec B8: multi-resource is ALWAYS multi-line. Subsequent
+        # resources paren-align with the column right after
+        # `try (`. The opening `{` goes Allman because the try
+        # condition spans multiple lines.
+        out = format_java.format_source(
+            b"class A { void m() throws Exception { "
+            b"try (FileInputStream in = new FileInputStream(input);"
+            b" FileOutputStream out = new FileOutputStream(output)) "
+            b"{ transfer(in, out); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"        throws Exception\n"
+            b"    {\n"
+            b"        try (FileInputStream in"
+            b" = new FileInputStream(input);\n"
+            b"             FileOutputStream out"
+            b" = new FileOutputStream(output))\n"
+            b"        {\n"
+            b"            transfer(in, out);\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_try_with_resources_with_catch_and_finally(self) -> None:
+        # Spec B8 / "Closing Brace Rules": catch and finally
+        # clauses cuddle with the closing `}` of the try body
+        # the same way they do for plain try_statement.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"try (FileInputStream in = new FileInputStream(file)) "
+            b"{ process(in); } "
+            b"catch (IOException e) { log(e); } "
+            b"finally { cleanup(); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        try (FileInputStream in"
+            b" = new FileInputStream(file)) {\n"
+            b"            process(in);\n"
+            b"        } catch (IOException e) {\n"
+            b"            log(e);\n"
+            b"        } finally {\n"
+            b"            cleanup();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_try_with_resources_three_resources(self) -> None:
+        # Spec B8 alignment generalizes: every subsequent
+        # resource lines up with the column right after `try (`.
+        out = format_java.format_source(
+            b"class A { void m() throws Exception { "
+            b"try (A a = openA(); B b = openB(); C c = openC()) "
+            b"{ use(a, b, c); } } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"        throws Exception\n"
+            b"    {\n"
+            b"        try (A a = openA();\n"
+            b"             B b = openB();\n"
+            b"             C c = openC())\n"
+            b"        {\n"
+            b"            use(a, b, c);\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_try_with_resources_shorthand_refuses(self) -> None:
+        # Java 9+ shorthand: a previously-declared effectively-
+        # final variable can appear in the resource list without
+        # a `Type name = ` prefix (`try (conn) { ... }`). The
+        # grammar exposes this via a missing `type` / `name` /
+        # `value` field on the resource node. Phase 2w refuses
+        # this shape cleanly; support lands later.
         with pytest.raises(
             NotImplementedError,
-            match="try_with_resources_statement",
+            match=(
+                "shorthand resource form .Java 9. effectively-"
+                "final variable. is not yet supported"
+            ),
         ):
             format_java.format_source(
-                b"class A { void m() { "
-                b"try (InputStream in = open()) { use(in); } } }"
+                b"class A { "
+                b"void m(AutoCloseable conn) throws Exception { "
+                b"try (conn) { use(conn); } } }"
             )
 
     # --- throw / break / continue / labeled (Phase 2l) ---

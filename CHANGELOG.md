@@ -80,6 +80,32 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2w try-with-resources: new
+  `_emit_try_with_resources_statement` and `_emit_resource`
+  emitters cover both shapes from spec B8. A single resource
+  that fits on one line keeps the opening `{` same-line:
+  `try (Resource r = expr) {`. Multi-resource is ALWAYS
+  multi-line — each resource on its own line, subsequent
+  resources paren-aligned with the first (the column right
+  after `try (`), `;` between resources but not after the
+  last, and the opening `{` on its own line (Allman) because
+  the try condition spans multiple lines. `catch_clause` and
+  `finally_clause` children cuddle with the body's closing
+  `}` the same way they do for plain `try_statement`. The
+  Java 9+ shorthand resource form (an effectively-final
+  variable used directly without a `Type name = ` prefix)
+  refuses cleanly with a specific diagnostic; support lands
+  later. The break-on-`=` wrap for an individual resource
+  that overflows its own line (single-resource P2+, or
+  recursive promotion inside a multi-resource block) lands
+  with the wrap-priority phase. Calibration-recon impact: the
+  two remaining MISSING fixtures (both
+  `try_with_resources_statement`) cleared. MATCH 40 → 42,
+  MISSING 2 → 0. Every fixture in the existing surface now
+  RUNs through the formatter — remaining differences are all
+  DIFFER or PARTIAL (wrap-priority, javadoc reflow,
+  side-comment attachment, refused constructs like generic
+  type parameters, and fixture-vs-spec drift cleanups).
 - Phase 2v lambda expressions (single-line form): new
   `_emit_lambda_expression` handles `PARAMS -> BODY` with
   single space on each side of `->` per spec B5. The
