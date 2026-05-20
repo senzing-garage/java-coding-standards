@@ -80,6 +80,49 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 3b fixture-vs-spec drift cleanup (Wave 1 — fixtures):
+  nine fixture `expected.java` files updated to match the
+  current spec where they encoded pre-spec JDT-era output.
+  Per the plan's calibration-gate guidance ("Resolve any
+  drift by either tightening the spec rule or updating the
+  fixture"), the spec is correct in each case and the
+  fixtures move. The drifts:
+    - `allman_braces/11_if_with_inline_comment` — fixture
+      had one space between `{` and `//`; spec C6 requires
+      exactly two. (Formatter behavior was already correct
+      in Phase 3a; this commit retires the off-by-1-byte
+      DIFFER.)
+    - `allman_braces/14_static_initializer` — fixture had
+      same-line `static {`; spec B10 requires Allman
+      (`static` and `{` on separate lines).
+    - `allman_braces/18_enum_constant_body` — fixture had
+      same-line `ALPHA {`; spec B9 requires Allman body
+      opening for enum-constant anonymous bodies.
+    - `need_braces/22_braced_short_circuit_with_paired_else_-
+      kept` — fixture had `}\n        else {` (uncuddled
+      else); spec C5 requires cuddled `} else {`.
+    - `throws_alignment/13_annotation_with_comma_args` —
+      fixture had `@MyAnno(a=1, b=2)` (no spaces around `=`
+      in annotation arguments); spec A4 requires single
+      space on each side of assignment-style operators in
+      `element_value_pair` nodes.
+    - `javadoc_inline_tags/03_already_reflowed_idempotent`,
+      `javadoc_inline_tags/04_pre_block_preserved`,
+      `javadoc_reflow/06_at_param_skipped`, and
+      `javadoc_tags/04_already_compact_idempotent` — each
+      had `public class Foo {}` (or
+      `public int doThing(int input) { return 0; }`)
+      single-line/inline-`{}` body shapes for the test's
+      otherwise-incidental class/method body; the spec
+      requires Allman expansion of all type and method
+      bodies regardless of contents. The javadoc content
+      in each fixture was already correct, so the brace-
+      shape update alone unlocks them.
+  Calibration-recon impact: all 9 updated fixtures graduated
+  to MATCH. MATCH 45 → 54. DIFFER 37 → 28. PARTIAL unchanged
+  at 1. After Wave 1, MATCH is 65% (54/83); the remaining
+  DIFFER fixtures all hinge on the wrap-priority engine
+  (Wave 3) or the javadoc reflow port (Wave 2).
 - Phase 3a-2 nested type-declaration brace indentation fix:
   `_emit_class_declaration`, `_emit_interface_declaration`,
   and `_emit_enum_declaration` previously emitted the

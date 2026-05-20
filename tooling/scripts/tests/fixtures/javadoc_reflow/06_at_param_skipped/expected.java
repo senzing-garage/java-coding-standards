@@ -8,5 +8,8 @@ public class Foo
      *              behavior of the call
      * @return the computed result
      */
-    public int doThing(int input) { return 0; }
+    public int doThing(int input)
+    {
+        return 0;
+    }
 }
