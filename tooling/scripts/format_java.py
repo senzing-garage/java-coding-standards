@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2y — anonymous classes on object creation):
+Status (Phase 2z — enum constants with anonymous bodies):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -2092,21 +2092,33 @@ def _emit_enum_body_members(
 def _emit_enum_constant(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `[modifiers] NAME [(arguments)]`.
+    """Emit `[modifiers] NAME [(arguments)] [{ body }]`.
 
-    Refuses constants with anonymous class bodies
-    (`PLUS { ... }`) — that's the spec B9 combined form
-    where the constant has both arguments and a body; lands
-    with the anonymous-classes phase.
+    Per spec B9 ("Enum Constant Bodies"):
+
+        - Plain constant — `INACTIVE("inactive", 0)`.
+        - Constant with anonymous body — body opens on its
+          OWN line (Allman braces), NOT same-line. This
+          differs from C8 anonymous classes (which DO use
+          same-line braces) because here the body is the
+          continuation of a top-level enum constant
+          declaration rather than an inline expression.
+        - Combined constant + arguments + body —
+          `PLUS("plus", 1) { @Override ... }` follows the
+          same Allman placement.
+
+    The body, when present, is structurally a class body —
+    same content rules as `_emit_class_body_members` for
+    top-level classes (method declarations inside still
+    take their normal Allman brace placement, etc.).
+    Body members are indented one level deeper than the
+    constant; the closing `}` aligns with the constant.
+
+    The trailing `,` or `;` separator is emitted by the
+    parent `_emit_enum_body_members` — this function ends
+    mid-line at the constant's last token (closing `)` of
+    arguments, closing `}` of body, or identifier).
     """
-    if node.child_by_field_name("body") is not None:
-        raise NotImplementedError(
-            "enum_constant with anonymous body "
-            "(`PLUS { ... }`) is not yet supported; that "
-            "construct lands with the anonymous-classes "
-            "phase."
-        )
-
     modifiers_node: Node | None = None
     for child in node.named_children:
         if child.type == "modifiers":
@@ -2117,6 +2129,7 @@ def _emit_enum_constant(
         _emit_node(emitter, source, modifiers_node)
     name = node.child_by_field_name("name")
     arguments = node.child_by_field_name("arguments")
+    body = node.child_by_field_name("body")
     if name is None:
         raise NotImplementedError(
             "enum_constant missing 'name' — grammar shape "
@@ -2125,6 +2138,16 @@ def _emit_enum_constant(
     _emit_node(emitter, source, name)
     if arguments is not None:
         _emit_node(emitter, source, arguments)
+    if body is not None:
+        # Per spec B9: body opens on its own line (Allman),
+        # NOT same-line like C8 anonymous-class expressions.
+        emitter.newline()
+        emitter.write_indent()
+        emitter.write("{")
+        emitter.newline()
+        _emit_class_body_members(emitter, source, body)
+        emitter.write_indent()
+        emitter.write("}")
 
 
 def _emit_interface_declaration(

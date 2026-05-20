@@ -1449,6 +1449,114 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    # --- Enum constants with anonymous bodies (Phase 2z / spec B9) ---
+
+    def test_enum_constant_with_anonymous_body(self) -> None:
+        # Spec B9: enum-constant body opens on its OWN line
+        # (Allman), NOT same-line like C8 anonymous-class
+        # expressions. Body content uses standard class-body
+        # member emission — method declarations inside still
+        # take their normal Allman brace placement.
+        out = format_java.format_source(
+            b"enum Op { PLUS { public int apply(int a, int b) "
+            b"{ return a + b; } } }"
+        )
+        assert out == (
+            b"enum Op\n"
+            b"{\n"
+            b"    PLUS\n"
+            b"    {\n"
+            b"        public int apply(int a, int b)\n"
+            b"        {\n"
+            b"            return a + b;\n"
+            b"        }\n"
+            b"    };\n"
+            b"}\n"
+        )
+
+    def test_enum_constants_with_anonymous_bodies(self) -> None:
+        # Two constants each with an anonymous body — the
+        # parent enum-body emitter handles `,` between
+        # consecutive constants and `;` after the last,
+        # attached to the closing `}` of the body.
+        out = format_java.format_source(
+            b"enum Op { "
+            b"PLUS { public int apply(int a, int b) "
+            b"{ return a + b; } }, "
+            b"MINUS { public int apply(int a, int b) "
+            b"{ return a - b; } } "
+            b"}"
+        )
+        assert out == (
+            b"enum Op\n"
+            b"{\n"
+            b"    PLUS\n"
+            b"    {\n"
+            b"        public int apply(int a, int b)\n"
+            b"        {\n"
+            b"            return a + b;\n"
+            b"        }\n"
+            b"    },\n"
+            b"    MINUS\n"
+            b"    {\n"
+            b"        public int apply(int a, int b)\n"
+            b"        {\n"
+            b"            return a - b;\n"
+            b"        }\n"
+            b"    };\n"
+            b"}\n"
+        )
+
+    def test_enum_constant_with_arguments_and_body(self) -> None:
+        # Spec B9 combined form: constructor arguments AND
+        # anonymous body on the same constant. Arguments on
+        # the constant's line; body opens on its own line
+        # (Allman) following the closing `)`.
+        out = format_java.format_source(
+            b'enum Op { '
+            b'PLUS("plus", 1) { '
+            b'@Override public int apply(int a, int b) '
+            b'{ return a + b; } '
+            b'} }'
+        )
+        assert out == (
+            b"enum Op\n"
+            b"{\n"
+            b'    PLUS("plus", 1)\n'
+            b"    {\n"
+            b"        @Override\n"
+            b"        public int apply(int a, int b)\n"
+            b"        {\n"
+            b"            return a + b;\n"
+            b"        }\n"
+            b"    };\n"
+            b"}\n"
+        )
+
+    def test_enum_mixed_plain_and_body_constants(self) -> None:
+        # Plain constants and body constants can be mixed in
+        # the same enum. Plain constants emit a `,` directly
+        # after the name; body constants emit the `,` after
+        # the closing `}` of the body.
+        out = format_java.format_source(
+            b"enum Op { PLUS, MINUS { void m() { y(); } }, "
+            b"DIVIDE }"
+        )
+        assert out == (
+            b"enum Op\n"
+            b"{\n"
+            b"    PLUS,\n"
+            b"    MINUS\n"
+            b"    {\n"
+            b"        void m()\n"
+            b"        {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    },\n"
+            b"    DIVIDE;\n"
+            b"}\n"
+        )
+
     def test_annotated_type_in_throws(self) -> None:
         # Per spec A3 type-use annotations: annotation
         # inline immediately before the type with a single

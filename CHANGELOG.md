@@ -80,6 +80,34 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2z enum constants with anonymous bodies:
+  `_emit_enum_constant` now dispatches the optional body
+  rather than refusing it. Per spec B9 ("Enum Constant
+  Bodies"), the body opens on its OWN line (Allman braces),
+  NOT same-line like C8 anonymous-class expressions — even
+  though the body is structurally a class body, here it's
+  the continuation of a top-level enum constant declaration
+  rather than an inline expression, and the spec's "Brace
+  Placement / Allman Style" rule applies. Body content uses
+  standard class-body member emission via `_emit_class_-
+  body_members`, so method declarations inside still take
+  their normal Allman brace placement. The body opens at
+  the constant's indent column (via `write_indent()`), body
+  members indent one level deeper, and the closing `}`
+  returns to the constant's column. The trailing `,` or `;`
+  separator continues to be emitted by the parent `_emit_-
+  enum_body_members`, which attaches naturally to the
+  constant's last token (closing `)` of arguments, closing
+  `}` of body, or identifier). Combined form (constructor
+  arguments AND body — `PLUS("plus", 1) { ... }`) supported.
+  Calibration-recon impact: the previously-PARTIAL
+  `allman_braces/18_enum_constant_body` fixture graduated
+  out of PARTIAL but landed in DIFFER, not MATCH — the
+  fixture's `expected.java` uses pre-spec SAME-LINE braces
+  (`ALPHA {`) for enum-constant bodies, contradicting the
+  current spec B9 rule. The fixture itself needs updating
+  as a separate calibration-cleanup pass. PARTIAL 2 → 1,
+  DIFFER 38 → 39.
 - Phase 2y anonymous classes on object creation:
   `_emit_object_creation_expression` now dispatches the
   optional `class_body` named child rather than refusing it.
