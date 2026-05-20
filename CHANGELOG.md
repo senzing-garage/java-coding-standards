@@ -80,6 +80,31 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 5c Wave-3 method-call args wrap (P1 → P2 paren-
+  aligned): `_emit_argument_list` now measures the would-be
+  P1 single-line width and falls through to P2 (two-line,
+  paren-aligned, comma-packed) when P1 would exceed 80
+  chars. The P2 emission greedily packs args onto the call
+  line until the next arg would overflow, then breaks to a
+  continuation line at the column right after `(` and
+  continues placing args there. Per spec "Method Call
+  Arguments / Placement (in priority order by line length)".
+  Two fixture `expected.java` files were also regenerated
+  as part of this commit because their pre-spec output used
+  the legacy JDT-style single-indent continuation (which
+  the spec explicitly calls out as the wrong-shape anti-
+  pattern in "Method Call Arguments / Anti-pattern"):
+  `orchestrator/01_user_failure_cases` and
+  `orchestrator/03_long_line_wrapping`. The third method-
+  call fixture (`orchestrator/08_string_concat_spec_layout`)
+  still DIFFER — it needs P4 form (next-line single-indent)
+  plus binary-expression `+`-wrap on the long-string first
+  arg; that combination lands in a later phase. P3 (paren-
+  aligned, one arg per line) and P4 (next-line single-
+  indent) are not exercised by the current corpus apart
+  from fixture 08 and remain TODO. Calibration-recon
+  impact: MATCH 76 → 78. DIFFER 6 → 4. PARTIAL unchanged
+  at 1.
 - Phase 5b Wave-3 multi-line-header Allman + Tier-1 width
   fallback: three brace-placement decisions now hinge on
   source span / measured width:

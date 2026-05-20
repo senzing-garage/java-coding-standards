@@ -3259,23 +3259,94 @@ def _emit_cast_expression(
 def _emit_argument_list(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `(arg1, arg2, ...)` on a single line.
+    """Emit `(arg1, arg2, ...)` with wrap-priority selection.
 
-    Method-call argument-list WRAPPING (the priority 1 / 2 / 3
-    / 4 rules from the "Method Call Arguments" spec section) is
-    NOT yet implemented — this emitter always uses the
-    single-line form. If the surrounding context makes the
-    resulting line exceed 80 characters, the emitter still
-    produces single-line output; the wrap-priority phase will
-    add the column-aware logic that decides among the four
-    priorities.
+    Per spec "Method Call Arguments / Placement (in priority
+    order by line length)":
+
+        - P1 (single line): entire call fits in 80 chars.
+        - P2 (two-line paren-aligned, comma-packed): the
+          argument list spans exactly two source lines —
+          pack as many args as fit on the call line, wrap
+          the rest aligned to the column after `(`.
+        - P3 (paren-aligned, one arg per line): each arg on
+          its own line at the column after `(`.
+        - P4 (next-line single-indent): line-break before
+          the first arg; each arg on its own line at
+          single-indent (4 spaces) past the call's
+          statement start.
+
+    Current implementation: P1 + P2 fully supported using
+    source-text widths. P3 and P4 lands with later phases as
+    fixtures surface them; this emitter falls back to P2
+    behavior even for cases that would technically require
+    P3/P4, leaving an over-80 line that the C1 emit+warn
+    behavior will eventually flag. The current corpus has
+    only P2 cases plus one P4 case (string-concat arg)
+    that's addressed in Phase 5e.
     """
     args = [c for c in node.children if c.is_named]
+    if not args:
+        emitter.write("()")
+        return
+
+    # Capture column at start of `(` for paren-alignment.
+    open_col = emitter.column
     emitter.write("(")
+    cont_col = emitter.column  # column right after `(`
+
+    # Measure P1 single-line width: open_col + 1 + sum(arg
+    # widths) + 2*(n-1) + 1 (closing `)`).
+    arg_texts = [_node_source_text(source, a) for a in args]
+    arg_widths = [len(t) for t in arg_texts]
+    # Reject P1 measurement when any arg has internal newlines
+    # — those would render multi-line regardless. Treat as
+    # "doesn't fit on one line" and fall through to P2.
+    any_multiline_arg = any("\n" in t for t in arg_texts)
+    p1_width = (
+        open_col + 1 + sum(arg_widths) + 2 * (len(args) - 1) + 1
+    )
+
+    if not any_multiline_arg and p1_width <= _MAX_LINE:
+        # P1: all args on one line.
+        for index, arg in enumerate(args):
+            if index > 0:
+                emitter.write(", ")
+            _emit_node(emitter, source, arg)
+        emitter.write(")")
+        return
+
+    # P2: pack as many args as fit on the call line at the
+    # paren-aligned continuation column. Greedily place args
+    # on the current line; when the next arg would overflow,
+    # break to a continuation line at `cont_col` and continue
+    # placing args there.
+    max_first_line = _MAX_LINE
+    # `cont_col` doubles as the max-line-length budget for
+    # continuation lines (each continuation prefix is
+    # `cont_col` spaces, so the remaining budget is
+    # `_MAX_LINE - cont_col` chars of content per line).
     for index, arg in enumerate(args):
-        if index > 0:
+        if index == 0:
+            _emit_node(emitter, source, arg)
+            continue
+        # Compute the projected width of appending `, arg` to
+        # the current line.
+        projected = emitter.column + 2 + arg_widths[index]
+        # If this is the last arg, also account for the
+        # trailing `)` — we don't want to push it onto a new
+        # line by itself.
+        if index == len(args) - 1:
+            projected += 1
+        if projected <= max_first_line:
             emitter.write(", ")
-        _emit_node(emitter, source, arg)
+            _emit_node(emitter, source, arg)
+        else:
+            # Break to the continuation line at cont_col.
+            emitter.write(",")
+            emitter.newline()
+            emitter.write(" " * cont_col)
+            _emit_node(emitter, source, arg)
     emitter.write(")")
 
 

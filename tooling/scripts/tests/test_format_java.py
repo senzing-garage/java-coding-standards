@@ -496,6 +496,42 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    def test_method_call_p2_paren_aligned_wrap(self) -> None:
+        # Spec "Method Call Arguments / Priority 2 (two-line,
+        # paren-aligned, comma-packed)": when P1 single-line
+        # would overflow 80 chars, pack as many args as fit on
+        # the call line and align the continuation to the
+        # column right after `(`. Greedy packing — args go on
+        # the call line until adding the next one would push
+        # the line past 80; remaining args land at the paren-
+        # aligned continuation column.
+        src = (
+            b"class A {\n"
+            b"    void m() {\n"
+            b"        String r = svc.callSomeLongMethodName("
+            b"firstArg, secondArg, thirdArg, fourthArg);\n"
+            b"    }\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        # The `(` lands at column 46, so continuation is at
+        # column 47 (46 leading spaces + the arg). The first
+        # three args (firstArg, secondArg, thirdArg) pack
+        # onto the call line; fourthArg breaks to the
+        # continuation.
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        String r = svc.callSomeLongMethodName("
+            b"firstArg, secondArg, thirdArg,\n"
+            b"                                              "
+            b"fourthArg);\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     def test_method_call_without_receiver(self) -> None:
         # Method call with no `object` field — bare
         # method(args) form (typical for same-class methods or

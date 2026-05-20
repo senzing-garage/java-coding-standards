@@ -6,7 +6,7 @@ public class Foo
         }
         if (x == null) return;
         String result = someService.callSomeLongMethodName(firstArg, secondArg,
-            thirdArg, fourthArg);
+                                                           thirdArg, fourthArg);
         if (env != null) {
             env.destroy();
         }
