@@ -356,6 +356,20 @@ def _node_source_text(source: bytes, node: Node) -> str:
     return source[node.start_byte:node.end_byte].decode("utf-8")
 
 
+def _node_spans_multiple_rows(node: Node) -> bool:
+    """Return True when `node`'s source span crosses multiple
+    lines (start_row != end_row).
+
+    Used by wrap-priority emitters to detect developer-authored
+    multi-line headers (`while (cond_spanning_two_lines)`,
+    `method(p1,\\n p2)`, etc.) so the formatter can switch the
+    associated brace placement from same-line to Allman per the
+    spec's "Brace Placement / Exception: Multi-Line Conditions"
+    rule.
+    """
+    return node.start_point[0] != node.end_point[0]
+
+
 # Leaf nodes whose canonical formatted form is byte-for-byte
 # identical to their source text. Literals never get rewritten —
 # `42L` stays `42L`, `0xFFp-1` stays `0xFFp-1`, etc. — and named
@@ -998,21 +1012,37 @@ def _emit_if_statement(
         alternative is None
         and short_circuit is not None
         and not _is_else_branch_if(node)
+        and not _node_spans_multiple_rows(condition)
     ):
-        # Tier 1: `if (cond) STMT;`. The short-circuit
-        # statement emitters (`return`/`continue`/`break`/
-        # `throw`) write their own trailing `;`. Per the spec's
-        # "`if`/`else` pairs always use braces" rule, the
-        # presence of any `else` clause inhibits Tier 1 — and
-        # that includes the case where THIS if_statement is
-        # itself an `else if` branch of a parent (the
-        # `_is_else_branch_if` check), since "once any branch
-        # has an `else`, every branch is braced".
-        emitter.write("if ")
-        _emit_node(emitter, source, condition)
-        emitter.write(" ")
-        _emit_node(emitter, source, short_circuit)
-        return
+        # Tier 1 is structurally eligible. Measure the would-be
+        # width: leading indent + `if ` + condition + ` ` +
+        # short-circuit statement. If it overflows 80 chars,
+        # fall through to Tier 2 (braced) per spec
+        # "Short-Circuit Conditionals / Tier 2".
+        start_col = emitter.column
+        tier1_width = (
+            start_col
+            + len("if ")
+            + len(_node_source_text(source, condition))
+            + 1
+            + len(_node_source_text(source, short_circuit))
+        )
+        if tier1_width <= _MAX_LINE:
+            # Tier 1: `if (cond) STMT;`. The short-circuit
+            # statement emitters (`return`/`continue`/`break`/
+            # `throw`) write their own trailing `;`. Per the
+            # spec's "`if`/`else` pairs always use braces"
+            # rule, the presence of any `else` clause inhibits
+            # Tier 1 — and that includes the case where THIS
+            # if_statement is itself an `else if` branch of a
+            # parent (the `_is_else_branch_if` check), since
+            # "once any branch has an `else`, every branch is
+            # braced".
+            emitter.write("if ")
+            _emit_node(emitter, source, condition)
+            emitter.write(" ")
+            _emit_node(emitter, source, short_circuit)
+            return
 
     emitter.write("if ")
     _emit_node(emitter, source, condition)
@@ -2045,6 +2075,22 @@ def _emit_for_statement(
     condition = node.child_by_field_name("condition")
     update = node.child_by_field_name("update")
 
+    # Per spec "Brace Placement / Exception: Multi-Line
+    # Conditions" — when the for-header spans multiple source
+    # rows the body's opening `{` switches to Allman. Detect
+    # via body.start_row vs node.start_row; emit the verbatim
+    # header text in that case to preserve developer-authored
+    # line breaks (paren-aligned semicolon-separated parts).
+    if body.start_point[0] != node.start_point[0]:
+        header_text = source[
+            node.start_byte : body.start_byte
+        ].decode("utf-8").rstrip()
+        emitter.write_raw_lines(header_text)
+        emitter.newline()
+        emitter.write_indent()
+        _emit_node(emitter, source, body)
+        return
+
     emitter.write("for (")
     # `local_variable_declaration` includes its own trailing
     # `;`; bare-expression and missing-init paths need a
@@ -2113,8 +2159,14 @@ def _emit_while_statement(
 ) -> None:
     """Emit `while (cond) { ... }`.
 
-    Same-line-brace control-flow form. Grammar fields:
-    `condition` (parenthesized_expression) and `body` (block).
+    Per the spec's "Brace Placement / Exception: Multi-Line
+    Conditions" rule, when the condition spans multiple source
+    rows the opening `{` goes Allman (on its own line, aligned
+    with the `while` keyword's indent). Single-line conditions
+    keep the same-line brace.
+
+    Grammar fields: `condition` (parenthesized_expression),
+    `body` (block).
     """
     condition = node.child_by_field_name("condition")
     body = node.child_by_field_name("body")
@@ -2124,9 +2176,17 @@ def _emit_while_statement(
             "body is not yet supported."
         )
     emitter.write("while ")
-    _emit_node(emitter, source, condition)
-    emitter.write(" ")
-    _emit_node(emitter, source, body)
+    if _node_spans_multiple_rows(condition):
+        # Preserve the developer-authored multi-line condition
+        # verbatim from source; switch to Allman brace.
+        emitter.write_raw_lines(_node_source_text(source, condition))
+        emitter.newline()
+        emitter.write_indent()
+        _emit_node(emitter, source, body)
+    else:
+        _emit_node(emitter, source, condition)
+        emitter.write(" ")
+        _emit_node(emitter, source, body)
 
 
 def _emit_do_statement(
@@ -2982,16 +3042,30 @@ def _emit_throws(
 def _emit_formal_parameters(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `(p1, p2, ...)` on a single line.
+    """Emit `(p1, p2, ...)`.
 
-    Single-line form only for Phase 2g; the four-priority
-    wrapping rules from the "Method and Constructor
-    Declarations / Parameter Placement" spec section land in
-    a later phase. Receivers (`@This Foo this`) and varargs
-    (`Type... name`) are not yet supported and will surface
-    via dispatch refusals from the per-parameter / per-type
-    emitters.
+    Single-line form for parameters whose source span fits on
+    one row. When the source has the parameter list spanning
+    multiple rows, the developer-authored multi-line layout
+    is preserved (paren-aligned continuation lines from
+    source) — the formatter does not collapse them.
+
+    The full four-priority wrapping rules from the "Method and
+    Constructor Declarations / Parameter Placement" spec
+    section (auto-wrap when single-line would overflow 80
+    chars, choose P1/P2/P3/P4 by width) land with later wrap-
+    priority phases. The current behavior is source-
+    preservation only.
+
+    Receivers (`@This Foo this`) and varargs (`Type... name`)
+    are not yet supported and will surface via dispatch
+    refusals from the per-parameter / per-type emitters.
     """
+    if _node_spans_multiple_rows(node):
+        # Preserve developer-authored multi-line params from
+        # source. Includes opening `(` and closing `)`.
+        emitter.write_raw_lines(_node_source_text(source, node))
+        return
     params = [
         c for c in node.children
         if c.type == "formal_parameter"

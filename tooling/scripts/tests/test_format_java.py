@@ -1845,6 +1845,116 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    def test_while_multiline_condition_uses_allman(self) -> None:
+        # Per spec "Brace Placement / Exception: Multi-Line
+        # Conditions" — when the condition spans multiple
+        # source rows, the opening `{` goes Allman. The
+        # source's multi-line layout is preserved.
+        src = (
+            b"class A {\n"
+            b"    void m() {\n"
+            b"        while (this.a.size()\n"
+            b"                < this.b.size()) {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        while (this.a.size()\n"
+            b"                < this.b.size())\n"
+            b"        {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_for_multiline_header_uses_allman(self) -> None:
+        # Per spec "Brace Placement / Exception: Multi-Line
+        # Conditions" — when the for-header spans multiple
+        # source rows, the opening `{` goes Allman.
+        src = (
+            b"class A {\n"
+            b"    void m() {\n"
+            b"        for (int i = a();\n"
+            b"             i >= 0;\n"
+            b"             i = a()) {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        for (int i = a();\n"
+            b"             i >= 0;\n"
+            b"             i = a())\n"
+            b"        {\n"
+            b"            y();\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_method_multiline_params_preserved(self) -> None:
+        # Per spec — source-authored multi-line parameter
+        # lists are preserved; the body's Allman brace is
+        # unchanged (method bodies are always Allman).
+        src = (
+            b"class A {\n"
+            b"    void wrappedHeader(int alpha,\n"
+            b"                       int beta) {\n"
+            b"        doIt();\n"
+            b"    }\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void wrappedHeader(int alpha,\n"
+            b"                       int beta)\n"
+            b"    {\n"
+            b"        doIt();\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_tier1_overlong_falls_back_to_tier2(self) -> None:
+        # Spec "Short-Circuit Conditionals / Tier 2" — when
+        # the Tier-1 single-line form would exceed 80 chars,
+        # fall back to Tier 2 (braced).
+        src = (
+            b"class A {\n"
+            b"    void m() {\n"
+            b"        if (somethingExtremelyLongConditionThatGoesOnAndOnAndOnAndOn)\n"
+            b'            throw new IllegalStateException("a long-ish message here");\n'
+            b"    }\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        if (somethingExtremelyLongConditionThatGoesOnAndOnAndOnAndOn) {\n"
+            b'            throw new IllegalStateException("a long-ish message here");\n'
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     def test_do_while_statement_cuddled_while(self) -> None:
         # Per "Closing Brace Rules", `while` cuddles with the
         # closing `}` of the body block: `} while (cond);`.

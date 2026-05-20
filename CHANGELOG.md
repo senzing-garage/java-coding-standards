@@ -80,6 +80,44 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 5b Wave-3 multi-line-header Allman + Tier-1 width
+  fallback: three brace-placement decisions now hinge on
+  source span / measured width:
+    - `_emit_while_statement` switches to Allman brace when
+      the `condition` (`parenthesized_expression`) spans
+      multiple source rows. Per spec
+      "Brace Placement / Exception: Multi-Line Conditions".
+      The developer-authored condition layout is preserved
+      verbatim from source.
+    - `_emit_for_statement` switches to Allman brace when
+      the for-header (init / condition / update bundle)
+      spans multiple source rows. Detection compares the
+      body's start row to the for-keyword's start row; when
+      they differ, the header is emitted verbatim from
+      source bytes (paren-aligned continuation lines from
+      source, semicolon separators preserved).
+    - `_emit_formal_parameters` now preserves source-
+      authored multi-line parameter lists (when the params
+      node spans multiple rows, emit verbatim via
+      `write_raw_lines`). Method bodies are already Allman,
+      so this combines naturally to produce the spec's
+      multi-line-params-with-Allman shape.
+    - `_emit_if_statement` Tier-1 short-circuit collapse
+      now gates on a measured width check: if the would-be
+      Tier-1 line (leading indent + `if ` + condition
+      source + ` ` + short-circuit statement source) exceeds
+      80 chars, fall back to Tier 2 (braced). Also inhibits
+      Tier 1 when the condition spans multiple rows (no
+      Tier 1 form makes sense for a multi-row condition).
+  New shared helper `_node_spans_multiple_rows(node)` —
+  used by all four call sites. Calibration-recon impact:
+  six previously-DIFFER fixtures graduated to MATCH —
+  `allman_braces/04_method_wrapped_params`, `/05_while_-
+  multiline_condition`, `/06_for_wrapped_header`, `/10_-
+  case5_cleanup_buggy_split`, `need_braces/09_long_short_-
+  circuit_uses_braces`, `/13_braced_short_circuit_too_-
+  long_kept`. MATCH 70 → 76. DIFFER 12 → 6. PARTIAL
+  unchanged at 1.
 - Phase 5a Wave-3 throws-clause wrap-priority (start of the
   wrap-priority engine): `_emit_throws` now measures the
   would-be single-line P1 width (caller's leading-indent
