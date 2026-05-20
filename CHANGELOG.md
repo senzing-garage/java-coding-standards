@@ -80,6 +80,24 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 3a-2 nested type-declaration brace indentation fix:
+  `_emit_class_declaration`, `_emit_interface_declaration`,
+  and `_emit_enum_declaration` previously emitted the
+  opening `{` and closing `}` of their type body without
+  `write_indent()`, so nested declarations (inside an outer
+  class body) had column-0 braces instead of indented
+  braces matching the type-name column. The fix adds
+  `emitter.write_indent()` before each brace emit. Also
+  removed the trailing `emitter.newline()` from each
+  declaration emitter — it was redundant with `finish()`'s
+  EOF-newline guarantee for top-level types, and produced
+  a stray blank line between an inner type's closing `}`
+  and the outer's closing `}` when nested (the parent's
+  `_emit_class_body_members` loop adds the line
+  terminator). Defect was latent — no currently-MATCH
+  fixture exercised nested type declarations, but the four
+  `javadoc_*` fixtures that contained `public class Foo {}`
+  inner-class bodies were emitting visibly broken output.
 - Phase 3a real formatter bug fixes (three bugs surfaced by
   DIFFER-fixture diagnosis after Phase 2z):
     - Tier 1 short-circuit collapse no longer fires on an

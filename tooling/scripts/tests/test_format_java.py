@@ -690,6 +690,27 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
+    def test_nested_class_indents_braces(self) -> None:
+        # A nested class declaration is emitted as a member of
+        # the outer class body — its opening `{` and closing
+        # `}` must indent to the nested-class column, NOT
+        # column 0. (Top-level classes work either way because
+        # indent_level=0.) Also verifies no doubled-newline
+        # between the inner closing `}` and the outer closing
+        # `}` (a regression that would emit a stray blank
+        # line from a previously-redundant trailing newline).
+        out = format_java.format_source(
+            b"class Outer { class Inner { } }"
+        )
+        assert out == (
+            b"class Outer\n"
+            b"{\n"
+            b"    class Inner\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
     # method_declaration with non-empty body is now supported
     # (Phase 2h) — the former "not yet supported" assertion was
     # promoted to positive coverage in the statement tests below.

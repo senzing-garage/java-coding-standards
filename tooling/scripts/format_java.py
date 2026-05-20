@@ -464,12 +464,13 @@ def _emit_class_declaration(
         # class name with no intervening space.
         _emit_node(emitter, source, type_parameters_node)
     emitter.newline()
+    emitter.write_indent()
     emitter.write("{")
     emitter.newline()
     if body is not None:
         _emit_class_body_members(emitter, source, body)
+    emitter.write_indent()
     emitter.write("}")
-    emitter.newline()
 
 
 def _emit_class_body_members(
@@ -2109,12 +2110,13 @@ def _emit_enum_declaration(
     if name is not None:
         _emit_node(emitter, source, name)
     emitter.newline()
+    emitter.write_indent()
     emitter.write("{")
     emitter.newline()
     if body is not None:
         _emit_enum_body_members(emitter, source, body)
+    emitter.write_indent()
     emitter.write("}")
-    emitter.newline()
 
 
 def _emit_enum_body_members(
@@ -2274,12 +2276,13 @@ def _emit_interface_declaration(
     if type_parameters_node is not None:
         _emit_node(emitter, source, type_parameters_node)
     emitter.newline()
+    emitter.write_indent()
     emitter.write("{")
     emitter.newline()
     if body is not None:
         _emit_interface_body_members(emitter, source, body)
+    emitter.write_indent()
     emitter.write("}")
-    emitter.newline()
 
 
 def _emit_interface_body_members(
