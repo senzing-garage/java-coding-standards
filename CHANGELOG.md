@@ -80,6 +80,28 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 4a Wave-2-prep fixture cleanup: nine more javadoc-*
+  fixture `expected.java` files updated to expand their
+  incidental inline-`{}` method / class / constructor bodies
+  to the spec's Allman form. Same drift category as Phase 3b
+  (the inline-body shape doesn't match what the spec
+  requires); these fixtures were missed by the original
+  Phase 3b survey because their primary DIFFER reason was
+  the javadoc-content reflow, which masked the secondary
+  body-shape drift in the diff summary. Updating them now
+  removes one layer of noise from each fixture's diff so
+  that when the Wave-2 javadoc-reflow port lands, the
+  remaining diff is purely about the javadoc content
+  itself. Fixtures updated:
+  `javadoc_inline_tags/01_link_tag_paragraph`,
+  `javadoc_inline_tags/02_code_tag_paragraph`,
+  `javadoc_reflow/02_inline_tag_line_preserved_prose_-
+  reflows`, and `javadoc_tags/01_param_orphan`,
+  `02_return_orphan`, `03_throws_orphan`, `05_multiple_-
+  tags`, `06_long_param_name_alignment`,
+  `07_single_line_param_overshoots_eighty`. No formatter
+  changes in this commit; fixture-only. Calibration counts
+  unchanged: MATCH 54, DIFFER 28, MISSING 0, PARTIAL 1.
 - Phase 3b fixture-vs-spec drift cleanup (Wave 1 — fixtures):
   nine fixture `expected.java` files updated to match the
   current spec where they encoded pre-spec JDT-era output.
