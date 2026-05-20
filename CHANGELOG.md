@@ -80,6 +80,33 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 5f Wave-3 class headers — `superclass` + `super_-
+  interfaces` + type-parameter wrap on overflow:
+  `_emit_class_declaration` no longer refuses `superclass`
+  / `super_interfaces` clauses. Two new emitters cover
+  the single-line forms — `_emit_superclass` emits
+  `extends TYPE`, `_emit_super_interfaces` emits
+  `implements TYPE, ...` via the `type_list` child.
+  The class-declaration emitter speculates a single-line
+  header (modifiers + `class NAME<T1, T2>` + extends +
+  implements); if the resulting line exceeds 80 chars, it
+  backtracks via `Emitter.snapshot()` / `restore()` and
+  re-emits using a new `_emit_class_header_wrapped`
+  helper. The wrap shape: first type-parameter on the
+  class line after `<`; subsequent type-parameters each on
+  their own continuation line at `start_col + 4` (single-
+  indent past the class declaration's start column); `>`
+  ends the last type-parameter line; ` extends X` and
+  ` implements Y, Z` flow on that same line (which fits
+  for the fixture's case). The body's opening `{` is
+  always Allman for the class declaration; the wrap
+  doesn't change brace placement (already Allman). C1
+  emit-and-warn applies if even the wrapped form
+  overflows. The `permits` clause continues to refuse
+  pending a follow-up. Calibration-recon impact: the
+  previously-PARTIAL `orchestrator/10_long_generic_class_-
+  decl_wraps` fixture graduated straight to MATCH. MATCH
+  81 → 82. DIFFER unchanged at 1. PARTIAL 1 → 0.
 - Phase 5e Wave-3 argument-list source-preservation:
   `_emit_argument_list` now preserves a source-authored
   multi-row argument list verbatim (via

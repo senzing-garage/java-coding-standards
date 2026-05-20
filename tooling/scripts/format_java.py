@@ -490,18 +490,15 @@ def _emit_class_declaration(
     "not yet supported" signal.
     """
     # Inspect direct named children: capture the optional
-    # `modifiers` block; refuse the not-yet-supported clauses.
-    # Those clauses have their own priority-by-line-length
-    # wrapping in the "Class Headers" spec section that the
-    # current emitter doesn't yet handle.
+    # `modifiers` block, `type_parameters`, `superclass`,
+    # `super_interfaces`. `permits` (sealed types) still
+    # refuses — wrap-priority for permits lands later.
     modifiers_node: Node | None = None
     type_parameters_node: Node | None = None
+    superclass_node: Node | None = None
+    super_interfaces_node: Node | None = None
     for child in node.named_children:
-        if child.type in (
-            "superclass",
-            "super_interfaces",
-            "permits",
-        ):
+        if child.type == "permits":
             raise NotImplementedError(
                 f"class_declaration child {child.type!r} is not "
                 "yet supported; that construct comes in a later "
@@ -511,9 +508,18 @@ def _emit_class_declaration(
             modifiers_node = child
         elif child.type == "type_parameters":
             type_parameters_node = child
+        elif child.type == "superclass":
+            superclass_node = child
+        elif child.type == "super_interfaces":
+            super_interfaces_node = child
 
     name = node.child_by_field_name("name")
     body = node.child_by_field_name("body")
+
+    # Capture the class declaration's start column for the
+    # type-parameter-wrap continuation indent (single-indent
+    # past the class start = start_col + 4).
+    start_col = emitter.column
 
     if modifiers_node is not None:
         # `_emit_modifiers` emits its own trailing space (for
@@ -524,10 +530,32 @@ def _emit_class_declaration(
     emitter.write("class ")
     if name is not None:
         _emit_node(emitter, source, name)
+
+    # Try-emit the single-line class header. If overflow,
+    # backtrack and emit with type-parameter wrap.
+    saved = emitter.snapshot()
     if type_parameters_node is not None:
         # Per spec B11: `<...>` comes immediately after the
         # class name with no intervening space.
         _emit_node(emitter, source, type_parameters_node)
+    if superclass_node is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, superclass_node)
+    if super_interfaces_node is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, super_interfaces_node)
+    if emitter.column > _MAX_LINE:
+        # Overflow — backtrack and rewrap.
+        emitter.restore(saved)
+        _emit_class_header_wrapped(
+            emitter,
+            source,
+            type_parameters_node,
+            superclass_node,
+            super_interfaces_node,
+            start_col,
+        )
+
     emitter.newline()
     emitter.write_indent()
     emitter.write("{")
@@ -536,6 +564,49 @@ def _emit_class_declaration(
         _emit_class_body_members(emitter, source, body)
     emitter.write_indent()
     emitter.write("}")
+
+
+def _emit_class_header_wrapped(
+    emitter: Emitter,
+    source: bytes,
+    type_parameters_node: Node | None,
+    superclass_node: Node | None,
+    super_interfaces_node: Node | None,
+    start_col: int,
+) -> None:
+    """Emit the type-parameter / extends / implements portion of a
+    class declaration in wrapped form. Caller has already emitted
+    `[modifiers] class NAME`; this function appends the type-
+    parameter list (with wrap) and the extends / implements
+    clauses.
+
+    The wrap shape: the first type-parameter stays on the class
+    declaration line (right after `<`). Subsequent type-parameters
+    each go on their own continuation line at `start_col + 4`
+    (single-indent past the class start). The closing `>` ends
+    the last type-parameter's line, followed by ` extends X` and
+    ` implements Y, Z` (which stay on that same line if they fit).
+    """
+    cont_indent = " " * (start_col + 4)
+    if type_parameters_node is not None:
+        params = [
+            c for c in type_parameters_node.named_children
+            if c.type == "type_parameter"
+        ]
+        emitter.write("<")
+        for index, p in enumerate(params):
+            if index > 0:
+                emitter.write(",")
+                emitter.newline()
+                emitter.write(cont_indent)
+            _emit_node(emitter, source, p)
+        emitter.write(">")
+    if superclass_node is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, superclass_node)
+    if super_interfaces_node is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, super_interfaces_node)
 
 
 def _emit_class_body_members(
@@ -2544,6 +2615,54 @@ def _emit_wildcard(
             emitter.write(child.type)
 
 
+def _emit_superclass(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `extends TYPE` for a class declaration's superclass.
+
+    Grammar: `superclass` node contains the `extends` keyword
+    (anonymous) and a type child. Emits `extends ` + type.
+    """
+    types = [c for c in node.named_children]
+    if not types:
+        raise NotImplementedError(
+            "superclass node with no type child — grammar shape "
+            "unexpected."
+        )
+    emitter.write("extends ")
+    _emit_node(emitter, source, types[0])
+
+
+def _emit_super_interfaces(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `implements TYPE, ...` for a class declaration's
+    super_interfaces clause.
+
+    Grammar: `super_interfaces` node contains the `implements`
+    keyword (anonymous) and a `type_list` child holding the
+    types. Single-line form for now; spec B1 multi-line wrap
+    (when the implements clause overflows on its own) lands
+    later.
+    """
+    type_list = None
+    for c in node.named_children:
+        if c.type == "type_list":
+            type_list = c
+            break
+    if type_list is None:
+        raise NotImplementedError(
+            "super_interfaces missing 'type_list' child — grammar "
+            "shape unexpected."
+        )
+    types = list(type_list.named_children)
+    emitter.write("implements ")
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, t)
+
+
 def _emit_type_parameters(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -3627,6 +3746,8 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "wildcard": _emit_wildcard,
     "type_parameters": _emit_type_parameters,
     "type_parameter": _emit_type_parameter,
+    "superclass": _emit_superclass,
+    "super_interfaces": _emit_super_interfaces,
     "type_bound": _emit_type_bound,
     "lambda_expression": _emit_lambda_expression,
     "inferred_parameters": _emit_inferred_parameters,

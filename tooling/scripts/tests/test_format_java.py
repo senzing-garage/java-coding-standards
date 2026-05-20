@@ -286,11 +286,69 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_class_with_extends_not_yet_supported(self) -> None:
-        with pytest.raises(
-            NotImplementedError, match="superclass"
-        ):
-            format_java.format_source(b"class A extends B {}")
+    def test_class_with_extends(self) -> None:
+        # `extends` clause on a class declaration — single-line
+        # form. Per spec B1, `extends X implements Y` flows
+        # after the class name + type parameters; the body
+        # opens Allman.
+        out = format_java.format_source(b"class A extends B {}")
+        assert out == (
+            b"class A extends B\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_class_with_implements(self) -> None:
+        # `implements` clause on a class declaration — single-
+        # line form. Multiple interfaces separated by `, `.
+        out = format_java.format_source(
+            b"class A implements B, C {}"
+        )
+        assert out == (
+            b"class A implements B, C\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_class_with_extends_and_implements(self) -> None:
+        # Combined `extends X implements Y, Z` — both clauses
+        # flow on the same line as the class name.
+        out = format_java.format_source(
+            b"class A extends Base implements I1, I2 {}"
+        )
+        assert out == (
+            b"class A extends Base implements I1, I2\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_class_header_overflow_wraps_type_params(
+        self,
+    ) -> None:
+        # When the single-line class header overflows 80 chars,
+        # the type parameters wrap: first param after `<` on
+        # the class line, subsequent params on continuation at
+        # single-indent past the class start, `>` and any
+        # extends/implements clause on the last type-param's
+        # line, Allman brace because the header is multi-line.
+        out = format_java.format_source(
+            b"class Outer { "
+            b"public abstract static class AbstractBuilder<"
+            b"E extends Outer, "
+            b"B extends AbstractBuilder<E, B>> "
+            b"implements Initializer { } }"
+        )
+        assert out == (
+            b"class Outer\n"
+            b"{\n"
+            b"    public abstract static class AbstractBuilder<"
+            b"E extends Outer,\n"
+            b"        B extends AbstractBuilder<E, B>>"
+            b" implements Initializer\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
 
     # method_declaration is now supported (Phase 2g) — the
     # former "not yet supported" test was promoted to a positive
