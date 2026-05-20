@@ -1031,41 +1031,500 @@ def _emit_if_statement(
             _emit_branch_as_block(emitter, source, alternative)
 
 
+_MAX_LINE: Final[int] = 80
+
+_JAVADOC_BLOCK_TOKENS: Final[tuple[str, ...]] = (
+    "<p>", "<pre>", "</pre>", "<ul>", "</ul>", "<ol>", "</ol>",
+    "<table>", "</table>", "<tr>", "</tr>", "<td>", "</td>",
+    "<th>", "</th>",
+)
+
+
+def _javadoc_is_prose_line(content: str) -> bool:
+    """Return True when `content` (the post-`* ` part of a javadoc
+    interior line) is plain prose eligible for paragraph reflow.
+
+    Excludes: `@tag` descriptions (their own handler runs),
+    list items (`<li>`), block-level HTML openers / closers,
+    `{@snippet ...}` fragments (the checkstyle ignorePattern
+    excludes them from line-length checks), and CSOFF / CSON
+    suppressors.
+    """
+    if not content:
+        return False
+    if content.startswith("@"):
+        return False
+    if content.startswith("<li>"):
+        return False
+    for tok in _JAVADOC_BLOCK_TOKENS:
+        if content.startswith(tok) and len(content) <= len(tok) + 4:
+            return False
+    if content == "*/":
+        return False
+    if "{@snippet" in content or content.startswith('file="'):
+        return False
+    if content.startswith("CSOFF") or content.startswith("CSON"):
+        return False
+    return True
+
+
+def _javadoc_reflow_words(
+    words: list[str], prefix: str
+) -> list[str]:
+    """Greedy reflow: fill each line with as many space-separated
+    words as fit under `_MAX_LINE - len(prefix)`. Returns a list of
+    content strings (no prefix, no trailing newline)."""
+    if not words:
+        return []
+    max_content = _MAX_LINE - len(prefix)
+    result: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = current + " " + word
+        if len(candidate) <= max_content:
+            current = candidate
+        else:
+            result.append(current)
+            current = word
+    result.append(current)
+    return result
+
+
+def _emit_javadoc_sub_paragraph(
+    emitter: Emitter, lines: list[str], prefix: str
+) -> None:
+    """Emit a contiguous run of plain prose lines (no `{@`/`<`
+    starters) with the orphan-or-overlong reflow gate. Used by
+    `_emit_javadoc_block` after splitting a paragraph at
+    inline-tag / HTML-opener boundaries."""
+    if not lines:
+        return
+    if _javadoc_needs_reflow(lines, prefix):
+        words: list[str] = []
+        for pl in lines:
+            words.extend(pl.split())
+        reflowed = _javadoc_reflow_words(words, prefix)
+        for rl in reflowed:
+            emitter.newline()
+            emitter.write(prefix + rl)
+    else:
+        for pl in lines:
+            emitter.newline()
+            emitter.write(prefix + pl)
+
+
+def _javadoc_needs_reflow(
+    lines: list[str], prefix: str
+) -> bool:
+    """Return True when the paragraph (a list of pre-stripped
+    content strings) needs reflow: any line exceeds 80 chars when
+    prefixed, OR the paragraph has an orphan continuation (a short
+    line whose successor's first word could fit on it).
+
+    When False, the formatter should emit the source lines
+    verbatim — leaving developer-authored linebreaks alone.
+    """
+    max_content = _MAX_LINE - len(prefix)
+    # Any overlong line forces reflow.
+    for line in lines:
+        if len(line) > max_content:
+            return True
+    # Orphan-continuation check: any line whose successor's first
+    # word would fit on it (with one space between) indicates an
+    # awkward break that reflow would fix.
+    for i in range(len(lines) - 1):
+        next_words = lines[i + 1].split()
+        if not next_words:
+            continue
+        first_word = next_words[0]
+        if len(lines[i]) + 1 + len(first_word) <= max_content:
+            return True
+    return False
+
+
+def _emit_javadoc_block(
+    emitter: Emitter, source: bytes, node: Node, raw: str
+) -> None:
+    """Emit a `/** ... */` javadoc block with paragraph reflow,
+    `@param` / `@return` / `@throws` continuation alignment, and
+    preservation of `<pre>` blocks and `{@snippet}` directives.
+
+    Ports the line-level text transforms from
+    `fix_javadoc_reflow.py`, `fix_javadoc_inline_tags.py`, and
+    `fix_javadoc_tags.py` onto a tree-sitter-identified comment
+    range. Behaviors:
+
+        - Plain prose paragraphs (consecutive `* TEXT` lines not
+          starting with `@`/`<`/`{@`/`<li>`) are reflowed to fill
+          lines near 80 chars when the paragraph contains either
+          an awkward orphan continuation OR a line over 80 chars.
+          Inline-tag-bearing prose (e.g. `{@link Foo}`) is
+          reflowed under the same rule.
+
+        - `@param NAME desc` / `@return desc` / `@throws Type desc`
+          descriptions reflow with continuation lines aligned to
+          the description start column (one space past `NAME` /
+          `Type`, or one space past `@return`). Single-line tag
+          descriptions that fit are kept on one line.
+
+        - `<pre> ... </pre>` interior content is preserved
+          verbatim — never reflowed (the spec explicitly carves
+          out code examples).
+
+        - `{@snippet ...}` directives and their continuation
+          `file="..."` lines emit verbatim — the checkstyle
+          `@snippet` ignorePattern grants them an 80-char
+          exemption.
+
+        - Comment delimiters (`/**`, `*/`), blank `*` separator
+          lines, and standalone block HTML openers / closers
+          (`<p>`, `<ul>`, etc.) emit verbatim.
+
+    `raw` is the comment's verbatim source text (caller-provided
+    to avoid re-extracting). The output is re-indented to the
+    formatter's authoritative `emitter.indent_level` regardless
+    of the source's leading indent.
+    """
+    # The caller wrote write_indent() before dispatching, so we
+    # are at column = indent_level * 4. The first line of `raw`
+    # is `/**` (or `/** content...`) — emit as-is. Subsequent
+    # interior lines are reflowed; the closing `*/` line is
+    # emitted as-is.
+    indent = " " * (emitter.indent_level * 4)
+    star_prefix = indent + " * "
+
+    lines = raw.split("\n")
+    if len(lines) == 1:
+        # Single-line `/** ... */` form (rare in our corpus but
+        # syntactically valid). Emit verbatim.
+        emitter.write(lines[0])
+        return
+
+    # Strip leading whitespace and `*` from each interior line to
+    # recover its content. Track per-line metadata for the
+    # classifier loop.
+    interior: list[str] = []
+    for raw_line in lines[1:-1]:
+        s = raw_line.strip()
+        if s == "*":
+            interior.append("")  # blank `*` separator
+            continue
+        if s.startswith("* "):
+            interior.append(s[2:])
+        elif s.startswith("*"):
+            # `*foo` (unusual — no space after `*`); preserve.
+            interior.append(s[1:])
+        else:
+            interior.append(s)
+    # Closing line is `*/` or `... */`.
+    closing = lines[-1].strip()
+
+    emitter.write("/**")
+
+    i = 0
+    in_pre = False
+    while i < len(interior):
+        line = interior[i]
+
+        # Inside <pre> ... </pre>: emit interior content verbatim
+        # with the `* ` prefix.
+        if in_pre:
+            emitter.newline()
+            if line == "":
+                emitter.write(indent + " *")
+            else:
+                emitter.write(star_prefix + line)
+            if "</pre>" in line:
+                in_pre = False
+            i += 1
+            continue
+
+        if "<pre>" in line and "</pre>" not in line:
+            emitter.newline()
+            emitter.write(star_prefix + line)
+            in_pre = True
+            i += 1
+            continue
+
+        # Blank line (paragraph separator): emit `*` and continue.
+        if line == "":
+            emitter.newline()
+            emitter.write(indent + " *")
+            i += 1
+            continue
+
+        # `@param NAME desc` / `@throws Type desc` — capture name +
+        # description, then collect continuation lines (indented
+        # past `* `, signaled by content starting with at least one
+        # leading space because we stripped only `* `).
+        tag_match = _javadoc_match_tag(line)
+        if tag_match is not None:
+            tag_prefix, first_desc = tag_match
+            # Collect each description LINE (stripped of its
+            # leading continuation whitespace). Track lines
+            # separately so we can decide whether to reflow.
+            desc_lines: list[str] = []
+            if first_desc:
+                desc_lines.append(first_desc)
+            j = i + 1
+            while j < len(interior):
+                nxt = interior[j]
+                if not nxt or not nxt[0].isspace():
+                    break
+                desc_lines.append(nxt.strip())
+                j += 1
+            cont_prefix = star_prefix + " " * len(tag_prefix)
+            full_tag_col = len(star_prefix) + len(tag_prefix)
+            # Decide whether to reflow. First-line max accounts
+            # for the `@tag NAME ` prefix; subsequent lines use
+            # the continuation prefix. Reflow if any line
+            # overflows OR there is an orphan continuation.
+            needs = False
+            if len(desc_lines) == 1:
+                # Single line — only reflow if overlong.
+                if (
+                    full_tag_col + len(desc_lines[0])
+                    > _MAX_LINE
+                ):
+                    needs = True
+            else:
+                # First-line ceiling = MAX - full_tag_col.
+                if (
+                    full_tag_col + len(desc_lines[0])
+                    > _MAX_LINE
+                ):
+                    needs = True
+                else:
+                    # Continuation lines under their narrower
+                    # max; orphan check uses the same width as
+                    # the first line for the first transition.
+                    cont_max = _MAX_LINE - len(cont_prefix)
+                    for k in range(1, len(desc_lines)):
+                        if len(desc_lines[k]) > cont_max:
+                            needs = True
+                            break
+                    if not needs:
+                        # Orphan check across each pair.
+                        # Line 0 uses full_tag_col, others use
+                        # cont_prefix.
+                        for k in range(len(desc_lines) - 1):
+                            this_len = (
+                                full_tag_col
+                                + len(desc_lines[k])
+                                if k == 0
+                                else len(cont_prefix)
+                                + len(desc_lines[k])
+                            )
+                            next_words = desc_lines[k + 1].split()
+                            if not next_words:
+                                continue
+                            first_word = next_words[0]
+                            cap = (
+                                _MAX_LINE
+                                if k == 0
+                                else _MAX_LINE
+                            )
+                            if (
+                                this_len + 1 + len(first_word)
+                                <= cap
+                            ):
+                                needs = True
+                                break
+            if not needs:
+                # Emit original lines verbatim.
+                emitter.newline()
+                emitter.write(
+                    star_prefix + tag_prefix + desc_lines[0]
+                    if desc_lines
+                    else star_prefix + tag_prefix.rstrip()
+                )
+                for k in range(1, len(desc_lines)):
+                    emitter.newline()
+                    emitter.write(cont_prefix + desc_lines[k])
+                i = j
+                continue
+            # Reflow: flatten to words and refill.
+            desc_words: list[str] = []
+            for d in desc_lines:
+                desc_words.extend(d.split())
+            first_max = _MAX_LINE - full_tag_col
+            line_words: list[str] = []
+            current_len = 0
+            wi = 0
+            while wi < len(desc_words):
+                w = desc_words[wi]
+                projected = (
+                    current_len + (1 if line_words else 0) + len(w)
+                )
+                if projected <= first_max:
+                    line_words.append(w)
+                    current_len = projected
+                    wi += 1
+                else:
+                    break
+            emitter.newline()
+            emitter.write(
+                star_prefix + tag_prefix + " ".join(line_words)
+            )
+            cont_text = _javadoc_reflow_words(
+                desc_words[wi:], cont_prefix
+            )
+            for cont in cont_text:
+                emitter.newline()
+                emitter.write(cont_prefix + cont)
+            i = j
+            continue
+
+        # Prose paragraph: collect consecutive prose lines (not
+        # blank, not starting with `@`, no tag continuation
+        # whitespace, not standalone block HTML).
+        if not _javadoc_is_prose_line(line):
+            # Block tag standalone (e.g. `<p>`, `<ul>`) — emit
+            # verbatim and continue.
+            emitter.newline()
+            emitter.write(star_prefix + line)
+            i += 1
+            continue
+
+        para_lines = [line]
+        j = i + 1
+        while j < len(interior):
+            nxt = interior[j]
+            if nxt == "":
+                break
+            if not _javadoc_is_prose_line(nxt):
+                break
+            if nxt[0].isspace():
+                break
+            para_lines.append(nxt)
+            j += 1
+        # Reflow decision mirrors the two-script legacy pipeline:
+        #
+        #   - Lines that START with `{@`/`<` (inline tags or HTML
+        #     openers) are paragraph BOUNDARIES — `fix_javadoc_-
+        #     reflow.py` excluded them from prose paragraphs.
+        #     They emit as singletons (no reflow against
+        #     neighbors) UNLESS some line in the surrounding
+        #     paragraph overflows 80 chars.
+        #   - If ANY line overflows, fall back to the
+        #     `fix_javadoc_inline_tags.py` behavior: reflow the
+        #     whole paragraph including `{@`/`<` lines.
+        #   - Otherwise split at `{@`/`<` lines into sub-
+        #     paragraphs; each sub-paragraph gets the orphan-
+        #     or-overlong gate independently.
+        max_content = _MAX_LINE - len(star_prefix)
+        any_overlong = any(
+            len(pl) > max_content for pl in para_lines
+        )
+        if any_overlong:
+            # Combine and reflow everything.
+            para_words: list[str] = []
+            for pl in para_lines:
+                para_words.extend(pl.split())
+            reflowed = _javadoc_reflow_words(
+                para_words, star_prefix
+            )
+            for rl in reflowed:
+                emitter.newline()
+                emitter.write(star_prefix + rl)
+            i = j
+            continue
+        # Split at `{@`/`<` boundaries and process each sub-
+        # paragraph independently.
+        sub: list[str] = []
+        for pl in para_lines:
+            if pl.startswith("{@") or pl.startswith("<"):
+                # Flush any accumulated sub-paragraph first.
+                if sub:
+                    _emit_javadoc_sub_paragraph(
+                        emitter, sub, star_prefix
+                    )
+                    sub = []
+                emitter.newline()
+                emitter.write(star_prefix + pl)
+            else:
+                sub.append(pl)
+        if sub:
+            _emit_javadoc_sub_paragraph(
+                emitter, sub, star_prefix
+            )
+        i = j
+
+    # Closing `*/` line.
+    emitter.newline()
+    emitter.write(indent + " " + closing)
+
+
+def _javadoc_match_tag(content: str) -> tuple[str, str] | None:
+    """If `content` is a `@param NAME` / `@throws Type` / `@return`
+    tag line, return `(prefix, first_description_segment)` where
+    `prefix` is the part before the description (with its trailing
+    space) and `first_description_segment` is the rest of the same
+    line. Return None for non-tag lines.
+
+    Other tags (`@see`, `@deprecated`, `@since`, etc.) currently
+    return None — they are emitted as plain prose by the caller.
+    Adding handlers for those tags lands in a follow-up.
+    """
+    if content.startswith("@return"):
+        # `@return` has no parameter name; description starts
+        # right after.
+        rest = content[len("@return") :]
+        if not rest or rest[0] != " ":
+            return None
+        return ("@return ", rest[1:])
+    for tag in ("@param", "@throws"):
+        if not content.startswith(tag + " "):
+            continue
+        rest = content[len(tag) + 1 :]
+        # Capture the name / type up to the next whitespace.
+        space = rest.find(" ")
+        if space < 0:
+            # `@param NAME` with no description (rare); treat
+            # whole thing as the prefix with an empty description.
+            return (tag + " " + rest + " ", "")
+        name = rest[:space]
+        desc_start = space + 1
+        # Skip any extra whitespace between name and description.
+        while desc_start < len(rest) and rest[desc_start] == " ":
+            desc_start += 1
+        return (tag + " " + name + " ", rest[desc_start:])
+    return None
+
+
 def _emit_comment(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit a `line_comment` or `block_comment` verbatim.
+    """Emit a `line_comment` or `block_comment`.
 
-    Single-line comments emit straight through. Multi-line
-    block comments (typical javadoc spanning several lines)
-    emit with `write_raw_lines`, preserving the developer-
-    authored indent of interior lines. When the source has
-    the comment at the right column for the current
-    `indent_level`, this produces correctly-indented output.
-    Misindented input comments emit with their original
-    (possibly wrong) indent — re-indentation lands with the
-    javadoc-reflow phase.
+    Single-line `//` comments and single-line `/* */` block
+    comments emit verbatim. Multi-line block comments dispatch
+    based on whether they are javadoc (`/**` opener):
 
-    Side-comment attachment (end-of-line comment that
+        - Javadoc — reflow paragraphs and `@tag` descriptions
+          to fill lines near 80 chars per the Javadoc Reflow
+          spec section (and the existing `fix_javadoc_*`
+          script-level behaviors they replace). Handled by
+          `_emit_javadoc_block`.
+        - Non-javadoc multi-line `/* */` — emit verbatim,
+          preserving the developer-authored interior indent.
+
+    Side-comment attachment (end-of-line `//` comment that
     syntactically belongs to the preceding line, e.g.
-    `int x = 1;  // explanation`) is NOT handled here. The
-    grammar exposes the comment as a sibling node and the
-    block / class-body loops give each member its own line.
-    Row-proximity attachment logic lands in a separate
-    phase. Until then, side comments emit on their own line
-    below the code they were meant to annotate — a known
-    drift documented in the calibration-gate notes.
-
-    Javadoc reflow (orphan-word reflow, `@tag` continuation
-    alignment, inline-tag handling) per the "Javadoc
-    Comments" spec section is likewise deferred to its own
-    phase. Comments emit verbatim here.
+    `int x = 1;  // explanation`) is partially handled at the
+    block boundary by `_emit_block` (Phase 3a). Other side-
+    comment positions emit on their own line below the code
+    they were meant to annotate — a known drift documented in
+    the calibration-gate notes.
     """
     text = _node_source_text(source, node)
-    if "\n" in text:
-        emitter.write_raw_lines(text)
-    else:
+    if "\n" not in text:
         emitter.write(text)
+        return
+    if text.startswith("/**"):
+        _emit_javadoc_block(emitter, source, node, text)
+        return
+    emitter.write_raw_lines(text)
 
 
 def _emit_marker_annotation(

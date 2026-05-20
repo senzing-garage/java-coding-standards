@@ -2619,10 +2619,9 @@ class TestFormatSourceSubset:
         )
 
     def test_multi_line_block_comment(self) -> None:
-        # Multi-line javadoc with content already at the
-        # correct indent for class-body level. The emitter
-        # preserves interior indents verbatim via
-        # `write_raw_lines`.
+        # Multi-line javadoc with already-balanced single-prose
+        # paragraph emits unchanged at the formatter's
+        # authoritative indent.
         src = (
             b"class A {\n"
             b"    /**\n"
@@ -2641,6 +2640,130 @@ class TestFormatSourceSubset:
             b"    int x = 1;\n"
             b"}\n"
         )
+
+    # --- Javadoc reflow (Phase 4b / spec "Javadoc Comments") ---
+
+    def test_javadoc_prose_orphan_reflows(self) -> None:
+        # Per the ported `fix_javadoc_reflow.py` behavior: a
+        # paragraph with an awkward orphan continuation (next
+        # line's first word would fit on the previous line) is
+        # reflowed to fill near 80 chars.
+        src = (
+            b"class A {\n"
+            b"    /**\n"
+            b"     * The number of milliseconds to sleep between"
+            b" checks on the\n"
+            b"     * locks required for\n"
+            b"     * tasks that have been postponed.\n"
+            b"     */\n"
+            b"    int x;\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    /**\n"
+            b"     * The number of milliseconds to sleep between"
+            b" checks on the locks required\n"
+            b"     * for tasks that have been postponed.\n"
+            b"     */\n"
+            b"    int x;\n"
+            b"}\n"
+        )
+
+    def test_javadoc_at_param_orphan_reflows(self) -> None:
+        # `@param NAME desc` continuation lines that are
+        # awkwardly short collapse to a single line when the
+        # full description fits within 80 chars.
+        src = (
+            b"class A {\n"
+            b"    /**\n"
+            b"     * @param input the input value\n"
+            b"     *              that controls the\n"
+            b"     *              behavior of the call\n"
+            b"     */\n"
+            b"    int m(int input) { return 0; }\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    /**\n"
+            b"     * @param input the input value that controls"
+            b" the behavior of the call\n"
+            b"     */\n"
+            b"    int m(int input)\n"
+            b"    {\n"
+            b"        return 0;\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_javadoc_at_param_long_name_alignment(self) -> None:
+        # When a `@param NAME desc` overflows on a single line,
+        # the continuation lines align with the description's
+        # start column (one space past `NAME`).
+        src = (
+            b"class A {\n"
+            b"    /**\n"
+            b"     * @param connectionPoolSize the size of the"
+            b" connection pool to allocate at construction"
+            b" time\n"
+            b"     */\n"
+            b"    A(int connectionPoolSize) {}\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        # The description wraps; continuation aligns with the
+        # column after `@param connectionPoolSize `.
+        assert b"     * @param connectionPoolSize the size of " \
+            b"the connection pool to allocate at\n" in out
+        assert b"     *                           construction" \
+            b" time\n" in out
+
+    def test_javadoc_pre_block_preserved_verbatim(self) -> None:
+        # `<pre> ... </pre>` interior content is never reflowed,
+        # even when individual lines are short.
+        src = (
+            b"class A {\n"
+            b"    /**\n"
+            b"     * <pre>\n"
+            b"     *   a.foo();\n"
+            b"     *   b.bar();\n"
+            b"     * </pre>\n"
+            b"     */\n"
+            b"    int x;\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert b"     * <pre>\n" in out
+        assert b"     *   a.foo();\n" in out
+        assert b"     *   b.bar();\n" in out
+        assert b"     * </pre>\n" in out
+
+    def test_javadoc_balanced_prose_preserved(self) -> None:
+        # Per the orphan-or-overlong gate: a paragraph whose
+        # lines all fit and have NO awkward orphan emits
+        # verbatim — the formatter doesn't re-flow developer-
+        # authored breaks just because the lines happen to be
+        # short. Verifies fixture-02 behavior: a `{@link}` line
+        # followed by a balanced prose pair stays untouched.
+        src = (
+            b"class A {\n"
+            b"    /**\n"
+            b"     * {@link Bar} is the\n"
+            b"     * preferred replacement for this"
+            b" deprecated class.\n"
+            b"     */\n"
+            b"    int x;\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert b"     * {@link Bar} is the\n" in out
+        assert b"     * preferred replacement for this " \
+            b"deprecated class.\n" in out
 
     def test_field_with_text_block_initializer_not_yet_supported(
         self,

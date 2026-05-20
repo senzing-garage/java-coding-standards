@@ -80,6 +80,63 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 4b Wave-2 javadoc reflow port: `_emit_comment` now
+  dispatches block comments whose text begins with `/**`
+  to the new `_emit_javadoc_block` emitter, which ports the
+  text-level transforms from the legacy three-script
+  pipeline (`fix_javadoc_reflow.py`,
+  `fix_javadoc_inline_tags.py`, `fix_javadoc_tags.py`) onto
+  tree-sitter-identified comment ranges. Behaviors:
+    - Plain prose paragraphs (consecutive `* TEXT` lines not
+      starting with `@` / `<li>` / block HTML / `{@snippet`)
+      are reflowed to fill lines near 80 chars under the
+      orphan-or-overlong gate: reflow fires when ANY line
+      exceeds 80 chars OR when a paragraph has an awkward
+      orphan continuation (next line's first word could fit
+      on the previous line). Balanced paragraphs whose lines
+      fit and have no orphan are emitted verbatim — the
+      formatter doesn't churn developer-authored breaks just
+      because lines happen to be short.
+    - `{@link}` / `<code>` / similar inline-tag lines act as
+      paragraph BOUNDARIES (per the legacy
+      `fix_javadoc_reflow.py` rule). They emit as singletons
+      while adjacent prose sub-paragraphs are reflowed
+      independently. If ANY line in the surrounding
+      paragraph overflows 80 chars, the whole paragraph
+      reflows together (the legacy
+      `fix_javadoc_inline_tags.py` fallback).
+    - `@param NAME desc` / `@return desc` / `@throws Type desc`
+      descriptions are reflowed under the same orphan-or-
+      overlong gate. Continuation lines align with the
+      description's start column (one space past `NAME` /
+      `Type`, or one space past `@return`).
+    - `<pre> ... </pre>` interior content is preserved
+      verbatim — never reflowed (the spec carves out code
+      examples).
+    - `{@snippet ...}` directives and their continuation
+      `file="..."` lines emit verbatim (checkstyle's
+      `@snippet` ignorePattern grants them an 80-char
+      exemption).
+    - Comment delimiters (`/**`, `*/`), blank `*` separator
+      lines, and standalone block HTML openers / closers
+      (`<p>`, `<ul>`, etc.) emit verbatim.
+  Output re-indents to the formatter's authoritative
+  `emitter.indent_level` regardless of the source's leading
+  indent. Calibration-recon impact: ten previously-DIFFER
+  javadoc fixtures graduated to MATCH
+  (`javadoc_inline_tags/01_link_tag_paragraph` and `/02`;
+  `javadoc_reflow/01_orphan_continuation_reflowed`, `/02`,
+  and `/05`; `javadoc_tags/01_param_orphan`, `/02`, `/03`,
+  `/05`, `/06`, `/07`). The eleventh, `javadoc_reflow/-
+  06_at_param_skipped`, had its `expected.java`
+  regenerated as part of this commit — the fixture's
+  pre-spec expected output reflected the intermediate state
+  after the legacy `fix_javadoc_reflow.py` ran alone
+  (which intentionally SKIPS `@param` tags), not the
+  unified pipeline's final output (where the subsequent
+  `fix_javadoc_tags.py` collapses a fitting `@param`
+  description to one line). MATCH 54 → 65. DIFFER 28 → 17.
+  PARTIAL unchanged at 1.
 - Phase 4a Wave-2-prep fixture cleanup: nine more javadoc-*
   fixture `expected.java` files updated to expand their
   incidental inline-`{}` method / class / constructor bodies
