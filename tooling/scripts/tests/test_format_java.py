@@ -2105,20 +2105,131 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_object_creation_anonymous_body_not_supported(
-        self,
-    ) -> None:
-        # `new Type() { ... }` — anonymous class body, refuses
-        # because the spec's "Anonymous Classes" section (C8)
-        # needs its own emitter with the expression-form
-        # same-line-brace rule.
-        with pytest.raises(
-            NotImplementedError, match="anonymous class body"
-        ):
-            format_java.format_source(
-                b"class A { Object o = new Object() "
-                b"{ void m() {} }; }"
-            )
+    # --- Anonymous classes on object creation (Phase 2y / spec C8) ---
+
+    def test_anonymous_class_empty_body(self) -> None:
+        # Spec C8: same-line opening `{`, closing `}` aligned
+        # with surrounding statement's indent.
+        out = format_java.format_source(
+            b"class A { Foo f = new Foo() { }; }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    Foo f = new Foo() {\n"
+            b"    };\n"
+            b"}\n"
+        )
+
+    def test_anonymous_class_single_method(self) -> None:
+        # Spec C8: body content uses standard class-body member
+        # emission — method declarations inside an anonymous
+        # body still take Allman braces (the C8 same-line-brace
+        # rule applies only to the anonymous-class opening
+        # brace itself, not to members inside).
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"Runnable r = new Runnable() { "
+            b"@Override public void run() { x(); } "
+            b"}; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        Runnable r = new Runnable() {\n"
+            b"            @Override\n"
+            b"            public void run()\n"
+            b"            {\n"
+            b"                x();\n"
+            b"            }\n"
+            b"        };\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_anonymous_class_as_call_argument(self) -> None:
+        # Spec C8: the closing `}` of an anonymous-class
+        # argument aligns with the surrounding statement's
+        # indent, and is followed by whatever syntactic
+        # terminator the call expression requires (here `);`).
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"service.execute(new Runnable() { "
+            b"public void run() { y(); } "
+            b"}); } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        service.execute(new Runnable() {\n"
+            b"            public void run()\n"
+            b"            {\n"
+            b"                y();\n"
+            b"            }\n"
+            b"        });\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_anonymous_class_with_generic_type(self) -> None:
+        # `new Comparator<String>() { ... }` — type is a
+        # `generic_type` node, not a bare `type_identifier`;
+        # verifies the type dispatch handles both shapes.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"Comparator<String> c = new Comparator<String>() { "
+            b"public int compare(String a, String b) "
+            b"{ return 0; } "
+            b"}; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        Comparator<String> c = new Comparator<String>() {\n"
+            b"            public int compare(String a, String b)\n"
+            b"            {\n"
+            b"                return 0;\n"
+            b"            }\n"
+            b"        };\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_anonymous_class_mixed_fields_and_methods(self) -> None:
+        # Anonymous class bodies can contain mixed members —
+        # fields and methods. Standard class-body emission
+        # rules apply (fields packed; one blank line between
+        # the last field and the first method, NOT yet — the
+        # current `_emit_class_body_members` doesn't insert
+        # that blank line yet; that lands with the A2 blank-
+        # line phase).
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"Foo f = new Foo() { "
+            b"int x = 1; void run() { y(); } "
+            b"}; } }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        Foo f = new Foo() {\n"
+            b"            int x = 1;\n"
+            b"            void run()\n"
+            b"            {\n"
+            b"                y();\n"
+            b"            }\n"
+            b"        };\n"
+            b"    }\n"
+            b"}\n"
+        )
 
     # --- Annotations (Phase 2n) ---
 

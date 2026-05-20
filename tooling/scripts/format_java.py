@@ -5,7 +5,7 @@ pipeline that shipped through 0.2.x. It parses each Java source file
 to a tree-sitter-java CST and (eventually) emits spec-compliant text
 directly per the rules in `docs/java-coding-standards.md`.
 
-Status (Phase 2x — type parameters on declarations):
+Status (Phase 2y — anonymous classes on object creation):
     - tree-sitter-java is loaded and a Parser is wired up.
     - File parsing works and the resulting tree can be inspected.
     - `Emitter` provides the token-stream output buffer used by
@@ -1116,7 +1116,7 @@ def _emit_ternary_expression(
 def _emit_object_creation_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `new TYPE(ARGS)`.
+    """Emit `new TYPE(ARGS)` or `new TYPE(ARGS) { BODY }`.
 
     Single space between the `new` keyword and the type, no
     space between the type and the argument list. Grammar
@@ -1124,23 +1124,20 @@ def _emit_object_creation_expression(
     or `scoped_type_identifier`) and `arguments`
     (`argument_list`).
 
-    Refuses anonymous class bodies (`new Type() { ... }`),
-    array creation (`new int[5]`), and explicit type arguments
-    on the constructor call (`new <T>Foo(...)`) — those land
-    with subsequent phases.
+    Anonymous class bodies are exposed as an optional
+    `class_body` named child (no field name). Per spec C8
+    ("Anonymous Classes"), the opening `{` stays SAME-LINE
+    with `new TYPE(ARGS)` (anonymous classes are expressions,
+    not top-level declarations, so they don't take Allman
+    braces). The body content uses the standard class-body
+    member emission via `_emit_class_body_members`. The
+    closing `}` aligns with the surrounding statement's
+    indent (current emitter indent level).
+
+    Refuses array creation (`new int[5]`) and explicit type
+    arguments on the constructor call (`new <T>Foo(...)`) —
+    those land with subsequent phases.
     """
-    # Anonymous class body is exposed as a `class_body` named
-    # child (no field name); refuse it explicitly. The
-    # "Anonymous Classes" spec section (C8) needs its own
-    # emitter with the expression-form same-line-brace rule.
-    for child in node.named_children:
-        if child.type == "class_body":
-            raise NotImplementedError(
-                "object_creation_expression with anonymous "
-                "class body (`new Type() { ... }`) is not yet "
-                "supported; that construct lands with the "
-                "anonymous-classes phase."
-            )
     if node.child_by_field_name("type_arguments") is not None:
         raise NotImplementedError(
             "object_creation_expression with explicit type "
@@ -1153,9 +1150,26 @@ def _emit_object_creation_expression(
             "object_creation_expression missing 'type' or "
             "'arguments' — grammar shape unexpected."
         )
+    class_body: Node | None = None
+    for child in node.named_children:
+        if child.type == "class_body":
+            class_body = child
+            break
+
     emitter.write("new ")
     _emit_node(emitter, source, type_node)
     _emit_node(emitter, source, arguments)
+
+    if class_body is not None:
+        # Per spec C8: same-line opening brace separated from
+        # `)` by a single space. The body is structurally a
+        # class body — same indent/newline rules as
+        # `_emit_class_body_members` for top-level classes.
+        emitter.write(" {")
+        emitter.newline()
+        _emit_class_body_members(emitter, source, class_body)
+        emitter.write_indent()
+        emitter.write("}")
 
 
 def _emit_generic_type(

@@ -80,6 +80,25 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has its own multi-tier wrapping rules and lands in a later
   phase.
+- Phase 2y anonymous classes on object creation:
+  `_emit_object_creation_expression` now dispatches the
+  optional `class_body` named child rather than refusing it.
+  Per spec C8 ("Anonymous Classes"), the opening `{` stays
+  SAME-LINE with `new TYPE(ARGS)` (anonymous classes are
+  expressions, not top-level declarations, so they don't take
+  Allman braces). Body content uses the standard class-body
+  member emission via `_emit_class_body_members`, so methods
+  inside the anonymous body still take their normal Allman
+  brace placement (the C8 same-line rule applies only to the
+  anonymous-class opening brace itself, not to members
+  nested inside). The closing `}` aligns with the
+  surrounding statement's indent (the emitter's current
+  indent level), followed by whatever syntactic terminator
+  the surrounding expression requires — `;` for an
+  assignment, `)` for end-of-call, `,` for next argument,
+  etc. — emitted by the caller. Calibration-recon impact:
+  the previously-PARTIAL `allman_braces/13_anonymous_class`
+  fixture graduated to MATCH. MATCH 42 → 43.
 - Phase 2x type parameters on declarations: three new emitters
   cover the single-line `<T>` / `<T, U>` / `<T extends Foo>` /
   `<T extends Foo & Bar>` / `<@Ann T extends Foo>` shapes per
