@@ -957,19 +957,35 @@ class TestFormatSourceSubset:
     # body field) are now supported (Phase 2s). Positive
     # coverage in the interface tests below.
 
-    def test_parameter_with_modifier_not_yet_supported(
-        self,
-    ) -> None:
-        # `final int x` carries a modifier on the parameter,
-        # which lands with parameter-annotation support in the
-        # annotation phase.
-        with pytest.raises(
-            NotImplementedError,
-            match="formal_parameter with modifiers",
-        ):
-            format_java.format_source(
-                b"class A { void m(final int x) {} }"
-            )
+    def test_parameter_with_modifier(self) -> None:
+        # Per spec A3: keyword modifier (`final`) on a parameter
+        # appears before the type with a single space separator.
+        out = format_java.format_source(
+            b"class A { void m(final int x) {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m(final int x)\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
+
+    def test_parameter_with_annotation(self) -> None:
+        # Per spec A3: annotation on a parameter appears before
+        # the type with a single space.
+        out = format_java.format_source(
+            b"class A { void m(@NonNull String x) {} }"
+        )
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m(@NonNull String x)\n"
+            b"    {\n"
+            b"    }\n"
+            b"}\n"
+        )
 
     # --- Statement emitters (Phase 2h) ---
 

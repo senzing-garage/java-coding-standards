@@ -78,8 +78,75 @@ and this project adheres to
   unary negation / `!` / `~`; pre- and post-increment /
   decrement; and arbitrary nesting via parentheses. The
   ternary operator (`condition ? a : b`) still refuses — it
-  has its own multi-tier wrapping rules and lands in a later
-  phase.
+  has just its own multi-tier wrapping rules and lands in a
+  later phase.
+- Phase 6a Pre-flight infrastructure (Step A + Step B groundwork):
+  Add the end-user formatter entry point and a batch of
+  emitters needed for real consumer code:
+    - `format_java.py` CLI gains `--format FILE [--write |
+      --check]` for single-file formatting. The `--write`
+      form rewrites the file in place; `--check` exits 0 if
+      compliant / 1 if formatting would change the file / 2
+      on parse or refused-construct errors. NotImplementedError
+      and ValueError from format_source surface as clean
+      diagnostics on stderr.
+    - New emitters for `package_declaration`,
+      `import_declaration` (including static and wildcard
+      `.*` via the named `asterisk` child),
+      `scoped_identifier`, `class_literal`,
+      `array_initializer`, `element_value_array_initializer`,
+      `array_creation_expression`, `array_access`,
+      `dimensions`, `dimensions_expr`,
+      `synchronized_statement`,
+      `explicit_constructor_invocation` (`this(...)` /
+      `super(...)`), `extends_interfaces` (on interface
+      declarations), and `method_reference` (`Class::method`).
+    - `_emit_enum_declaration` now accepts `super_interfaces`
+      (enum implementing interfaces); `_emit_interface_-
+      declaration` accepts `extends_interfaces` (interface
+      extending parent interfaces); `_emit_formal_parameter`
+      accepts modifiers (keyword `final` + parameter
+      annotations like `@NonNull`) inline — explicit inline
+      emission since `_emit_modifiers` puts annotations on
+      their own line (suitable for declarations, not for
+      parameters).
+    - `_emit_program` orchestrates blank-line separators
+      between top-level declarations (one blank after
+      `package_declaration`; no blank between consecutive
+      imports; one blank between last import and the
+      following type declaration; one blank between
+      consecutive type declarations).
+    - `_emit_class_body_members`, `_emit_interface_body_-
+      members`, `_emit_block`, and method/constructor body
+      emitters now preserve source-authored blank lines
+      between consecutive members / statements (per spec A2
+      blank-line rules; source-preservation captures spec
+      A2 implicitly because real consumer code already
+      follows the rules). Detection uses `next.start_point
+      [0] - prev.end_point[0] > 1`.
+    - `_emit_enum_body_members` collects `block_comment` /
+      `line_comment` siblings of `enum_constant` nodes as
+      "preceding javadoc" groups and emits them above each
+      constant — the grammar surfaces these as enum-body
+      siblings, not enum_constant children.
+    - `_emit_variable_declarator` rebalances its wrap
+      decision: it now prefers a clean break-at-`=` form
+      over inline-with-value-wrap when break-at-`=` gives a
+      single-line value. Order: (1) inline single-line if
+      fits; (2) break-at-`=` if single-line value fits at
+      the continuation column; (3) inline with value-wrap.
+    - `_emit_binary_expression` rest-text emission now uses
+      `write_raw_lines` when the source span contains
+      newlines (the previous `emitter.write(text)` rejected
+      embedded newlines and crashed on consumer code with
+      already-wrapped binary expressions).
+  Calibration-recon impact: MATCH stays 83/83 (no
+  regressions). Pre-flight against the senzing-commons-java
+  consumer codebase (~106 Java files under `src/`) now
+  shows REFUSED 100% → 14% (only `switch_expression` and
+  `record_declaration` remain unhandled in the corpus);
+  CHANGED 0% → 85%; ERROR 1 file (an `IndexError` to
+  diagnose).
 - Phase 5g Wave-3 method-call P4 + binary-expression wrap
   — closes the calibration gate at MATCH 83/83.
   Two interlocking wrap-priority additions for the final

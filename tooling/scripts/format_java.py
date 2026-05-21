@@ -464,14 +464,128 @@ def _emit_program(
 ) -> None:
     """Top-level emitter — the parse-tree root for any Java file.
 
-    Phase 2c handles a single top-level type declaration. Multiple
-    top-level declarations and `package` / `import` headers will
-    be added in subsequent phases. An empty program (e.g. a
-    whitespace-only file) emits nothing — `finish()` then produces
-    `b""` per its empty-buffer rule.
+    Emits each top-level declaration with appropriate separator
+    blanks per spec A1 ("Import Organization") and the general
+    A2 blank-line rules between top-level constructs:
+
+        - `package_declaration` followed by a blank line.
+        - `import_declaration`s pack together (no blank between
+          consecutive imports); a blank line separates the last
+          import from the following type declaration.
+        - Each top-level type declaration (class / interface /
+          enum / record) starts on its own line, separated by a
+          blank from whatever precedes it.
+
+    The full spec A1 import-grouping/sorting (java/javax static
+    first, then non-static, with blanks between non-empty
+    groups) lands in a later phase — for now the formatter
+    preserves the source order of imports.
+
+    An empty program (e.g. a whitespace-only file) emits
+    nothing; `finish()` produces `b""` per its empty-buffer
+    rule.
     """
-    for child in node.named_children:
+    children = list(node.named_children)
+    prev: Node | None = None
+    for child in children:
+        if prev is not None:
+            # Insert a separator newline (or blank line) based on
+            # the prev/this combination. Each top-level emitter
+            # ends mid-line (no trailing newline); `_emit_program`
+            # adds the line terminator and any blank.
+            emitter.newline()
+            blank_between = _program_blank_between(prev, child)
+            if blank_between:
+                emitter.newline()
         _emit_node(emitter, source, child)
+        prev = child
+
+
+def _program_blank_between(prev: Node, this: Node) -> bool:
+    """Decide whether to emit a blank line between two top-level
+    declarations. See `_emit_program` for the spec-anchored
+    rules.
+    """
+    if prev.type == "package_declaration":
+        # Blank between package and whatever follows (imports
+        # OR type declaration).
+        return True
+    if prev.type == "import_declaration":
+        # No blank between consecutive imports; blank before a
+        # following type declaration.
+        return this.type != "import_declaration"
+    # Between two top-level type declarations — blank.
+    return True
+
+
+def _emit_package_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `package X.Y.Z;`. Grammar: a `scoped_identifier`
+    child holding the dotted name.
+    """
+    name = None
+    for c in node.named_children:
+        if c.type in ("scoped_identifier", "identifier"):
+            name = c
+            break
+    if name is None:
+        raise NotImplementedError(
+            "package_declaration missing scoped name child — "
+            "grammar shape unexpected."
+        )
+    emitter.write("package ")
+    _emit_node(emitter, source, name)
+    emitter.write(";")
+
+
+def _emit_import_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `import [static] X.Y.Z;`. Grammar: optional
+    anonymous `static` keyword child followed by a
+    scoped_identifier holding the dotted name. The wildcard
+    form (`import java.util.*;`) is exposed via an anonymous
+    `*` token sibling — emit by inspecting all children.
+    """
+    is_static = False
+    name = None
+    has_wildcard = False
+    for c in node.children:
+        if c.is_named and c.type in (
+            "scoped_identifier", "identifier"
+        ):
+            name = c
+        elif c.is_named and c.type == "asterisk":
+            # tree-sitter-java exposes the wildcard as a named
+            # `asterisk` child (NOT an anonymous `*` token).
+            has_wildcard = True
+        elif not c.is_named and c.type == "static":
+            is_static = True
+    if name is None:
+        raise NotImplementedError(
+            "import_declaration missing scoped name child — "
+            "grammar shape unexpected."
+        )
+    emitter.write("import ")
+    if is_static:
+        emitter.write("static ")
+    _emit_node(emitter, source, name)
+    if has_wildcard:
+        emitter.write(".*")
+    emitter.write(";")
+
+
+def _emit_scoped_identifier(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a dotted name (`com.foo.Bar`) verbatim from source.
+    Used for package names, import names, and qualified type
+    references. tree-sitter-java surfaces dotted names as
+    nested `scoped_identifier`/`identifier` trees; the source
+    span is the canonical form.
+    """
+    emitter.write(_node_source_text(source, node))
 
 
 def _emit_class_declaration(
@@ -616,12 +730,22 @@ def _emit_class_body_members(
 
     The opening `{` and closing `}` are emitted by the caller
     (`_emit_class_declaration`); this function emits only the
-    interior. Per the spec's "Blank-Line Rules Between Class
-    Members" section, fields without javadoc pack together (no
-    blank line between them); Phase 2c doesn't yet support
-    javadoc, so all fields are packed. No blank line is left
-    between the last member and the closing brace (the spec's
-    "Right before class closing }" row).
+    interior.
+
+    Per spec A2 "Blank-Line Rules Between Class Members": a
+    blank line appears between most consecutive members
+    (method ↔ method, method ↔ inner class, around static
+    initializers, last field ↔ first non-field, javadoc'd
+    members, etc.); consecutive fields without javadoc pack
+    together with no blank between.
+
+    Implementation: source-preservation. When the source has
+    a blank line between two consecutive members (detected
+    via `prev.end_point[0] + 1 < next.start_point[0]`), emit
+    a blank line in output. This handles spec A2 implicitly
+    because real consumer code already follows the rules.
+    Multiple consecutive blank lines collapse to a single one
+    per spec A2's normalization rule.
 
     Caller contract: enter at column 0 on a fresh line (the line
     after the opening `{`); leave at column 0 on a fresh line
@@ -631,10 +755,18 @@ def _emit_class_body_members(
     if not members:
         return
     emitter.push_indent()
+    prev: Node | None = None
     for member in members:
+        if prev is not None:
+            # If the source had at least one blank line between
+            # prev's last row and this member's first row,
+            # emit a single blank line.
+            if member.start_point[0] - prev.end_point[0] > 1:
+                emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, member)
         emitter.newline()
+        prev = member
     emitter.pop_indent()
 
 
@@ -763,11 +895,13 @@ def _emit_binary_expression(
         "utf-8"
     ).lstrip()
     # `rest_text` may contain internal spaces around operators
-    # from source — re-render via tree walking would be more
-    # robust but for the current corpus the source text after
-    # the leftmost operator is already spec-compliant (single
-    # space around each `+`). Emit verbatim.
-    emitter.write(rest_text)
+    # from source. Use write_raw_lines to safely emit any
+    # embedded newlines (the source may already have wrap that
+    # the formatter preserves verbatim).
+    if "\n" in rest_text:
+        emitter.write_raw_lines(rest_text)
+    else:
+        emitter.write(rest_text)
     emitter.pop_indent()
 
 
@@ -950,10 +1084,15 @@ def _emit_method_declaration(
     statements = list(body.named_children)
     if statements:
         emitter.push_indent()
+        prev_stmt: Node | None = None
         for stmt in statements:
+            if prev_stmt is not None:
+                if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
+                    emitter.newline()
             emitter.write_indent()
             _emit_node(emitter, source, stmt)
             emitter.newline()
+            prev_stmt = stmt
         emitter.pop_indent()
 
     emitter.write_indent()
@@ -1018,10 +1157,15 @@ def _emit_block(
     remaining = statements[consumed:]
     if remaining and remaining[0].start_point[0] - brace_row > 1:
         emitter.newline()
+    prev_stmt: Node | None = None
     for stmt in remaining:
+        if prev_stmt is not None:
+            if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
+                emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, stmt)
         emitter.newline()
+        prev_stmt = stmt
     emitter.pop_indent()
     emitter.write_indent()
     emitter.write("}")
@@ -1921,6 +2065,195 @@ def _emit_object_creation_expression(
         emitter.write("}")
 
 
+def _emit_class_literal(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `TYPE.class` — a class literal expression.
+
+    Grammar: a class_literal node contains the type child
+    (type_identifier, generic_type, scoped_type_identifier,
+    primitive_type, etc.) followed by anonymous `.` and
+    `class` tokens. Emit type, then `.class`.
+    """
+    type_node = None
+    for c in node.named_children:
+        type_node = c
+        break
+    if type_node is None:
+        raise NotImplementedError(
+            "class_literal with no type child — grammar shape "
+            "unexpected."
+        )
+    _emit_node(emitter, source, type_node)
+    emitter.write(".class")
+
+
+def _emit_array_initializer(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `{ a, b, c }` for an array initializer (or annotation
+    value array). Per spec A4 ("Whitespace and Operator Spacing"
+    / inside braces): single space after `{`, single space
+    before `}` for non-empty initializers; `{}` for empty.
+
+    Source-preservation kicks in when the source has the
+    initializer spanning multiple rows — the formatter
+    preserves the developer's layout. Single-row source
+    re-emits with the normalized spacing.
+    """
+    if _node_spans_multiple_rows(node):
+        emitter.write_raw_lines(_node_source_text(source, node))
+        return
+    elements = [c for c in node.named_children]
+    if not elements:
+        emitter.write("{}")
+        return
+    emitter.write("{ ")
+    for index, e in enumerate(elements):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, e)
+    emitter.write(" }")
+
+
+def _emit_array_creation_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `new TYPE[N]` or `new TYPE[]{ init }`.
+
+    Source-preservation for multi-row forms; for single-row
+    forms, walk children and emit each piece. Grammar exposes
+    the type as a named child and the dimensions as
+    `dimensions_expr` (`[5]`) or `dimensions` (`[]`) nodes,
+    optionally followed by an `array_initializer`.
+    """
+    if _node_spans_multiple_rows(node):
+        emitter.write_raw_lines(_node_source_text(source, node))
+        return
+    emitter.write("new ")
+    for child in node.named_children:
+        _emit_node(emitter, source, child)
+
+
+def _emit_array_access(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `ARRAY[INDEX]`. Grammar: `array` field for the
+    receiver and `index` field for the index expression.
+    """
+    array = node.child_by_field_name("array")
+    index = node.child_by_field_name("index")
+    if array is None or index is None:
+        raise NotImplementedError(
+            "array_access missing 'array' or 'index' — grammar "
+            "shape unexpected."
+        )
+    _emit_node(emitter, source, array)
+    emitter.write("[")
+    _emit_node(emitter, source, index)
+    emitter.write("]")
+
+
+def _emit_dimensions(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `[]` for an array-type dimension marker.
+
+    The `dimensions` node carries the array's bracket pairs.
+    Multi-dimensional arrays (`int[][][]`) have multiple
+    bracket pairs but tree-sitter exposes them inside a
+    single `dimensions` node — emit source verbatim to
+    handle all variants.
+    """
+    emitter.write(_node_source_text(source, node))
+
+
+def _emit_dimensions_expr(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `[EXPR]` for an array-creation dimension with a
+    size expression. Grammar: anonymous `[` + expression + `]`.
+    """
+    emitter.write("[")
+    for c in node.named_children:
+        _emit_node(emitter, source, c)
+    emitter.write("]")
+
+
+def _emit_synchronized_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `synchronized (EXPR) { BODY }`. Same-line brace
+    when the condition fits on one line; Allman when the
+    condition spans multiple source rows.
+    """
+    body = node.child_by_field_name("body")
+    # Find the parenthesized_expression child (condition).
+    cond = None
+    for c in node.named_children:
+        if c.type == "parenthesized_expression":
+            cond = c
+            break
+    if cond is None or body is None:
+        raise NotImplementedError(
+            "synchronized_statement missing condition or body — "
+            "grammar shape unexpected."
+        )
+    emitter.write("synchronized ")
+    if _node_spans_multiple_rows(cond):
+        emitter.write_raw_lines(_node_source_text(source, cond))
+        emitter.newline()
+        emitter.write_indent()
+        _emit_node(emitter, source, body)
+    else:
+        _emit_node(emitter, source, cond)
+        emitter.write(" ")
+        _emit_node(emitter, source, body)
+
+
+def _emit_explicit_constructor_invocation(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `this(ARGS);` / `super(ARGS);` — used as the first
+    statement in a constructor body to delegate to another
+    constructor in the same class or the superclass.
+
+    Grammar exposes either a `this` or `super` keyword as a
+    named child followed by an `argument_list`. The trailing
+    `;` is part of the node's source span (emitted by us
+    since the constructor body's statement loop expects each
+    statement to write its own terminator? — actually let me
+    check). Looking at the existing statement handling, the
+    block emitter iterates named children and adds newline
+    after each. The statement nodes (return, throw, etc.)
+    write their own `;`. We do the same here.
+    """
+    keyword = None
+    args = None
+    type_arguments = None
+    # Inspect children: this/super keyword (named), optional
+    # `type_arguments` (for `<T>this(...)` rare form), argument_list.
+    for c in node.named_children:
+        if c.type in ("this", "super"):
+            keyword = c
+        elif c.type == "argument_list":
+            args = c
+        elif c.type == "type_arguments":
+            type_arguments = c
+    if keyword is None or args is None:
+        # Grammar may also expose a receiver chain (`obj.super(...)`
+        # for inner-class super calls). Not yet supported.
+        raise NotImplementedError(
+            "explicit_constructor_invocation with unexpected "
+            "shape — extended forms not yet supported."
+        )
+    if type_arguments is not None:
+        _emit_node(emitter, source, type_arguments)
+    emitter.write(keyword.type)
+    _emit_node(emitter, source, args)
+    emitter.write(";")
+
+
 def _emit_generic_type(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2691,6 +3024,59 @@ def _emit_superclass(
     _emit_node(emitter, source, types[0])
 
 
+def _emit_extends_interfaces(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `extends TYPE, ...` for an interface declaration's
+    extends_interfaces clause.
+
+    Grammar: `extends_interfaces` node contains the `extends`
+    keyword (anonymous) and a `type_list` child holding the
+    parent-interface types. Single-line form; the multi-line
+    wrap rule from spec B1 ("Class Headers") lands later.
+    """
+    type_list = None
+    for c in node.named_children:
+        if c.type == "type_list":
+            type_list = c
+            break
+    if type_list is None:
+        raise NotImplementedError(
+            "extends_interfaces missing 'type_list' child — "
+            "grammar shape unexpected."
+        )
+    types = list(type_list.named_children)
+    emitter.write("extends ")
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, t)
+
+
+def _emit_method_reference(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `RECEIVER::METHOD` (or `Class::new`).
+
+    Per spec B6: no space on either side of `::`. The grammar
+    exposes the receiver as the first named child and the
+    method name as the second; emit each with `::` between,
+    no spaces.
+    """
+    children = [c for c in node.named_children]
+    if len(children) < 2:
+        # Method references with explicit type witness
+        # (`Class::<T>method`) surface with extra named
+        # children. Emit source verbatim as a fallback.
+        emitter.write(_node_source_text(source, node))
+        return
+    receiver = children[0]
+    name_part = children[1]
+    _emit_node(emitter, source, receiver)
+    emitter.write("::")
+    _emit_node(emitter, source, name_part)
+
+
 def _emit_super_interfaces(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -2833,12 +3219,11 @@ def _emit_enum_declaration(
     "Class Headers" wrap-priority phase.
     """
     modifiers_node: Node | None = None
+    super_interfaces_node: Node | None = None
     for child in node.named_children:
         if child.type in (
             "type_parameters",
-            "extends_interfaces",
             "permits",
-            "super_interfaces",
         ):
             raise NotImplementedError(
                 f"enum_declaration child {child.type!r} is not "
@@ -2847,6 +3232,8 @@ def _emit_enum_declaration(
             )
         if child.type == "modifiers":
             modifiers_node = child
+        elif child.type == "super_interfaces":
+            super_interfaces_node = child
 
     name = node.child_by_field_name("name")
     body = node.child_by_field_name("body")
@@ -2856,6 +3243,9 @@ def _emit_enum_declaration(
     emitter.write("enum ")
     if name is not None:
         _emit_node(emitter, source, name)
+    if super_interfaces_node is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, super_interfaces_node)
     emitter.newline()
     emitter.write_indent()
     emitter.write("{")
@@ -2874,46 +3264,72 @@ def _emit_enum_body_members(
     Per spec B9: each enum constant on its own line with a
     trailing `,`; the last constant gets `;` instead. Per
     spec A2: one blank line between the constants block and
-    any non-constant members that follow. Caller emits the
-    opening `{` and closing `}`.
+    any non-constant members that follow. Per the existing
+    spec convention, each non-private enum constant is
+    typically preceded by a javadoc block — the grammar
+    exposes such javadocs as `block_comment` siblings of
+    `enum_constant` in the enum_body. Collect leading
+    comments and emit them above each constant.
+
+    Caller emits the opening `{` and closing `}`.
     """
-    constants: list[Node] = []
+    # Walk the body in order: comments accumulate until the
+    # next enum_constant, then flush.
+    pending_comments: list[Node] = []
+    # Constants with their preceding comment groups.
+    grouped: list[tuple[list[Node], Node]] = []
     extra_members: list[Node] = []
     for child in body_node.named_children:
-        if child.type == "enum_constant":
-            constants.append(child)
+        if child.type in ("block_comment", "line_comment"):
+            pending_comments.append(child)
+        elif child.type == "enum_constant":
+            grouped.append((pending_comments, child))
+            pending_comments = []
         elif child.type == "enum_body_declarations":
-            # The `;` separator and any non-constant members
-            # (methods, fields, constructors) live inside
-            # this wrapper node. The `;` itself is an
-            # anonymous child; skip it and collect the named
-            # children.
             for grandchild in child.named_children:
                 extra_members.append(grandchild)
 
-    if not constants and not extra_members:
+    if not grouped and not extra_members:
         return
 
     emitter.push_indent()
-    # Emit each constant. Last one gets `;` instead of `,`
-    # per spec B9 (always emit the trailing `;`).
-    for index, const in enumerate(constants):
+    prev_const_end_row = -1
+    for index, (comments, const) in enumerate(grouped):
+        # Spec A2: blank line above a comment that introduces
+        # a constant — only when source had a blank line
+        # between this group and the previous one.
+        if index > 0 and comments:
+            # Compare prev constant's end_row to first comment's
+            # start_row.
+            first_comment_row = comments[0].start_point[0]
+            if first_comment_row - prev_const_end_row > 1:
+                emitter.newline()
+        for c in comments:
+            emitter.write_indent()
+            _emit_node(emitter, source, c)
+            emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, const)
-        if index < len(constants) - 1:
+        if index < len(grouped) - 1:
             emitter.write(",")
         else:
             emitter.write(";")
         emitter.newline()
+        prev_const_end_row = const.end_point[0]
 
     if extra_members:
         # Spec A2: blank line between the constants `;` and
         # the first non-constant member.
         emitter.newline()
+        prev: Node | None = None
         for member in extra_members:
+            if prev is not None:
+                if member.start_point[0] - prev.end_point[0] > 1:
+                    emitter.newline()
             emitter.write_indent()
             _emit_node(emitter, source, member)
             emitter.newline()
+            prev = member
     emitter.pop_indent()
 
 
@@ -2997,11 +3413,9 @@ def _emit_interface_declaration(
     """
     modifiers_node: Node | None = None
     type_parameters_node: Node | None = None
+    extends_interfaces_node: Node | None = None
     for child in node.named_children:
-        if child.type in (
-            "extends_interfaces",
-            "permits",
-        ):
+        if child.type == "permits":
             raise NotImplementedError(
                 f"interface_declaration child {child.type!r} is "
                 "not yet supported; that construct comes in a "
@@ -3011,6 +3425,8 @@ def _emit_interface_declaration(
             modifiers_node = child
         elif child.type == "type_parameters":
             type_parameters_node = child
+        elif child.type == "extends_interfaces":
+            extends_interfaces_node = child
 
     name = node.child_by_field_name("name")
     body = node.child_by_field_name("body")
@@ -3022,6 +3438,9 @@ def _emit_interface_declaration(
         _emit_node(emitter, source, name)
     if type_parameters_node is not None:
         _emit_node(emitter, source, type_parameters_node)
+    if extends_interfaces_node is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, extends_interfaces_node)
     emitter.newline()
     emitter.write_indent()
     emitter.write("{")
@@ -3041,16 +3460,23 @@ def _emit_interface_body_members(
     braces are emitted by the caller, this function emits the
     interior. Members are typically abstract method
     declarations, constant declarations, default / static
-    methods, nested types, etc.
+    methods, nested types, etc. Preserves source-authored
+    blank lines between members per spec A2 (same rule as
+    `_emit_class_body_members`).
     """
     members = list(body_node.named_children)
     if not members:
         return
     emitter.push_indent()
+    prev: Node | None = None
     for member in members:
+        if prev is not None:
+            if member.start_point[0] - prev.end_point[0] > 1:
+                emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, member)
         emitter.newline()
+        prev = member
     emitter.pop_indent()
 
 
@@ -3115,10 +3541,15 @@ def _emit_constructor_declaration(
     statements = list(body.named_children)
     if statements:
         emitter.push_indent()
+        prev_stmt: Node | None = None
         for stmt in statements:
+            if prev_stmt is not None:
+                if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
+                    emitter.newline()
             emitter.write_indent()
             _emit_node(emitter, source, stmt)
             emitter.newline()
+            prev_stmt = stmt
         emitter.pop_indent()
 
     emitter.write_indent()
@@ -3309,20 +3740,25 @@ def _emit_formal_parameters(
 def _emit_formal_parameter(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `TYPE NAME` for a single formal parameter.
+    """Emit `[MODIFIERS] TYPE NAME` for a single formal parameter.
 
-    Phase 2g refuses parameter modifiers and annotations
-    (`@NonNull` etc.). The "Annotations on parameters" spec
-    subsection's annotation+type-combo alignment rule lands
-    with the annotation-emitter phase.
+    Per spec A3 ("Annotations on parameters"), keyword modifiers
+    (`final`) and annotations (`@NonNull`) appear before the
+    type INLINE with a single space separator. The full
+    annotation+type-combo column-alignment rule for multi-line
+    parameter lists lands with the wrap-priority phase; this
+    emitter handles the single-line form.
+
+    The shared `_emit_modifiers` helper puts annotations on
+    their own LINE (suitable for top-level declarations);
+    parameter annotations are inline, so we emit them
+    explicitly here rather than dispatching.
     """
+    modifiers_node: Node | None = None
     for child in node.named_children:
         if child.type == "modifiers":
-            raise NotImplementedError(
-                "formal_parameter with modifiers or annotations "
-                "is not yet supported; that construct lands "
-                "with the annotation phase."
-            )
+            modifiers_node = child
+            break
     type_node = node.child_by_field_name("type")
     name_node = node.child_by_field_name("name")
     if type_node is None or name_node is None:
@@ -3330,6 +3766,16 @@ def _emit_formal_parameter(
             "formal_parameter missing 'type' or 'name' — "
             "grammar shape unexpected."
         )
+    if modifiers_node is not None:
+        # Emit each annotation / keyword inline with a trailing
+        # space. Order of named children (annotations) is
+        # preserved; anonymous children are keywords (`final`).
+        for c in modifiers_node.children:
+            if c.is_named:
+                _emit_node(emitter, source, c)
+            else:
+                emitter.write(c.type)
+            emitter.write(" ")
     _emit_node(emitter, source, type_node)
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
@@ -3732,21 +4178,58 @@ def _emit_variable_declarator(
     _emit_node(emitter, source, name)
     if value is None:
         return
-    # Try-emit-and-measure: speculate the inline form. If any
-    # resulting line exceeds 80 chars (accounting for the
-    # trailing `;` the caller will write), backtrack and break
-    # before `=` with continuation at `indent_level + 1`.
+    # Wrap-priority for assignment: prefer the cleanest single-
+    # line form over wrapping the value internally. Order:
+    #
+    #   (1) Inline single-line: if `NAME = VALUE;` fits within
+    #       80 chars (value rendered single-line), use it.
+    #   (2) Break-at-`=` single-line: if `= VALUE;` at the
+    #       continuation column fits, use the break form. The
+    #       VALUE renders single-line on the continuation; the
+    #       LHS gets its own line up through NAME.
+    #   (3) Inline with value-wrap: fall back to letting the
+    #       value emit its own wrap (method-call P2/P4, binary-
+    #       expression wrap, etc.).
+    value_text = _node_source_text(source, value)
+    value_is_multiline = "\n" in value_text
+    if not value_is_multiline:
+        # Step 1: try inline single-line.
+        cont_col = (emitter.indent_level + 1) * 4
+        inline_width = (
+            emitter.column + len(" = ") + len(value_text) + 1
+        )
+        if inline_width <= _MAX_LINE:
+            emitter.write(" = ")
+            _emit_node(emitter, source, value)
+            return
+        # Step 2: try break-at-`=` with single-line value.
+        break_width = (
+            cont_col + len("= ") + len(value_text) + 1
+        )
+        if break_width <= _MAX_LINE:
+            emitter.newline()
+            emitter.push_indent()
+            emitter.write_indent()
+            emitter.write("= ")
+            _emit_node(emitter, source, value)
+            emitter.pop_indent()
+            return
+
+    # Step 3 (and the multi-line-value path): emit inline and
+    # let the value handle its own wrap.
     saved = emitter.snapshot()
     emitter.write(" = ")
     _emit_node(emitter, source, value)
-    # Add 1 to last line for the caller's trailing `;`.
+    if value_is_multiline:
+        return
     inline_overflow = (
         emitter.last_lines_max_width(saved[0]) > _MAX_LINE
         or len(emitter._current) + 1 > _MAX_LINE
     )
     if not inline_overflow:
         return
-    # Backtrack and emit break-at-`=` form.
+    # Backtrack and emit break-at-`=` even though the value
+    # itself will wrap on the continuation line.
     emitter.restore(saved)
     emitter.newline()
     emitter.push_indent()
@@ -3799,6 +4282,9 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "void_type": _emit_verbatim,
     # --- Structural emitters ---
     "program": _emit_program,
+    "package_declaration": _emit_package_declaration,
+    "import_declaration": _emit_import_declaration,
+    "scoped_identifier": _emit_scoped_identifier,
     "class_declaration": _emit_class_declaration,
     "field_declaration": _emit_field_declaration,
     "variable_declarator": _emit_variable_declarator,
@@ -3820,6 +4306,8 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "type_parameter": _emit_type_parameter,
     "superclass": _emit_superclass,
     "super_interfaces": _emit_super_interfaces,
+    "extends_interfaces": _emit_extends_interfaces,
+    "method_reference": _emit_method_reference,
     "type_bound": _emit_type_bound,
     "lambda_expression": _emit_lambda_expression,
     "inferred_parameters": _emit_inferred_parameters,
@@ -3869,6 +4357,15 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "assignment_expression": _emit_assignment_expression,
     "ternary_expression": _emit_ternary_expression,
     "object_creation_expression": _emit_object_creation_expression,
+    "class_literal": _emit_class_literal,
+    "array_initializer": _emit_array_initializer,
+    "element_value_array_initializer": _emit_array_initializer,
+    "array_creation_expression": _emit_array_creation_expression,
+    "array_access": _emit_array_access,
+    "dimensions": _emit_dimensions,
+    "dimensions_expr": _emit_dimensions_expr,
+    "synchronized_statement": _emit_synchronized_statement,
+    "explicit_constructor_invocation": _emit_explicit_constructor_invocation,
     "generic_type": _emit_generic_type,
     "type_arguments": _emit_type_arguments,
     # Outer.Inner scoped type identifier — source text is the
@@ -3970,6 +4467,39 @@ def _main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--format",
+        metavar="FILE",
+        type=Path,
+        help=(
+            "Format FILE and print the result to stdout. Useful "
+            "for pre-flight diffs against consumer codebases "
+            "before JDT removal. Combine with --write to rewrite "
+            "the file in place, or with --check to exit non-zero "
+            "if the file would be modified. Refused constructs "
+            "(NotImplementedError) print a diagnostic to stderr "
+            "and exit non-zero."
+        ),
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help=(
+            "With --format, rewrite FILE in place instead of "
+            "printing the formatted output to stdout. No effect "
+            "without --format."
+        ),
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "With --format, exit 0 if the file is already "
+            "spec-compliant, 1 if formatting would change it, "
+            "2 on a parse error or refused construct. Does NOT "
+            "write or print the formatted output."
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=(
@@ -4017,6 +4547,44 @@ def _main(argv: list[str] | None = None) -> int:
         # stdout so the diagnostic can be redirected/piped.
         print(diagnostic, file=sys.stderr if errored else sys.stdout)
         return 1 if errored else 0
+
+    if args.format is not None:
+        path = args.format
+        if not path.is_file():
+            print(
+                f"format_java.py: ERROR: no such file: {path}",
+                file=sys.stderr,
+            )
+            return 2
+        source = path.read_bytes()
+        try:
+            formatted = format_source(source)
+        except NotImplementedError as e:
+            print(
+                f"format_java.py: REFUSED: {path}: {e}",
+                file=sys.stderr,
+            )
+            return 2
+        except ValueError as e:
+            print(
+                f"format_java.py: PARSE ERROR: {path}: {e}",
+                file=sys.stderr,
+            )
+            return 2
+        if args.check:
+            if formatted == source:
+                return 0
+            print(
+                f"format_java.py: would reformat {path}",
+                file=sys.stderr,
+            )
+            return 1
+        if args.write:
+            if formatted != source:
+                path.write_bytes(formatted)
+            return 0
+        sys.stdout.buffer.write(formatted)
+        return 0
 
     # No action flag supplied. format_java.py is not the end-user
     # entry point — format_file.py is, and it today still routes
