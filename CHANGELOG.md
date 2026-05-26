@@ -80,6 +80,47 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has just its own multi-tier wrapping rules and lands in a
   later phase.
+- Phase 8a Docstring updates + adoption-template refresh:
+  - `tooling/scripts/format_java.py` module docstring
+    rewritten — the old narrative documented incremental
+    rollout phases ("Status (Phase 2z): tree-sitter-java
+    is loaded..." and a long list of constructs added by
+    phase). Replaced with a concise architecture section
+    (Emitter / dispatch / wrap-priority engine), a
+    coverage section (every fixture + every consumer
+    file traverses; deliberate out-of-scope:
+    `module_declaration`), and a CLI section listing the
+    new `--format FILE` flags (`--write`, `--check`).
+  - `adoption/claude-md-templates/vscode-settings-
+    snippet.json` rewritten — removed the
+    `java.format.settings.url` entry pointing at the
+    deleted `tooling/ide/java-formatter.xml`, simplified
+    the orchestrator commentary to describe the in-
+    process tree-sitter formatter.
+  - `adoption/claude-md-templates/full-section-template.md`
+    "Bulk formatting scripts" section rewritten — replaced
+    the five-script enumeration with a description of
+    `format_file.py` as the single end-user entry point,
+    showing how to run it against a file or directory tree.
+  - `adoption/adopt-standards-prompt.md` updated — removed
+    `.vscode/java-formatter.xml` from the "existing
+    standards artifacts" probe list; added a 0.3.0 cleanup
+    section listing legacy artifacts to delete when
+    upgrading (`.claude/scripts/fix_*.py`, the JDT XML
+    profile, the JDT JAR cache, task/hook references). The
+    "first formatter run" guidance now describes what to
+    expect when upgrading from the 0.2.x pipeline (one-
+    time sizeable reformat) vs running 0.3.0+ at the same
+    pin (zero modifications).
+  - `adoption/verification-checklist.md` updated — the
+    bulk-format verification section now shows the
+    single-line `Formatter:` output the new orchestrator
+    produces, and the "JDT formatter should not run"
+    wording in the VSCode section was replaced with a
+    cleaner explanation of the redhat.java +
+    emeraldwalk.runonsave split.
+  No formatter code changes, no test changes. Calibration
+  still 83/83; pytest suite still 235.
 - Phase 7 JDT pipeline removal — the atomic switch:
   - `tooling/scripts/format_file.py` rewritten as a thin
     orchestrator that resolves target paths via `_cli.iter_-

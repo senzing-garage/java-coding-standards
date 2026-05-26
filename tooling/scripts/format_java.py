@@ -1,92 +1,78 @@
 """Canonical Java formatter for the senzing-garage standards.
 
-This module is the AST-based replacement for the JDT+six-script
-pipeline that shipped through 0.2.x. It parses each Java source file
-to a tree-sitter-java CST and (eventually) emits spec-compliant text
-directly per the rules in `docs/java-coding-standards.md`.
+This module is the AST-based formatter that replaced the JDT +
+six-script pipeline used through 0.2.x. It parses each Java
+source file to a tree-sitter-java CST and emits spec-compliant
+text via a recursive node-emitter walk per the rules in
+`docs/java-coding-standards.md`.
 
-Status (Phase 2z — enum constants with anonymous bodies):
-    - tree-sitter-java is loaded and a Parser is wired up.
-    - File parsing works and the resulting tree can be inspected.
-    - `Emitter` provides the token-stream output buffer used by
-      the recursive emit walk. Tracks current column, indent
-      level, and strips trailing whitespace per the spec's
-      "Trailing Whitespace and End-of-File Newline" rule.
-    - Leaf-node emitters are wired up for literals (integer,
-      floating-point, character, string, null), boolean keywords,
-      `this` / `super`, `identifier` / `type_identifier`, and
-      primitive types (`integral_type`, `floating_point_type`,
-      `boolean_type`, `void_type`).
-    - Structural emitters cover `program`, `class_declaration`
-      (no type parameters / extends-implements yet),
-      `class_body`, `field_declaration`, `variable_declarator`,
-      `modifiers` (keyword-only — annotations refuse),
-      `method_declaration` (now with statement bodies; throws
-      clauses, type parameters, and abstract / interface
-      methods still refuse), `formal_parameters` (single-line),
-      `formal_parameter`, and `array_type` (for `Type[]`
-      parameter types).
-    - Statement emitters cover `return_statement` (with or
-      without a value), `expression_statement` (assignment-as-
-      statement, method-call statement, update statement),
-      `local_variable_declaration` (shared emitter with
-      `field_declaration` — both have identical grammar
-      shape), `assignment_expression` (with space-space
-      around any assignment operator), `block` (same-line
-      brace for control-flow constructs), `if_statement`
-      (with cuddled `} else {` and else-if chains;
-      brace-less Tier 1 short-circuit form refuses),
-      `for_statement` (classic three-part header and empty
-      `for (;;)`), `enhanced_for_statement` (for-each form
-      with `:` separator), `while_statement`,
-      `do_statement` (with cuddled `} while (cond);`), and
-      `try_statement` with `catch_clause` (cuddled
-      `} catch (...) {`), `finally_clause` (cuddled
-      `} finally {`), `catch_formal_parameter`, and
-      `catch_type` (with multi-catch `TYPE | TYPE | ...`
-      single-line form, space-space around `|` per spec B7).
-      `throw_statement`, `break_statement` and
-      `continue_statement` (each with optional label per
-      spec C7), and `labeled_statement` (label on its own
-      line, statement on the next at the same indent per
-      spec C7). `try_with_resources_statement` covers both
-      single-resource (same-line brace) and multi-resource
-      (one resource per line, paren-aligned with the first,
-      Allman brace) forms per spec B8; the break-on-`=`
-      wrap for a resource that overflows its own line lands
-      with the wrap-priority phase. Remaining control-flow
-      constructs (`switch`, `synchronized`) refuse until
-      subsequent phases.
-    - Expression emitters cover `binary_expression`,
-      `unary_expression`, `update_expression`,
-      `parenthesized_expression`, `field_access`,
-      `instanceof_expression` (non-pattern form),
-      `cast_expression`, `method_invocation` (single-line
-      only — wrap rules deferred), and `argument_list`.
-      Operator spacing follows the "Whitespace and Operator
-      Spacing" spec section throughout.
-    - `format_source()` is functional for the supported subset:
-      a single top-level class with optional keyword modifiers
-      (no annotations), no type parameters, no extends /
-      implements, whose body contains primitive- or named-typed
-      field declarations with optional keyword modifiers and
-      optional initializers. Initializers can be literal
-      values, identifiers, binary / unary / update /
-      parenthesized expressions, field accesses, casts,
-      non-pattern instanceof, or method invocations whose
-      single-line form fits within reasonable bounds. Anything
-      outside the subset raises `NotImplementedError` from the
-      dispatcher (the explicit "not yet supported" signal
-      during incremental rollout).
-    - The end-user entry point `format_file.py` still routes
-      through the legacy JDT-plus-six-script pipeline; activation
-      of this module as the active formatter comes in the phase
-      that removes JDT.
+Architecture
+------------
+
+`Emitter` is the append-only output buffer. It tracks the
+current column and indent level, strips trailing whitespace per
+spec A5, and supports speculative emission via `snapshot()` /
+`restore()` for the wrap-priority engine.
+
+`_emit_node(emitter, source, node)` dispatches each CST node to
+its registered emitter function via the `_NODE_EMITTERS` table.
+Each emitter handles its own children — recursion is explicit,
+no generic walker. Unknown node types raise `NotImplementedError`
+with a "not yet supported" diagnostic; the dispatcher never
+silently passes source text through.
+
+Wrap priority — the engine handles overflow on:
+
+- throws-clause types (single line → column-aligned one-per-
+  line per spec).
+- method-call argument lists (P1 single line → P2 two-line
+  paren-aligned comma-packed → P4 next-line single-indent for
+  single-arg overflow).
+- variable_declarator initializers (inline single-line →
+  break-at-`=` with single-line value → inline-with-value-wrap).
+- class-header type parameters when the header overflows.
+- binary expressions (break before the leftmost operator with
+  cumulative +4 continuation indent per spec C3).
+- multi-row source headers on while / for / method parameters
+  (preserved verbatim; surrounding brace switches to Allman
+  per the spec's multi-line-condition rule).
+- Tier-1 short-circuit `if` collapse with width gating.
+
+Coverage
+--------
+
+`format_source()` handles every Java construct exercised by
+the 83 fixture pairs under `tooling/scripts/tests/fixtures/`
+and every file in the senzing-commons-java consumer codebase
+(106 files, 0 refusals). Constructs deliberately out-of-scope
+for 0.3.0:
+
+- `module_declaration` / `module-info.java` (no consumer
+  project uses Java modules; a B-series spec section can be
+  added later).
+
+CLI
+---
+
+End-user entry point is `format_file.py`, which invokes
+`format_source()` in-process per file. This module's own CLI
+(`python format_java.py ...`) supports:
+
+    --check-grammar     Verify the tree-sitter-java grammar
+                        loads and parses a trivial Java input.
+    --parse FILE        Parse FILE and print a one-line
+                        diagnostic.
+    --format FILE       Format FILE and print the result to
+                        stdout.
+        --write         With --format: rewrite FILE in place.
+        --check         With --format: exit 0 if compliant, 1
+                        if formatting would change it, 2 on
+                        parse error or refused construct.
 
 The grammar and Python-binding versions are pinned in
-`tooling/scripts/requirements.txt`; `GRAMMAR_VERSION` below records
-the same pins as in-source constants for runtime validation and
-diagnostics.
+`tooling/scripts/requirements.txt`; `GRAMMAR_VERSION` below
+records the same pins as in-source constants for runtime
+validation and diagnostics.
 
 """
 

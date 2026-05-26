@@ -35,40 +35,32 @@ mvn test
 Expected: all tests pass. Adoption should not change test outcomes —
 if tests fail, something's wrong with the configuration migration.
 
-### 4. Bulk-format scripts converge to idempotent
+### 4. Formatter converges to idempotent
 
 ```bash
-python3 .java-coding-standards/tooling/scripts/format_file.py
+python3 .java-coding-standards/tooling/scripts/format_file.py src/main/java src/test/java
 ```
 
-The expected output depends on the project's history with the
-format scripts:
+The expected output depends on the project's history:
 
-**Project never ran any version of these scripts, or last ran
-them at the same SHA the submodule is now pinned to**: zero
-modifications on the first run. One line per script:
+**Project never ran the formatter, or last ran it at the same
+SHA the submodule is now pinned to**: zero modifications on
+the first run. One summary line:
 
 ```
-Processed N files, modified 0 files.
-Processed N files, modified 0.
-Processed N files, modified 0.
-Processed N files, modified 0.
-Processed N files, modified 0, 0 short-circuit fixes applied.
+Formatter: N files processed, 0 modified.
 ```
 
-**Project ran an older version of the scripts in the past**
-(common during Phase 3+ migrations of repos that shipped their
-own copies under `.claude/scripts/` before the standards repo
-existed): some files may be modified on the first post-adoption
-run. The scripts evolve over time — most notably,
-`fix_allman_braces.py` was corrected to handle wrapped-condition
-Allman splits and now contains a Case 5 cleanup that re-aligns
-previously-buggy outputs from older script versions. Review the
+**Project ran the legacy 0.2.x pipeline (JDT + six override
+scripts) and is now upgrading to 0.3.0+**: expect a sizeable
+one-time reformat. The new AST formatter produces output
+that's spec-compliant by construction, which can differ from
+what the JDT pipeline produced (case-statement indent under
+`switch`, method-call paren-alignment, etc.). Review the
 resulting diff, commit it as a separate "format compliance"
-commit, and confirm a **second** orchestrator run reports 0
-modifications across all five scripts (this is the idempotency
-gate — the codebase is in steady-state compliance only when a
-fresh pass is a no-op).
+commit, and confirm a **second** formatter run reports 0
+modifications (the idempotency gate — the codebase is in
+steady-state compliance only when a fresh pass is a no-op).
 
 If any modifications appear that don't match either expected
 pattern, inspect the diff before committing.
@@ -91,12 +83,13 @@ After restarting Claude Code so the MCP host re-launches the server:
 
 Open the project in VSCode. Open any Java file. Confirm:
 
-- The `redhat.java` extension reports the formatter as configured (the
-  formatter dropdown shows the submodule path).
-- `editor.formatOnSave` is **disabled** for `.java` files (test by
-  saving — the JDT formatter should not run).
-- The "Format Java file to Senzing standards" task appears in the
-  Tasks runner (Cmd+Shift+P → "Tasks: Run Task").
+- `editor.formatOnSave` is **disabled** for `.java` files (test
+  by saving — the redhat.java extension's built-in formatter
+  should not run; the canonical formatter is invoked via the
+  `emeraldwalk.runonsave` extension if format-on-save was
+  enabled during adoption).
+- The "Format Java file to Senzing standards" task appears in
+  the Tasks runner (Cmd+Shift+P → "Tasks: Run Task").
 
 ### 7. (Opt-in only) Format-on-save fires
 
