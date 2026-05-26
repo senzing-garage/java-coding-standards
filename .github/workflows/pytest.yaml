@@ -42,24 +42,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Set up JDK 17
-        # JDK is required by the format_file.py orchestrator's JDT
-        # pass; the orchestrator pipeline tests exercise it directly.
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-          cache: maven
-
-      - name: Build jdt-formatter.jar from source
-        # Rebuild from source on every CI run rather than trust the
-        # committed JAR; keeps source and JAR locked together so a
-        # bad commit can't go unnoticed.
-        run: |
-          cd tooling/jdt-formatter
-          mvn -B -q package
-          cp target/jdt-formatter.jar jdt-formatter.jar
-
       - name: Install pytest
         run: |
           python -m pip install --upgrade pip

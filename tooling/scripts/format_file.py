@@ -1,267 +1,86 @@
 #!/usr/bin/env python3
-"""Orchestrator: run JDT formatter then the six Python override scripts
-in canonical order against one or more Java files.
+"""Format Java files using the canonical AST-based formatter.
 
-The pipeline:
+For every target file resolved from the command-line arguments
+(positional paths + `--src-dirs` fallback + `--exclude` /
+`--exclude-from` filtering, all delegated to `_cli`), this script
+invokes `format_java.format_source()` on the file's bytes and
+writes the formatted output back when it differs from the
+original.
 
-    JDT formatter (general-purpose Java formatting)
-        ↓
-    fix_allman_braces.py     — Allman brace placement override
-    fix_javadoc_reflow.py
-    fix_javadoc_inline_tags.py
-    fix_javadoc_tags.py
-    fix_need_braces.py       — short-circuit if rules
-    fix_throws_alignment.py  — throws-clause column alignment
+This is the end-user formatter entry point. Used by:
 
-JDT handles the bulk of the standard (indent, line wrap, alignment,
-continuation-indent, ternary tiers, operator-on-continuation). The
-six Python scripts override the rules JDT can't express in a single
-profile (Allman braces for type/method but same-line for control flow,
-column-aligned throws-clause continuations), plus rules our standards
-add beyond what JDT or checkstyle catch (no-orphan-words javadoc
-reflow, short-circuit if collapse, etc.).
-
-Used by:
 - VSCode `Format Java file to Senzing standards` task.
 - VSCode `emeraldwalk.runonsave` extension (format-on-save).
 - Claude Code `PostToolUse` hook (auto-format every Edit/Write).
 - CLI / pre-commit / CI.
 
-Same input → same output, regardless of caller.
+The 0.3.0 release replaced the previous JDT-plus-six-script
+pipeline (`fix_allman_braces.py`, `fix_javadoc_reflow.py`,
+`fix_javadoc_inline_tags.py`, `fix_javadoc_tags.py`,
+`fix_need_braces.py`, `fix_throws_alignment.py`, and the
+Eclipse JDT formatter shim under `tooling/jdt-formatter/`)
+with a single in-process tree-sitter-based formatter at
+`format_java.py`. Same input → same output, regardless of
+caller.
 
-Exit code: 0 on success, non-zero if any pass failed.
+Mtime preservation: when the formatter's output is bit-
+identical to the input, the original `mtime` is restored.
+This keeps IDE reloads, Maven/Gradle build caches, and `make`
+timestamp tracking quiet on idempotent runs — important
+because every save invokes the formatter via the file-watcher
+or `PostToolUse` hook.
+
+Exit code: 0 on success (all files processed cleanly,
+regardless of whether any were modified), non-zero on errors.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import os
-import re
-import shutil
-import subprocess
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
-
-SCRIPT_ORDER: tuple[str, ...] = (
-    "fix_allman_braces.py",
-    "fix_javadoc_reflow.py",
-    "fix_javadoc_inline_tags.py",
-    "fix_javadoc_tags.py",
-    "fix_need_braces.py",
-    "fix_throws_alignment.py",
-)
-
-# format_file.py lives at tooling/scripts/; the formatter module +
-# profile sit two directories up.
-_STANDARDS_ROOT = Path(__file__).resolve().parent.parent.parent
-_JDT_PROFILE = _STANDARDS_ROOT / "tooling" / "ide" / "java-formatter.xml"
-_JDT_DIR = _STANDARDS_ROOT / "tooling" / "jdt-formatter"
-_JDT_POM = _JDT_DIR / "pom.xml"
-_JDT_LOCAL_BUILD = _JDT_DIR / "target" / "jdt-formatter.jar"
-
-# GitHub Releases hosting the JAR + SHA-256 sidecar. Override via
-# env var for forks or air-gapped mirrors.
-_RELEASE_BASE = os.environ.get(
-    "SENZING_STANDARDS_RELEASE_BASE",
-    "https://github.com/senzing-garage/java-coding-standards/releases/download",
-)
-
-
-def _read_pom_version() -> str | None:
-    """Return the <version> element from the JDT formatter pom.xml,
-    or None if the pom is missing or fails to read. The version drives
-    the GitHub Release URL the JAR is downloaded from.
-    """
-    if not _JDT_POM.is_file():
-        return None
-    try:
-        text = _JDT_POM.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    # The project version is the first <version>...</version> element.
-    # <modelVersion>...</modelVersion> uses a different tag name and
-    # doesn't match. Subsequent <version> elements are dependency
-    # versions (e.g. `<version>${jdt.version}</version>`) — ignore
-    # them; we only want the project's own version.
-    match = re.search(r"<version>([^<]+)</version>", text)
-    return match.group(1).strip() if match else None
-
-
-def _cache_dir() -> Path:
-    """Where downloaded JARs live. Honors XDG_CACHE_HOME and a project-
-    specific override env var so air-gapped sites can pre-populate.
-    """
-    override = os.environ.get("SENZING_STANDARDS_CACHE_DIR")
-    if override:
-        return Path(override)
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".cache"
-    return base / "senzing-java-coding-standards"
-
-
-def _download(url: str, dest: Path) -> None:
-    """Download `url` to `dest` atomically. Raises on HTTP errors."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=60) as resp:
-        with open(tmp, "wb") as out:
-            shutil.copyfileobj(resp, out)
-    tmp.replace(dest)
 
 
 def _sha256(path: Path) -> str:
+    """Stream the file through SHA-256 so very large sources don't
+    pin the whole content in memory just for the snapshot.
+    """
     h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
 
 
-def _build_from_source() -> Path | None:
-    """Run `mvn package` in the formatter module to produce the JAR
-    locally. Returns the JAR path on success, None on failure or if
-    Maven is not available. Used as the bootstrap path before the
-    first release exists, and as the offline fallback.
-    """
-    if shutil.which("mvn") is None:
-        return None
-    if not _JDT_POM.is_file():
-        return None
-    try:
-        subprocess.run(
-            ["mvn", "-B", "-q", "package"],
-            cwd=_JDT_DIR,
-            check=True,
-        )
-    except subprocess.CalledProcessError:
-        return None
-    return _JDT_LOCAL_BUILD if _JDT_LOCAL_BUILD.is_file() else None
-
-
-def _resolve_jar() -> Path | None:
-    """Locate the JDT formatter JAR. Resolution order:
-
-    1. Local Maven build at `tooling/jdt-formatter/target/jdt-formatter.jar`.
-       Used by CI (which runs `mvn package` before pytest) and by
-       developers who built locally for testing.
-    2. Cached download at
-       `<cache>/jdt-formatter-v<version>.jar`. Used after the first
-       download from the matching GitHub Release.
-    3. Download from
-       `<release-base>/v<version>/jdt-formatter.jar`. The release
-       also publishes `jdt-formatter.jar.sha256`; we download both
-       and verify the JAR matches before caching.
-    4. Build from source via `mvn package` (bootstrap before the
-       first release; offline fallback when downloads fail).
-
-    Returns the path to the resolved JAR, or None if all paths fail.
-    """
-    # 1. Local Maven build.
-    if _JDT_LOCAL_BUILD.is_file():
-        return _JDT_LOCAL_BUILD
-
-    version = _read_pom_version()
-    if version is None:
-        return _build_from_source()
-
-    # 2. Cache hit.
-    cache_path = _cache_dir() / f"jdt-formatter-v{version}.jar"
-    if cache_path.is_file():
-        return cache_path
-
-    # 3. Download from release.
-    base = f"{_RELEASE_BASE.rstrip('/')}/v{version}"
-    jar_url = f"{base}/jdt-formatter.jar"
-    sha_url = f"{base}/jdt-formatter.jar.sha256"
-    try:
-        sha_path = cache_path.with_suffix(cache_path.suffix + ".sha256")
-        _download(sha_url, sha_path)
-        _download(jar_url, cache_path)
-        expected = sha_path.read_text(encoding="utf-8").split()[0].lower()
-        actual = _sha256(cache_path)
-        if expected != actual:
-            print(
-                f"ERROR: SHA-256 mismatch for {jar_url}\n"
-                f"  expected: {expected}\n"
-                f"  actual:   {actual}",
-                file=sys.stderr,
-            )
-            cache_path.unlink(missing_ok=True)
-            sha_path.unlink(missing_ok=True)
-            return None
-        return cache_path
-    except urllib.error.URLError as exc:
-        print(
-            f"WARNING: could not download JDT formatter JAR from "
-            f"{jar_url}: {exc}. Falling back to local source build.",
-            file=sys.stderr,
-        )
-        cache_path.unlink(missing_ok=True)
-        sha_path.unlink(missing_ok=True)
-
-    # 4. Build from source.
-    return _build_from_source()
-
-
-def _resolve_target_paths(forwarded_args: list[str]) -> list[Path]:
-    """Same path resolution the underlying scripts use, but extracted
-    here so we can call JDT against the file list directly. Mirrors
-    `_cli.iter_target_files` semantics (positional paths + --src-dirs
-    fallback + --exclude / --exclude-from filtering).
-
-    Reuses `_cli.build_parser` so the parser definition stays in one
-    place — adding a flag in _cli.py picks up here automatically.
-    """
-    scripts_dir = str(Path(__file__).resolve().parent)
-    if scripts_dir not in sys.path:
-        sys.path.insert(0, scripts_dir)
-    import _cli
-
-    parser = _cli.build_parser(prog="format_file", description="")
-    # Tolerate unknown flags (e.g. --help) so they pass through cleanly
-    # to the per-script invocations later.
-    args, _ = parser.parse_known_args(forwarded_args)
-    return list(_cli.iter_target_files(args))
-
-
-# Cap on paths-per-JVM-invocation. With paths averaging ~80 chars,
-# 500 leaves ~80 KB on the command line — well under the typical
-# Linux ARG_MAX (~2 MB) and macOS (~256 KB) limits, with comfortable
-# headroom for the env block. Bulk passes against very large
-# codebases will run JDT in multiple JVM invocations; each cold
-# start is ~1 s amortized over 500 files.
-_JDT_BATCH_SIZE = 500
-
-
-def _file_snapshot(path: Path) -> tuple[int, str, int, int] | None:
-    """Return `(size, sha256-hex, atime_ns, mtime_ns)` for `path`, or
-    `None` if missing.
-
-    Used by `main()` to compare files before/after the full pipeline
-    (JDT + override scripts) so the orchestrator can both report a
-    net-modified count AND restore the original mtime on files whose
-    final content is bit-identical to the input. Preserving mtime in
-    the net-zero case keeps IDE reloads, Maven/Gradle build caches,
-    and `make` timestamp tracking quiet on idempotent runs.
-
-    Catches `FileNotFoundError` only — a permission flip or other
-    OSError mid-pass is a genuine anomaly and should fail loud rather
-    than silently count as "modified" in the summary.
+def _file_snapshot(
+    path: Path,
+) -> tuple[int, str, int, int] | None:
+    """Return `(size, sha256-hex, atime_ns, mtime_ns)` for `path`,
+    or `None` if missing. Used to decide whether to restore mtime
+    after the formatter runs.
     """
     try:
         st = path.stat()
-        return (st.st_size, _sha256(path), st.st_atime_ns, st.st_mtime_ns)
+        return (
+            st.st_size,
+            _sha256(path),
+            st.st_atime_ns,
+            st.st_mtime_ns,
+        )
     except FileNotFoundError:
         return None
 
 
-def _restore_mtime(path: Path, atime_ns: int, mtime_ns: int) -> None:
+def _restore_mtime(
+    path: Path, atime_ns: int, mtime_ns: int
+) -> None:
     """Best-effort restore of `path`'s atime + mtime to the saved
-    values. Warns on any `OSError` and continues; the mtime restore
-    is purely cosmetic (IDE/build-cache hygiene) and must never fail
-    the pipeline.
+    values. Warns on `OSError` and continues; the mtime restore
+    is cosmetic (IDE / build-cache hygiene) and must never fail
+    the run.
     """
     try:
         os.utime(path, ns=(atime_ns, mtime_ns))
@@ -272,171 +91,160 @@ def _restore_mtime(path: Path, atime_ns: int, mtime_ns: int) -> None:
         )
 
 
-def run_jdt_pass(paths: list[Path]) -> int:
-    """Run the Eclipse JDT formatter against `paths`. Returns 0 on
-    success or the first non-zero exit code if any batch fails. The
-    path list is chunked at `_JDT_BATCH_SIZE` to keep each JVM
-    invocation's command line well under typical OS ARG_MAX limits.
+def _format_one(
+    path: Path,
+    format_source,
+) -> str:
+    """Format `path` in place. Returns one of:
+
+        - `"unchanged"` — output equals input; mtime restored.
+        - `"changed"` — output differs; written; mtime advanced.
+        - `"refused"` — formatter raised NotImplementedError (the
+          file has a construct the current emitter doesn't
+          support).
+        - `"parse-error"` — input contains a syntax error.
+        - `"error"` — unexpected internal exception (formatter
+          bug).
+
+    Diagnostics are printed to stderr; the return value lets the
+    caller aggregate counts.
     """
-    if not paths:
-        return 0
-    if not _JDT_PROFILE.is_file():
+    pre = _file_snapshot(path)
+    if pre is None:
+        print(f"ERROR: no such file: {path}", file=sys.stderr)
+        return "error"
+    try:
+        source = path.read_bytes()
+    except OSError as exc:
         print(
-            f"ERROR: JDT formatter profile not found at {_JDT_PROFILE}",
+            f"ERROR: could not read {path}: {exc}",
             file=sys.stderr,
         )
-        return 2
-    if shutil.which("java") is None:
+        return "error"
+    try:
+        formatted = format_source(source)
+    except NotImplementedError as exc:
         print(
-            "ERROR: 'java' not found on PATH; required to run the JDT "
-            "formatter pass. Install JDK 17+ or remove this script "
-            "invocation from your hooks.",
+            f"REFUSED: {path}: {exc}",
             file=sys.stderr,
         )
-        return 2
+        return "refused"
+    except ValueError as exc:
+        print(
+            f"PARSE ERROR: {path}: {exc}",
+            file=sys.stderr,
+        )
+        return "parse-error"
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"ERROR: {path}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return "error"
+    if formatted == source:
+        # Bit-identical; restore mtime for IDE / build-cache
+        # hygiene.
+        _restore_mtime(path, pre[2], pre[3])
+        return "unchanged"
+    try:
+        path.write_bytes(formatted)
+    except OSError as exc:
+        print(
+            f"ERROR: could not write {path}: {exc}",
+            file=sys.stderr,
+        )
+        return "error"
+    return "changed"
 
-    jar_path = _resolve_jar()
-    if jar_path is None:
-        print(
-            "ERROR: JDT formatter JAR could not be located. Tried, in "
-            "order: tooling/jdt-formatter/target/jdt-formatter.jar, "
-            "the local cache, the GitHub Release for the version pinned "
-            "in pom.xml, and a fallback `mvn package` build. Install "
-            "Maven (or `cd tooling/jdt-formatter && mvn package` once) "
-            "if you're working offline.",
-            file=sys.stderr,
-        )
-        return 2
 
-    first_failure = 0
-    for i in range(0, len(paths), _JDT_BATCH_SIZE):
-        batch = paths[i:i + _JDT_BATCH_SIZE]
-        cmd = [
-            "java",
-            "-jar",
-            str(jar_path),
-            str(_JDT_PROFILE),
-            *(str(p) for p in batch),
-        ]
-        result = subprocess.run(cmd)
-        if result.returncode != 0 and first_failure == 0:
-            first_failure = result.returncode
-    return first_failure
+def _resolve_target_paths(
+    forwarded_args: list[str],
+) -> list[Path]:
+    """Path resolution via `_cli`. Mirrors the underlying
+    formatter's CLI surface so positional paths, `--src-dirs`,
+    `--exclude`, and `--exclude-from` all behave the same way the
+    user expects.
+    """
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import _cli  # type: ignore[import-not-found]
+
+    parser = _cli.build_parser(
+        prog="format_file", description=""
+    )
+    args, _ = parser.parse_known_args(forwarded_args)
+    return list(_cli.iter_target_files(args))
 
 
 def main() -> int:
-    here = Path(__file__).resolve().parent
     forwarded_args = sys.argv[1:]
 
-    # Resolve target paths (prelude — runs before any of the three
-    # numbered stages below). Resolution happens Python-side so JDT
-    # only sees real .java files and so BASELINE_EXCLUDES / --exclude
-    # are honored before the JVM is invoked. For pure --help
-    # passthrough or non-path args the path list will be empty and
-    # every stage that branches on it becomes a no-op.
+    # Import the formatter once up front so import-time errors
+    # surface BEFORE we start trying to format files.
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    try:
+        from format_java import format_source  # type: ignore[import-not-found]
+    except ImportError as exc:
+        print(
+            f"ERROR: could not import format_java: {exc}\n"
+            "Install the formatter's runtime dependencies with:\n"
+            "    pip install -r tooling/scripts/requirements.txt",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         target_paths = _resolve_target_paths(forwarded_args)
     except SystemExit as exc:
-        # argparse exits with code 0 on --help; treat that as a clean
-        # passthrough (the underlying scripts will print their own
-        # usage and exit). Any other code indicates a real argparse
-        # failure (missing required arg, type-conversion error, etc.) —
-        # warn so the skipped JDT pass doesn't go unnoticed, but still
-        # let the underlying scripts run so their error reporting
-        # surfaces too.
-        if exc.code not in (0, None):
-            print(
-                f"WARNING: path resolution exited {exc.code}; "
-                f"skipping JDT pass.",
-                file=sys.stderr,
-            )
-        target_paths = []
+        # argparse exits with 0 on `--help`; treat as clean
+        # passthrough (the help text has already been printed).
+        if exc.code in (0, None):
+            return 0
+        return int(exc.code) if isinstance(exc.code, int) else 2
 
-    failures: list[tuple[str, int]] = []
+    if not target_paths:
+        # No targets resolved. Match the prior pipeline's
+        # behavior: silent success (handy for `--help` and
+        # selective `--exclude` runs that filter out every
+        # candidate).
+        return 0
 
-    # Stage 1: pre-pipeline snapshot. Capture every target's content
-    # + atime + mtime before any pass runs. Stage 3 uses this to
-    # (a) report a net-pipeline modified count and (b) restore mtime
-    # on files whose final content matches the snapshot. Without the
-    # restore, JDT's "always re-serialize" behavior would advance
-    # every target's mtime even when the override scripts undo all
-    # of JDT's byte-level edits, churning IDE reloads and build
-    # caches on otherwise idempotent runs.
-    pre_states: dict[Path, tuple[int, str, int, int] | None] = {}
-    if target_paths:
-        pre_states = {p: _file_snapshot(p) for p in target_paths}
+    counts = {
+        "unchanged": 0,
+        "changed": 0,
+        "refused": 0,
+        "parse-error": 0,
+        "error": 0,
+    }
+    for path in target_paths:
+        outcome = _format_one(path, format_source)
+        counts[outcome] += 1
 
-        # Stage 2 (a): JDT pass.
-        rc = run_jdt_pass(target_paths)
-        if rc != 0:
-            failures.append(("jdt-formatter", rc))
-
-    # Stage 2 (b): the six Python override scripts in canonical order.
-    for script in SCRIPT_ORDER:
-        script_path = here / script
-        if not script_path.is_file():
-            print(
-                f"ERROR: missing script {script_path}",
-                file=sys.stderr,
-            )
-            return 2
-
-        cmd = [sys.executable, str(script_path), *forwarded_args]
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            failures.append((script, result.returncode))
-
-    # Stage 3: pipeline summary + mtime restore. Compare every
-    # target's post-pipeline content against its pre-pipeline
-    # snapshot. Bit-identical -> restore the original mtime (silent
-    # in-place no-op on disk). Any difference (or a re-snapshot
-    # failure) -> count as modified and leave the new mtime alone.
-    # Prints unconditionally when target_paths is non-empty,
-    # including when JDT or an override script exited non-zero —
-    # the count up to the failure point is more useful than silence.
-    if target_paths:
-        pipeline_modified = 0
-        for p in target_paths:
-            pre = pre_states.get(p)
-            if pre is None:
-                # File didn't exist at pre-snapshot time. Shouldn't
-                # happen — _resolve_target_paths only yields existing
-                # files — but defensive: count as modified, skip
-                # mtime restore (no original mtime to restore to).
-                pipeline_modified += 1
-                continue
-            try:
-                post = _file_snapshot(p)
-            except OSError as exc:
-                print(
-                    f"WARNING: could not re-snapshot {p} for pipeline "
-                    f"summary: {exc}",
-                    file=sys.stderr,
-                )
-                pipeline_modified += 1
-                continue
-            if post is None:
-                # File deleted during the pipeline.
-                pipeline_modified += 1
-                continue
-            # Compare on (size, sha256). atime/mtime intentionally
-            # excluded — we want byte-content equality, then we'll
-            # restore mtime if it matches.
-            if pre[0] == post[0] and pre[1] == post[1]:
-                _restore_mtime(p, pre[2], pre[3])
-            else:
-                pipeline_modified += 1
+    total = sum(counts.values())
+    modified = counts["changed"]
+    print(
+        f"\nFormatter: {total} files processed, "
+        f"{modified} modified."
+    )
+    refused = counts["refused"]
+    parse_errs = counts["parse-error"]
+    errors = counts["error"]
+    if refused or parse_errs or errors:
         print(
-            f"\nPipeline: {len(target_paths)} files processed, "
-            f"{pipeline_modified} modified."
+            f"  refused: {refused}, "
+            f"parse errors: {parse_errs}, "
+            f"other errors: {errors}",
+            file=sys.stderr,
         )
-
-    if failures:
-        print("\nFailures:", file=sys.stderr)
-        for name, rc in failures:
-            print(f"  {name}: exit {rc}", file=sys.stderr)
-        return 1
-
+        # Refusals are not failures (the formatter cleanly
+        # declines a construct it doesn't support yet); parse
+        # errors and other errors ARE failures.
+        if parse_errs or errors:
+            return 1
     return 0
 
 

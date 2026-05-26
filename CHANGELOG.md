@@ -80,6 +80,67 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has just its own multi-tier wrapping rules and lands in a
   later phase.
+- Phase 7 JDT pipeline removal — the atomic switch:
+  - `tooling/scripts/format_file.py` rewritten as a thin
+    orchestrator that resolves target paths via `_cli.iter_-
+    target_files` and invokes `format_java.format_source`
+    in-process per file. Same CLI surface as before
+    (positional paths, `--src-dirs`, `--exclude`,
+    `--exclude-from`). Mtime is restored on byte-identical
+    runs to keep IDE / build-cache hygiene quiet on
+    idempotent saves.
+  - The six legacy override scripts and their tests deleted:
+    `fix_allman_braces.py`, `fix_javadoc_reflow.py`,
+    `fix_javadoc_inline_tags.py`, `fix_javadoc_tags.py`,
+    `fix_need_braces.py`, `fix_throws_alignment.py`. Their
+    behavior is subsumed by `format_java.py`'s emitter
+    walk; `format_file.py` no longer subprocess-invokes
+    anything.
+  - The Eclipse JDT formatter Maven module deleted:
+    `tooling/jdt-formatter/` (pom.xml, the JdtFormatter.java
+    shim, .gitignore). The XML profile `tooling/ide/-
+    java-formatter.xml` deleted with it; the `tooling/ide/`
+    directory is now empty and was pruned. Consumers no
+    longer need a JDK on `PATH` to run `format_file.py`.
+  - `.github/workflows/release.yaml` deleted — its only
+    purpose was building and publishing the JDT JAR on
+    `v*` tag push; the workflow has no remaining function.
+    Future tag-driven release automation can be added back
+    later if needed (e.g. CHANGELOG-based release notes).
+  - `.github/workflows/pytest.yaml` simplified: removed
+    the `setup-java@v5` step and the JDT JAR build step.
+    CI now only needs Python + the formatter's runtime
+    deps from `tooling/scripts/requirements.txt`.
+  - `.github/dependabot.yml`: removed the
+    `tooling/jdt-formatter` maven-ecosystem entry. The
+    repository's only remaining ecosystems are github-
+    actions and pip (under `tooling/scripts/` +
+    `tooling/scripts/tests/`).
+  - Test cleanup: deleted `test_format_file_jdt_pipeline.py`,
+    `test_jar_resolution.py`, `test_helpers.py` (a unit
+    test for `fix_allman_braces` helpers), and
+    `test_idempotency.py` (which iterated each fix_*.py
+    script over fixtures). Rewrote `test_format_file.py`
+    as a smaller, sharper suite focused on the new
+    orchestrator's contract (10 tests covering unchanged /
+    changed / refused / parse-error / multi-file
+    aggregation / mtime-preservation / CLI passthrough).
+  - Calibration-recon: 83/83 MATCH preserved.
+  - pytest suite: 235 total (225 format_java + 10
+    format_file).
+
+  Out of scope for this commit (Phase 8 follow-up):
+
+  - Adoption-template updates under `adoption/` — the
+    `/init-java` flow still references the JDT JAR /
+    profile / script-pipeline; needs a rewrite to describe
+    the new single-file architecture.
+  - FAQ refresh under `docs/faqs/building/` — `java-format-
+    ting-standards.md` and `javadoc-reflow-conventions.md`
+    still document the old pipeline.
+  - Module / class-level docstrings in `format_java.py`
+    and `format_file.py` still describe the migration as
+    pending; bump them to "complete" wording.
 - Phase 6c switch_expression + record_declaration emitters:
   the last two REFUSED node types from the senzing-commons-
   java pre-flight are now handled, dropping REFUSED to 0/106.
