@@ -80,6 +80,57 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has just its own multi-tier wrapping rules and lands in a
   later phase.
+- Phase 6c switch_expression + record_declaration emitters:
+  the last two REFUSED node types from the senzing-commons-
+  java pre-flight are now handled, dropping REFUSED to 0/106.
+  Switch support (spec B2):
+    - `_emit_switch_expression` covers both the statement
+      form and the expression form (same node type in
+      tree-sitter-java). The `switch (cond)` header keeps
+      the cond on its source line; the body opens Allman
+      because cases flow on multiple lines.
+    - `_emit_switch_block` emits the `{ CASES }` block with
+      cases indented `+4` from the block's left anchor
+      per spec B2's revised case-indent rule. Source-
+      preservation of blank lines between cases.
+    - `_emit_switch_rule` handles the arrow form
+      (`case LABEL -> body[;]`) with single space around
+      `->` per spec B2. Multi-row sources fall through to
+      verbatim emission.
+    - `_emit_switch_block_statement_group` handles the
+      colon form (`case LABEL: stmts...`). One or more
+      `switch_label` children stack as fall-through labels
+      at the case indent; statements indent `+4` from the
+      case label. Each statement emits via dispatch so
+      authoritative re-indentation propagates correctly.
+    - `_emit_switch_label` emits `case VAL[, VAL...]` or
+      `default` (handles both single-value and multi-value
+      cases per spec B2's multi-label rule).
+    - `_emit_yield_statement` emits `yield VALUE;` for
+      Java 14+ switch-expression block-body yields.
+  Record support (Java 16+):
+    - `_emit_record_declaration` emits
+      `[modifiers] record NAME(components) [implements ...]
+      { body }` with Allman brace placement (records are
+      type declarations like classes).
+    - `_emit_compact_constructor_declaration` emits a
+      record's compact constructor (`[modifiers] NAME { body
+      }`) with Allman braces per spec B9.
+  Unit-test cleanup: the `test_unknown_node_type_raises`
+  test used `switch_expression` as the "intentionally
+  unregistered" example; replaced with `module_declaration`
+  (which IS intentionally out-of-scope per the plan's
+  "module-info.java" exclusion). Calibration-recon: MATCH
+  stays 83/83 (no regressions). Pre-flight against the
+  senzing-commons-java consumer codebase:
+  MATCH 12 / CHANGED 94 / REFUSED 0 / ERROR 0 — every one
+  of the 106 consumer files now traverses the formatter
+  end-to-end. CHANGED aggregate diff grew (avg +21 / -26
+  per file) because the newly-unblocked switch files have
+  large reformatting diffs from the spec's stricter case-
+  indent rule (case at +4 from switch column, vs the older
+  Java convention of case at switch column that consumer
+  code currently uses).
 - Phase 6b Pre-flight bug fixes — spot-check survey of CHANGED
   files surfaced three real bugs:
     - **Varargs parameter silently dropped**: `_emit_formal_-

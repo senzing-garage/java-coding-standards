@@ -3330,16 +3330,17 @@ class TestEmitNodeDispatch:
     """Verify the dispatch helper's error path."""
 
     def test_unknown_node_type_raises(self) -> None:
-        # switch_expression is intentionally not yet registered;
-        # switch (statements + expressions) lands in its own
-        # phase with all the modern Java pattern-matching rules.
+        # `module_declaration` is intentionally out-of-scope for
+        # 0.3.0 (see the plan's "Out of scope: module-info.java")
+        # — no consumer project uses Java modules, and the
+        # grammar diverges enough to deserve its own phase. The
+        # dispatcher's refusal path is exercised by trying to
+        # emit a module declaration: `No emitter registered`.
         src = (
-            b"class A { String m(int x) { "
-            b"return switch (x) { case 1 -> \"one\"; "
-            b"default -> \"other\"; }; } }"
+            b"module com.foo { requires java.base; }"
         )
         tree = format_java.parse_source(src)
-        stmt = _find_first(tree.root_node, "switch_expression")
+        stmt = _find_first(tree.root_node, "module_declaration")
         assert stmt is not None
         emitter = format_java.Emitter()
         with pytest.raises(

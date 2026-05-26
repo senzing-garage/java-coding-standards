@@ -2196,6 +2196,288 @@ def _emit_dimensions_expr(
     emitter.write("]")
 
 
+def _emit_switch_expression(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `switch (cond) { CASES }` per spec B2.
+
+    Tree-sitter-java exposes both the statement form and the
+    expression form (used as RHS of an assignment, `return`
+    operand, etc.) under the single `switch_expression` node
+    type. The brace is Allman-style for the body since cases
+    flow on multiple lines. Cases are emitted by `_emit_-
+    switch_block` (the `switch_block` child).
+
+    Caller positions the emitter at the column where `switch`
+    begins. For switch-as-expression contexts (e.g. after `=`
+    or `return`), the caller's trailing `;` / `,` follows the
+    closing `}`.
+
+    Source-preservation is the fallback for the body's
+    internal layout: case bodies that wrap (multi-statement
+    colon form, block bodies after `->`, etc.) emit
+    via `_emit_switch_block` which delegates to per-rule
+    emitters that fall back to source-text emission when
+    they can't dispatch cleanly.
+    """
+    cond = None
+    block = None
+    for c in node.named_children:
+        if c.type == "parenthesized_expression":
+            cond = c
+        elif c.type == "switch_block":
+            block = c
+    if cond is None or block is None:
+        raise NotImplementedError(
+            "switch_expression missing condition or block — "
+            "grammar shape unexpected."
+        )
+    emitter.write("switch ")
+    _emit_node(emitter, source, cond)
+    emitter.newline()
+    emitter.write_indent()
+    _emit_node(emitter, source, block)
+
+
+def _emit_switch_block(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `{ CASES }` for a switch's case body.
+
+    Caller positions the emitter at the column where `{`
+    starts. Case rules (`switch_rule` or `switch_block_-
+    statement_group`) are emitted at indent_level + 1.
+    """
+    cases = [
+        c for c in node.named_children
+        if c.type in (
+            "switch_rule", "switch_block_statement_group"
+        )
+    ]
+    emitter.write("{")
+    emitter.newline()
+    if cases:
+        emitter.push_indent()
+        prev: Node | None = None
+        for case in cases:
+            if prev is not None:
+                if case.start_point[0] - prev.end_point[0] > 1:
+                    emitter.newline()
+            emitter.write_indent()
+            _emit_node(emitter, source, case)
+            emitter.newline()
+            prev = case
+        emitter.pop_indent()
+    emitter.write_indent()
+    emitter.write("}")
+
+
+def _emit_switch_rule(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `LABEL -> body[;]` (arrow form of a switch case).
+
+    Per spec B2: single space around `->`. The body is one or
+    more statements. Source-preservation for multi-row source.
+    """
+    if _node_spans_multiple_rows(node):
+        emitter.write_raw_lines(_node_source_text(source, node))
+        return
+    label = None
+    body_children: list[Node] = []
+    for c in node.named_children:
+        if c.type == "switch_label":
+            label = c
+        else:
+            body_children.append(c)
+    if label is None:
+        raise NotImplementedError(
+            "switch_rule missing label — grammar shape unexpected."
+        )
+    _emit_node(emitter, source, label)
+    emitter.write(" -> ")
+    for body in body_children:
+        _emit_node(emitter, source, body)
+
+
+def _emit_switch_block_statement_group(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `LABEL:\\n    stmt;\\n    stmt;` (colon form).
+
+    Multiple labels can stack (fall-through):
+
+        case 1:
+        case 2:
+            doSomething();
+
+    Per spec B2, statements inside a case body indent +4 from
+    the case label. Labels and statements are emitted via
+    dispatch so each lands at the right authoritative indent
+    column.
+
+    Grammar shape: one or more `switch_label` named children
+    (each followed by an anonymous `:` token), then any
+    number of statement named children.
+    """
+    labels: list[Node] = []
+    stmts: list[Node] = []
+    for c in node.named_children:
+        if c.type == "switch_label":
+            labels.append(c)
+        else:
+            stmts.append(c)
+    # Emit each label on its own line at the caller's indent
+    # (the caller wrote `write_indent()` already, so the first
+    # label emits on the current line; subsequent labels get
+    # newline + write_indent).
+    for index, label in enumerate(labels):
+        if index > 0:
+            emitter.newline()
+            emitter.write_indent()
+        _emit_node(emitter, source, label)
+        emitter.write(":")
+    # Statements indent +4 from the case label.
+    if stmts:
+        emitter.push_indent()
+        prev: Node | None = None
+        for s in stmts:
+            emitter.newline()
+            if prev is not None:
+                if s.start_point[0] - prev.end_point[0] > 1:
+                    emitter.newline()
+            emitter.write_indent()
+            _emit_node(emitter, source, s)
+            prev = s
+        emitter.pop_indent()
+
+
+def _emit_switch_label(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `case VALUES` or `default`."""
+    children = list(node.named_children)
+    if not children:
+        # `default` — no values; emit verbatim.
+        emitter.write(_node_source_text(source, node))
+        return
+    emitter.write("case ")
+    for index, c in enumerate(children):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, c)
+
+
+def _emit_yield_statement(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `yield VALUE;` (Java 14+ switch-expression yield)."""
+    children = list(node.named_children)
+    if not children:
+        emitter.write("yield;")
+        return
+    emitter.write("yield ")
+    for c in children:
+        _emit_node(emitter, source, c)
+    emitter.write(";")
+
+
+def _emit_record_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a Java 16+ record declaration:
+    `[modifiers] record NAME(components) [implements ...] { body }`.
+
+    The body's opening `{` follows the Allman rule (records
+    are type declarations like classes). The components are
+    exposed as `formal_parameters`; super_interfaces and
+    type_parameters apply the same way as for classes.
+    """
+    modifiers_node: Node | None = None
+    type_parameters_node: Node | None = None
+    super_interfaces_node: Node | None = None
+    params_node: Node | None = None
+    for c in node.named_children:
+        if c.type == "modifiers":
+            modifiers_node = c
+        elif c.type == "type_parameters":
+            type_parameters_node = c
+        elif c.type == "super_interfaces":
+            super_interfaces_node = c
+        elif c.type == "formal_parameters":
+            params_node = c
+    name = node.child_by_field_name("name")
+    body = node.child_by_field_name("body")
+    if name is None or body is None or params_node is None:
+        raise NotImplementedError(
+            "record_declaration missing required children — "
+            "grammar shape unexpected."
+        )
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+    emitter.write("record ")
+    _emit_node(emitter, source, name)
+    if type_parameters_node is not None:
+        _emit_node(emitter, source, type_parameters_node)
+    _emit_node(emitter, source, params_node)
+    if super_interfaces_node is not None:
+        emitter.write(" ")
+        _emit_node(emitter, source, super_interfaces_node)
+    emitter.newline()
+    emitter.write_indent()
+    emitter.write("{")
+    emitter.newline()
+    _emit_class_body_members(emitter, source, body)
+    emitter.write_indent()
+    emitter.write("}")
+
+
+def _emit_compact_constructor_declaration(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a record's compact constructor:
+    `[modifiers] RECORD_NAME { body }`.
+
+    No parameter list (the record's component list IS the
+    parameter list). Per spec B9, compact constructors use
+    Allman brace placement.
+    """
+    modifiers_node: Node | None = None
+    for c in node.named_children:
+        if c.type == "modifiers":
+            modifiers_node = c
+            break
+    name = node.child_by_field_name("name")
+    body = node.child_by_field_name("body")
+    if name is None or body is None:
+        raise NotImplementedError(
+            "compact_constructor_declaration missing required "
+            "children — grammar shape unexpected."
+        )
+    if modifiers_node is not None:
+        _emit_node(emitter, source, modifiers_node)
+    _emit_node(emitter, source, name)
+    emitter.newline()
+    emitter.write_indent()
+    emitter.write("{")
+    emitter.newline()
+    statements = list(body.named_children)
+    if statements:
+        emitter.push_indent()
+        prev: Node | None = None
+        for stmt in statements:
+            if prev is not None:
+                if stmt.start_point[0] - prev.end_point[0] > 1:
+                    emitter.newline()
+            emitter.write_indent()
+            _emit_node(emitter, source, stmt)
+            emitter.newline()
+            prev = stmt
+        emitter.pop_indent()
+    emitter.write_indent()
+    emitter.write("}")
+
+
 def _emit_synchronized_statement(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -4418,6 +4700,14 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "dimensions": _emit_dimensions,
     "dimensions_expr": _emit_dimensions_expr,
     "synchronized_statement": _emit_synchronized_statement,
+    "switch_expression": _emit_switch_expression,
+    "switch_block": _emit_switch_block,
+    "switch_rule": _emit_switch_rule,
+    "switch_block_statement_group": _emit_switch_block_statement_group,
+    "switch_label": _emit_switch_label,
+    "yield_statement": _emit_yield_statement,
+    "record_declaration": _emit_record_declaration,
+    "compact_constructor_declaration": _emit_compact_constructor_declaration,
     "explicit_constructor_invocation": _emit_explicit_constructor_invocation,
     "generic_type": _emit_generic_type,
     "type_arguments": _emit_type_arguments,
