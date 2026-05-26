@@ -514,6 +514,14 @@ def _program_blank_between(prev: Node, this: Node) -> bool:
         # No blank between consecutive imports; blank before a
         # following type declaration.
         return this.type != "import_declaration"
+    if prev.type in ("block_comment", "line_comment"):
+        # A leading javadoc / comment attaches to the next
+        # declaration per spec A1 ("Class-level javadoc
+        # placement" — directly above the type declaration with
+        # no blank between). Source-preserve: emit a blank only
+        # when the source had a blank between the comment and
+        # the next item.
+        return this.start_point[0] - prev.end_point[0] > 1
     # Between two top-level type declarations — blank.
     return True
 
@@ -1629,6 +1637,14 @@ def _emit_javadoc_block(
                 j += 1
             cont_prefix = star_prefix + " " * len(tag_prefix)
             full_tag_col = len(star_prefix) + len(tag_prefix)
+            # `@param NAME` with no description body — emit the
+            # tag prefix alone (stripped of trailing space) and
+            # advance.
+            if not desc_lines:
+                emitter.newline()
+                emitter.write(star_prefix + tag_prefix.rstrip())
+                i = j
+                continue
             # Decide whether to reflow. First-line max accounts
             # for the `@tag NAME ` prefix; subsequent lines use
             # the continuation prefix. Reflow if any line
@@ -3727,7 +3743,7 @@ def _emit_formal_parameters(
         return
     params = [
         c for c in node.children
-        if c.type == "formal_parameter"
+        if c.type in ("formal_parameter", "spread_parameter")
     ]
     emitter.write("(")
     for index, param in enumerate(params):
@@ -3735,6 +3751,42 @@ def _emit_formal_parameters(
             emitter.write(", ")
         _emit_node(emitter, source, param)
     emitter.write(")")
+
+
+def _emit_spread_parameter(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `TYPE... NAME` for a varargs parameter (spec B12).
+
+    Per spec B12: no space before the ellipsis, single space
+    after. Grammar exposes the type as a named child, the `...`
+    as an anonymous token, and the name as a `variable_declarator`
+    named child.
+    """
+    type_node = None
+    name_node = None
+    for c in node.named_children:
+        if c.type == "modifiers":
+            # Emit modifiers inline (same rule as
+            # _emit_formal_parameter).
+            for mc in c.children:
+                if mc.is_named:
+                    _emit_node(emitter, source, mc)
+                else:
+                    emitter.write(mc.type)
+                emitter.write(" ")
+        elif type_node is None:
+            type_node = c
+        else:
+            name_node = c
+    if type_node is None or name_node is None:
+        raise NotImplementedError(
+            "spread_parameter missing type or name child — "
+            "grammar shape unexpected."
+        )
+    _emit_node(emitter, source, type_node)
+    emitter.write("... ")
+    _emit_node(emitter, source, name_node)
 
 
 def _emit_formal_parameter(
@@ -4320,6 +4372,7 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     "annotated_type": _emit_annotated_type,
     "formal_parameters": _emit_formal_parameters,
     "formal_parameter": _emit_formal_parameter,
+    "spread_parameter": _emit_spread_parameter,
     "array_type": _emit_array_type,
     # `local_variable_declaration` has the same grammar shape
     # as `field_declaration` (optional modifiers + type +

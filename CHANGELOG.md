@@ -80,6 +80,37 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has just its own multi-tier wrapping rules and lands in a
   later phase.
+- Phase 6b Pre-flight bug fixes — spot-check survey of CHANGED
+  files surfaced three real bugs:
+    - **Varargs parameter silently dropped**: `_emit_formal_-
+      parameters` filtered to `formal_parameter` children
+      only, so `spread_parameter` (the grammar's node type for
+      `Type... name` varargs) was excluded — methods like
+      `logError(Object... lines)` became `logError()`. Added
+      `_emit_spread_parameter` per spec B12 (no space before
+      `...`, single space after) and updated the parameter
+      filter.
+    - **Blank line inserted between leading javadoc and class**:
+      `_emit_program`'s blank-line rule emitted a blank between
+      any two consecutive top-level children, including a
+      `block_comment` (javadoc) and the class it documents. Per
+      spec A1 ("Class-level javadoc placement"), the javadoc
+      attaches to the type with NO blank between. Fix: when
+      `prev` is a `block_comment` / `line_comment`, follow
+      source — emit a blank only if the source had one.
+    - **IndexError on `@param NAME` with empty description**:
+      `_emit_javadoc_block`'s tag reflow accessed `desc_lines
+      [0]` without checking for empty `desc_lines`. Some
+      consumer files have bare `@param NAME` with no
+      description (or the description on a continuation line
+      that the collector didn't pick up). Fix: short-circuit
+      with `emitter.write(star_prefix + tag_prefix.rstrip())`
+      when no description was collected.
+  Calibration-recon: MATCH stays 83/83 (no regressions). Pre-
+  flight against the senzing-commons-java consumer codebase:
+  MATCH 0 → 12, CHANGED 90 → 79, ERROR 1 → 0. The 15 REFUSED
+  files (14 × `switch_expression`, 1 × `record_declaration`)
+  await their respective emitters.
 - Phase 6a Pre-flight infrastructure (Step A + Step B groundwork):
   Add the end-user formatter entry point and a batch of
   emitters needed for real consumer code:
