@@ -27,7 +27,7 @@ jobs:
           echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tag
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ steps.tag.outputs.value }}
           persist-credentials: false
