@@ -10,6 +10,48 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-26
+
+The architectural cutover from the JDT + six-script pipeline
+to a pure-Python AST-based formatter built on
+`tree-sitter-java`. Same end-user `format_file.py` CLI; same
+spec-compliant output; no JDK required at runtime; no
+subprocess pipeline. See
+`docs/faqs/building/java-formatting-standards.md` ("Upgrading
+from 0.2.x") for adopter migration notes.
+
+Highlights:
+
+- **Comprehensive spec** (`docs/java-coding-standards.md`)
+  filled in the 25 audit gaps surfaced in planning —
+  modern syntax (records, sealed/permits, switch
+  expressions, pattern matching, text blocks, lambdas,
+  method references), spacing rules, import organization,
+  blank-line rules, annotation placement, and several
+  existing-rule clarifications.
+- **AST formatter** at `tooling/scripts/format_java.py`
+  built incrementally over Phases 2a–5g. Calibration gate
+  closed at 83/83 fixture MATCH.
+- **JDT pipeline removed**: 6 `fix_*.py` override scripts,
+  the `tooling/jdt-formatter/` Maven module, the
+  `tooling/ide/java-formatter.xml` Eclipse profile, the
+  JDT JAR release workflow.
+- **Pre-flight** against three real-world Java corpora
+  (senzing-commons-java, sz-sdk-java, senzing-api-server —
+  ~838 files total). All 838 traverse the formatter end-
+  to-end without refusals on the targeted node types.
+- **Robustness gates** — fuzz harness verifies round-trip
+  AST equivalence + idempotency + error-recovery against
+  the consumer corpus. Surfaced and fixed 5 additional
+  bugs (C-style array dimensions, multi-line value
+  overflow check, for/while header layout decision,
+  `<li>` indent classification).
+- **Performance gate** — 100-file warm format completes in
+  ~150ms (median ~0.9ms / file), 65× under the 10s budget.
+
+Full per-phase notes in the historical `## [Unreleased]`
+section above, reverse-chronological from Phase 8d.
+
 ### Added
 
 - `tooling/scripts/format_java.py` — Phase 2a scaffolding for
