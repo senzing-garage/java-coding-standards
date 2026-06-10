@@ -80,6 +80,28 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has just its own multi-tier wrapping rules and lands in a
   later phase.
+- Phase 8b FAQ refresh for 0.3.0 architecture:
+  - `docs/faqs/building/java-formatting-standards.md`
+    rewritten — replaced the JDT + six-script "Formatter
+    pipeline" architecture section with a description of
+    the in-process tree-sitter formatter (Emitter /
+    dispatch / wrap-priority engine). Replaced the "Running
+    the pipeline" section with the new CLI usage (single
+    `format_file.py` entry point + `format_java.py --format
+    FILE` for inspection). Removed the per-script behavior
+    summary list. Added an "Upgrading from 0.2.x" section
+    explaining the architectural shift, the one-time
+    reformat expected, and the legacy artifacts to delete.
+  - `docs/faqs/building/javadoc-reflow-conventions.md`
+    updated — replaced the small reference to the old
+    `fix_javadoc_*` scripts with a pointer to `format_-
+    java.py`'s javadoc emitter, which respects the same
+    "no orphan words" / "no invented filler" rules by
+    design. Updated the "When in doubt" pointer to
+    `format_file.py`.
+  No code, test, or non-FAQ doc changes. The FAQ MCP
+  server picks up the new content on next restart per the
+  standard re-index flow.
 - Phase 8a Docstring updates + adoption-template refresh:
   - `tooling/scripts/format_java.py` module docstring
     rewritten — the old narrative documented incremental

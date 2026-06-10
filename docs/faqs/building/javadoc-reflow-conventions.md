@@ -44,7 +44,7 @@ Reflowed (invented "before initializing the engine" to pad):
 
 **Good — leave it alone if no reflow is needed.**
 
-This rule applies to all reflow operations — Javadoc prose, `@tag` descriptions, `// line comments`, and string concatenations. The `fix_javadoc_reflow.py`, `fix_javadoc_inline_tags.py`, and `fix_javadoc_tags.py` scripts respect this by design (they only re-split existing tokens), but human and AI-generated edits sometimes drift.
+This rule applies to all reflow operations — Javadoc prose, `@tag` descriptions, `// line comments`, and string concatenations. The canonical formatter (`tooling/scripts/format_java.py`) respects this by design — its javadoc emitter only re-splits existing tokens, never invents content — but human and AI-generated edits sometimes drift.
 
 ## Why these rules
 
@@ -53,7 +53,7 @@ Both conventions exist to keep diffs readable and prevent semantic drift:
 - Orphans visually fragment the prose and signal sloppy formatting.
 - Inventing filler changes the meaning of a comment and can introduce inaccuracies.
 
-When in doubt, run the bulk-format scripts on the file in question — they make conservative, mechanical edits that respect both rules.
+When in doubt, run `tooling/scripts/format_file.py` on the file in question — it makes conservative, mechanical edits that respect both rules.
 
 ## Where this comes from
 

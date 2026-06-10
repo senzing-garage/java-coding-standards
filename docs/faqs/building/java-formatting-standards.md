@@ -17,18 +17,19 @@ All non-generated Java source files must conform to the formatting rules defined
 - For `if`/`else` pairs, always brace both branches regardless of body type or fit.
 - Put `throws` on its own line, single-indented from the method.
 
-After generation, run `mvn -Pcheckstyle validate` to confirm compliance. The bulk-fix scripts below are an aid for legacy code or batch updates — they are not a substitute for writing compliant code on the first pass.
+After generation, run `mvn -Pcheckstyle validate` to confirm compliance. The bulk formatter described below is an aid for legacy code or batch updates — it is not a substitute for writing compliant code on the first pass.
 
 ## Key Rules
 
 - **80-character line limit** — enforced by checkstyle via `-Pcheckstyle`
-- **Allman braces** for class, interface, enum, method, and constructor definitions
-- **Same-line braces** for control flow: if/else, for, while, do, try/catch/finally, switch, synchronized, lambdas, array initializers, static initializers
+- **Allman braces** for class, interface, enum, record, method, and constructor definitions
+- **Same-line braces** for control flow: if/else, for, while, do, try/catch/finally, switch, synchronized, lambdas, array initializers
+- **Allman braces** for static / instance initializer blocks (spec B10)
 - **Continuation indentation**: +4 per wrap level (cumulating to 8 spaces of displacement for the typical double-wrap; see the full standards doc for the per-level rule)
 - **Operators on continuation lines**: break BEFORE `+`, `&&`, `||`, `?`, `:`, `.`
 - **CSOFF/CSON**: only for deliberately aligned multi-line output (aligned labels, SQL DDL, column-formatted diagnostics) — NOT a general escape hatch
 - **Javadoc**: reflow prose and @tag descriptions to fill lines near 80 chars; don't leave orphaned short words
-- **Switch case labels**: left-aligned with switch (no extra indent)
+- **Switch case labels**: indented +4 from the block's left anchor (the column where the closing `}` aligns)
 - **Single-line `if`** is reserved for short-circuit control flow only — body must be `return`/`continue`/`break`/`throw`, no `else`, and the whole thing must fit on one line. Assignments and method calls always use braces, even when they fit. `if`/`else` pairs always brace both branches.
 
 ## Checkstyle Configuration
@@ -40,61 +41,63 @@ The standards repo ships two checkstyle config files; consumer projects referenc
 
 Project-specific suppressions (e.g. for auto-generated files) layer in via a project-local `checkstyle-suppressions-local.xml` next to the project's `pom.xml` — passed to checkstyle alongside the shared base via the multi-value `<suppressionsLocation>` syntax.
 
-## Formatter pipeline
+## Formatter architecture (0.3.0+)
 
-The orchestrator (`tooling/scripts/format_file.py`) runs a two-stage pipeline:
+`tooling/scripts/format_file.py` is the single end-user entry point. It's a thin wrapper that invokes the canonical formatter at `format_java.py` **in-process** — no JVM, no subprocess pipeline. Same input → same output regardless of caller (VS Code save, Claude Code edit hook, CLI, CI pre-commit).
 
-```
-JDT formatter pass (general Java formatting)
-    ↓
-fix_allman_braces.py        ─┐
-fix_javadoc_reflow.py        │  override scripts —
-fix_javadoc_inline_tags.py   │  applied AFTER JDT
-fix_javadoc_tags.py          │
-fix_need_braces.py          ─┘
-```
+`format_java.py` is a pure-Python AST-based formatter built on `tree-sitter-java`. For each file it:
 
-**Stage 1 — JDT formatter.** `tooling/jdt-formatter/jdt-formatter.jar` is a thin wrapper around the Eclipse JDT formatter, configured via `tooling/ide/java-formatter.xml`. JDT handles indent, line wrap, continuation indent, ternary tiers, operator-on-continuation positioning, parameter alignment, whitespace, and most other rules in `docs/java-coding-standards.md`. Requires JDK 17+ (already required for any consumer project's Maven build).
+1. **Parses** the source bytes to a tree-sitter CST.
+2. **Walks** the CST top-down, dispatching each node type to its registered emitter function via the `_NODE_EMITTERS` table.
+3. **Emits** spec-compliant text via an output buffer (`Emitter`) that tracks column / indent level and strips trailing whitespace per spec A5.
+4. **Wraps** when the natural single-line form would overflow 80 chars — the wrap-priority engine handles throws clauses, method-call args (P1 → P2 paren-aligned → P4 next-line single-indent), variable-declarator break-at-`=`, class-header type-parameter wrap, binary-expression wrap at the leftmost operator, and source-preservation of developer-authored multi-line conditions / params.
 
-**Stage 2 — Override scripts.** Five Python scripts apply rules JDT can't express in a single profile (per-block-type brace placement) plus rules our standards add beyond what JDT handles (no-orphan-words javadoc reflow; short-circuit `if` collapse; non-short-circuit `if` brace-add).
+Unknown node types raise `NotImplementedError` with a clear "not yet supported" diagnostic; the dispatcher never silently passes source text through. The deliberate out-of-scope construct for 0.3.0 is `module_declaration` (no consumer project uses Java modules yet).
 
-The pipeline produces a fully compliant file regardless of caller — VS Code save, Claude Code edit hook, CLI, CI pre-commit. Same input, same output, everywhere.
+The grammar version (`tree-sitter-java==0.23.5`) and the Python binding (`tree-sitter==0.25.2`) are pinned in `tooling/scripts/requirements.txt`. Bumps go through a calibration re-run against the 83 fixture pairs under `tooling/scripts/tests/fixtures/`.
 
 ## VSCode integration
 
-- `.vscode/settings.json` — `[java].editor.formatOnSave: false` (we do NOT use redhat.java's built-in format-on-save). `emeraldwalk.runonsave` instead invokes `format_file.py` on Java save, which runs JDT plus the override scripts in one pass with the correct ordering.
-- `.java-coding-standards/tooling/ide/java-formatter.xml` — Eclipse JDT formatter profile, also referenced by `java.format.settings.url` so redhat.java's manual "Format Document" command uses the same JDT rules even when invoked outside the orchestrator.
-- Why not let redhat.java do format-on-save? Running redhat.java + emeraldwalk both on save would invoke JDT twice (redundant) and complicate ordering. Single orchestrator invocation is cleaner.
+- `.vscode/settings.json` — `[java].editor.formatOnSave: false` (we do NOT use redhat.java's built-in format-on-save). `emeraldwalk.runonsave` instead invokes `format_file.py` on Java save.
+- Why not let redhat.java do format-on-save? The redhat.java extension doesn't implement the Senzing spec — running it on save would produce output the canonical formatter then has to rewrite. One invocation via `emeraldwalk.runonsave` is cleaner.
 
-## Running the pipeline
+## Running the formatter
 
 End-to-end:
 
 ```bash
-python3 .java-coding-standards/tooling/scripts/format_file.py        # bulk pass over src/main, src/test, src/demo
-python3 .java-coding-standards/tooling/scripts/format_file.py path/to/File.java   # single file
+# Bulk pass over the project's source roots (defaults: src/main/java,
+# src/test/java, src/demo/java when present).
+python3 .java-coding-standards/tooling/scripts/format_file.py
+
+# Format a specific directory tree.
+python3 .java-coding-standards/tooling/scripts/format_file.py src/main/java
+
+# Format a single file in place.
+python3 .java-coding-standards/tooling/scripts/format_file.py path/to/File.java
 ```
 
-Or run individual override scripts (skips the JDT pass):
+Output: one summary line — `Formatter: N files processed, M modified.` Exit code 0 on success (regardless of how many files were modified), 1 on parse errors, 2 on missing-file or import-error conditions.
+
+For inspecting a single file's formatted output without rewriting it:
 
 ```bash
-python3 .java-coding-standards/tooling/scripts/fix_allman_braces.py
-python3 .java-coding-standards/tooling/scripts/fix_javadoc_reflow.py
-python3 .java-coding-standards/tooling/scripts/fix_javadoc_inline_tags.py
-python3 .java-coding-standards/tooling/scripts/fix_javadoc_tags.py
-python3 .java-coding-standards/tooling/scripts/fix_need_braces.py
+# Print the formatted output to stdout.
+python3 .java-coding-standards/tooling/scripts/format_java.py --format path/to/File.java
+
+# Exit 1 if the file would be reformatted, 0 if compliant.
+python3 .java-coding-standards/tooling/scripts/format_java.py --format path/to/File.java --check
 ```
 
-Override-script behavior summary:
+## Upgrading from 0.2.x
 
-- `fix_allman_braces.py` — moves opening braces to Allman style for class/interface/enum/method/constructor definitions; splits `throws` clauses onto their own line. Includes a "Case 5" cleanup that re-aligns previously-buggy outputs from older script versions.
-- `fix_javadoc_reflow.py` — reflows plain Javadoc prose paragraphs (skips paragraphs that begin with `{@link}`/`<code>`/etc.).
-- `fix_javadoc_inline_tags.py` — reflows Javadoc paragraphs containing inline tags. Catches the cases `fix_javadoc_reflow.py` intentionally skips.
-- `fix_javadoc_tags.py` — reflows `@param`, `@return`, `@throws` tag descriptions.
-- `fix_need_braces.py` — fixes brace placement on `if` / `else` blocks. For a **standalone `if`** with a short-circuit body (`return`/`continue`/`break`/`throw`), collapses `if (cond)\n    body;` to a single line when it fits within 80 chars (Tier 1); otherwise braces are added (Tier 2). For non-short-circuit bodies (assignments, method calls), braces are always added — even on already-inline `if (cond) someVar = ...;` lines that checkstyle would otherwise allow. For `if`/`else` pairs, both branches are **always** braced.
+The 0.3.0 release replaced the previous JDT + six-script pipeline with the single in-process tree-sitter formatter described above. If your project is upgrading from 0.2.x:
 
-The scripts scan `src/main/java`, `src/test/java`, and `src/demo/java` if present. Use `--src-dirs` to override the default list and `--exclude` to skip globs (e.g. auto-generated files). For single-file mode, pass a file path as a positional argument.
+- `format_file.py` keeps the same CLI surface (positional paths, `--src-dirs`, `--exclude`, `--exclude-from`), so VSCode tasks, Claude Code hooks, and pre-commit configs continue to work.
+- A consumer's first post-upgrade run typically produces a sizeable one-time reformat because the new formatter is spec-compliant by construction. Commit that diff as a "format compliance" follow-up; a second run reports zero modifications (the idempotency gate).
+- Consumers should delete legacy artifacts after upgrading: `.claude/scripts/fix_*.py`, `.vscode/java-formatter.xml`, and any cached `~/.cache/senzing-jdt-formatter/` JDT JAR. The standards repo no longer ships any of those.
+- A JDK is no longer required to run the formatter. Only Python 3.10+ plus the runtime deps in `tooling/scripts/requirements.txt`.
 
 ## Full Reference
 
-See `.java-coding-standards/docs/java-coding-standards.md` for the complete standards document, including method declaration priority rules, ternary operator tiers, short-circuit conditional formatting, and the Claude prompt for formatting.
+See `.java-coding-standards/docs/java-coding-standards.md` for the complete standards document, including method declaration priority rules, ternary operator tiers, short-circuit conditional formatting, and the per-construct spec sections.
