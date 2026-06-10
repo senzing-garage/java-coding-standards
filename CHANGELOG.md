@@ -80,6 +80,102 @@ and this project adheres to
   ternary operator (`condition ? a : b`) still refuses — it
   has just its own multi-tier wrapping rules and lands in a
   later phase.
+- Phase 8c Robustness gates — fuzz harness + error-recovery.
+  New `tooling/scripts/tests/test_fuzz_corpus.py` exercises
+  the formatter against a real-world Java corpus and
+  verifies three properties for every file:
+    1. **Round-trip AST equivalence** — formatter output
+       re-parses to the same named-node-type sequence as
+       the input (modulo formatter-allowed normalizations
+       like `enum_body_declarations` and `block` brace
+       wrapping). Catches emitter bugs that would silently
+       change Java semantics.
+    2. **Idempotency** — `format(format(src)) == format
+       (src)`.
+    3. **Refusal cleanliness** — declined constructs raise
+       a typed exception with a diagnostic; never a
+       traceback into formatter internals.
+  Plus a six-case parametrized `test_broken_input_raises_-
+  value_error` for the error-recovery property: malformed
+  inputs (unterminated class body, malformed condition,
+  missing RHS, unbalanced parens, non-Java text) raise
+  `ValueError` cleanly; the empty input is a valid Java
+  program and formats to `b""`.
+  Default corpus: `senzing-commons-java/src/` (~106 files).
+  Set `SENZING_JAVA_FUZZ_CORPUS` to an absolute path to
+  fuzz against a different / larger corpus.
+
+  The fuzz harness surfaced **five real formatter bugs**
+  that landed alongside the harness in this phase:
+    - `_emit_variable_declarator` silently dropped C-style
+      array dimensions on the variable name
+      (`Class<?> params[] = ...` → `Class<?> params = ...`,
+      losing the array type). The grammar exposes those as
+      a `dimensions` named child of `variable_declarator`;
+      the emitter now dispatches it between the name and
+      the `=`.
+    - `_emit_variable_declarator` had a `value_is_multiline:
+      return` shortcut that skipped the inline-overflow
+      check. When the multi-line source value collapsed to
+      a long single line on first emission, the first pass
+      kept the over-80 line; the second pass (now seeing a
+      single-line value) correctly broke at `=`, causing
+      non-idempotency. Removed the shortcut; the overflow
+      check now runs regardless of `value_is_multiline`.
+    - `_emit_for_statement` chose the brace placement
+      based on source-row span, not on the formatter's
+      eventual rendered layout. When wrapping inside the
+      init / condition / update produced a multi-row
+      header from single-row source, the first pass emitted
+      same-line brace (wrong) and the second pass switched
+      to Allman (correct), causing non-idempotency. Now
+      snapshots emitter state before the header and
+      switches to Allman when `emitter.line_count` grew
+      during emission.
+    - `_emit_while_statement` had the same flaw for the
+      single-row-source path; applied the same
+      `line_count`-grew check.
+    - `_javadoc_is_prose_line` only recognized list-item
+      markers when `<li>` appeared at position 0 of the
+      content. The (common!) leading-indent variant
+      `*   <li>...` (extra spaces between `*` and `<li>`
+      for visual nesting under `<ol>` / `<ul>`) was
+      misclassified as prose; the following non-`<li>`
+      line got reflowed into the `<li>` paragraph. Fixed
+      by stripping leading whitespace before all the
+      structural-marker checks (`@`, `<li>`, block tags,
+      etc.).
+
+  One known non-idempotent file is `xfail`-marked in the
+  test:
+  `senzing-api-server/.../api/services/BulkDataSupport.java`
+  hits a method-chain wrap interaction the wrap-priority
+  engine doesn't yet handle cleanly. Documented in
+  `_KNOWN_NON_IDEMPOTENT` with a description; the day the
+  underlying limitation gets fixed the entry can be
+  deleted.
+
+  Verification across three corpora:
+
+  - **Default** (senzing-commons-java/src, 106 files):
+    453 tests pass.
+  - **sz-sdk-java/src** (284 files): 226 pass + 14
+    skipped (refusals).
+  - **senzing-api-server/src** (448 files): 613 pass + 6
+    skipped + 1 xfail (the documented method-chain case).
+
+  Calibration recon: 83/83 MATCH preserved.
+
+  pytest suite: 453 total — 235 baseline (format_java +
+  format_file) plus 218 fuzz cases against the default
+  corpus.
+
+  Out of scope (Phase 8d+):
+
+  - Performance gate: 100-file warm format < 10s.
+  - Method-chain wrap awareness (the BulkDataSupport.java
+    fix).
+  - Version bump + tag 0.3.0.
 - Phase 8b FAQ refresh for 0.3.0 architecture:
   - `docs/faqs/building/java-formatting-standards.md`
     rewritten — replaced the JDT + six-script "Formatter

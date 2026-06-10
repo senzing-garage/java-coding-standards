@@ -1397,21 +1397,32 @@ def _javadoc_is_prose_line(content: str) -> bool:
     `{@snippet ...}` fragments (the checkstyle ignorePattern
     excludes them from line-length checks), and CSOFF / CSON
     suppressors.
+
+    Source `* <li>` and `*   <li>` (any indented `<li>` —
+    `<li>` items are commonly indented past `* ` for visual
+    nesting under an `<ol>` or `<ul>`) both classify as list
+    items. The check strips leading whitespace before testing
+    for the structural marker, so a `<li>` line never gets
+    folded into a surrounding prose paragraph regardless of
+    its indent.
     """
     if not content:
         return False
-    if content.startswith("@"):
+    stripped = content.lstrip()
+    if stripped.startswith("@"):
         return False
-    if content.startswith("<li>"):
+    if stripped.startswith("<li>"):
         return False
     for tok in _JAVADOC_BLOCK_TOKENS:
-        if content.startswith(tok) and len(content) <= len(tok) + 4:
+        if stripped.startswith(tok) and (
+            len(stripped) <= len(tok) + 4
+        ):
             return False
-    if content == "*/":
+    if stripped == "*/":
         return False
-    if "{@snippet" in content or content.startswith('file="'):
+    if "{@snippet" in stripped or stripped.startswith('file="'):
         return False
-    if content.startswith("CSOFF") or content.startswith("CSON"):
+    if stripped.startswith("CSOFF") or stripped.startswith("CSON"):
         return False
     return True
 
@@ -2888,6 +2899,14 @@ def _emit_for_statement(
         _emit_node(emitter, source, body)
         return
 
+    # Single-row source: build the header inline. After
+    # emission, check whether wrapping inside the
+    # init / condition / update introduced any newlines —
+    # if so, switch the brace to Allman per the spec's
+    # "Brace Placement / Exception: Multi-Line Conditions"
+    # rule (the brace decision must reflect the FINAL
+    # rendered shape, not the source's input shape).
+    header_start = emitter.snapshot()
     emitter.write("for (")
     # `local_variable_declaration` includes its own trailing
     # `;`; bare-expression and missing-init paths need a
@@ -2908,8 +2927,15 @@ def _emit_for_statement(
     if update is not None:
         emitter.write(" ")
         _emit_node(emitter, source, update)
-    emitter.write(") ")
-    _emit_node(emitter, source, body)
+    emitter.write(")")
+    if emitter.line_count > header_start[0]:
+        # Header wrapped during emission → Allman brace.
+        emitter.newline()
+        emitter.write_indent()
+        _emit_node(emitter, source, body)
+    else:
+        emitter.write(" ")
+        _emit_node(emitter, source, body)
 
 
 def _emit_enhanced_for_statement(
@@ -2981,9 +3007,19 @@ def _emit_while_statement(
         emitter.write_indent()
         _emit_node(emitter, source, body)
     else:
+        # Single-row source: emit the condition inline and
+        # check whether wrapping inside it introduced newlines.
+        # If so, switch to Allman brace — the rendered output
+        # has a multi-row header even though the source didn't.
+        cond_start = emitter.snapshot()
         _emit_node(emitter, source, condition)
-        emitter.write(" ")
-        _emit_node(emitter, source, body)
+        if emitter.line_count > cond_start[0]:
+            emitter.newline()
+            emitter.write_indent()
+            _emit_node(emitter, source, body)
+        else:
+            emitter.write(" ")
+            _emit_node(emitter, source, body)
 
 
 def _emit_do_statement(
@@ -4496,6 +4532,16 @@ def _emit_variable_declarator(
             "shape unexpected."
         )
     _emit_node(emitter, source, name)
+    # C-style array dimensions placed AFTER the variable name
+    # (`Class<?> params[] = ...`, `int x[][] = ...`). Java allows
+    # this as an alternative to declaring dimensions on the type
+    # itself. The grammar exposes them as a `dimensions` named
+    # child of `variable_declarator`. Emitting them after the
+    # name preserves the source's array-typing.
+    for c in node.named_children:
+        if c.type == "dimensions":
+            _emit_node(emitter, source, c)
+            break
     if value is None:
         return
     # Wrap-priority for assignment: prefer the cleanest single-
@@ -4536,12 +4582,19 @@ def _emit_variable_declarator(
             return
 
     # Step 3 (and the multi-line-value path): emit inline and
-    # let the value handle its own wrap.
+    # let the value handle its own wrap. The overflow check
+    # runs regardless of `value_is_multiline` — if the value's
+    # final rendered form pushes any line past 80 chars,
+    # backtrack to the break-at-`=` shape. (An earlier version
+    # short-circuited on `value_is_multiline` without the
+    # overflow check, but the fuzz harness surfaced a non-
+    # idempotent case where the source had a multi-line ternary
+    # value that the formatter collapsed to a long single line:
+    # the first pass kept the long line, the second pass saw
+    # the now-single-line value and correctly broke at `=`.)
     saved = emitter.snapshot()
     emitter.write(" = ")
     _emit_node(emitter, source, value)
-    if value_is_multiline:
-        return
     inline_overflow = (
         emitter.last_lines_max_width(saved[0]) > _MAX_LINE
         or len(emitter._current) + 1 > _MAX_LINE
