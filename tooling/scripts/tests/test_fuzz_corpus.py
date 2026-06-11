@@ -32,18 +32,14 @@ by `test_parse_error_exits_nonzero` in `test_format_file.py`.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
 from conftest import resolve_java_corpus
 
-# Add tooling/scripts/ to path so we can import format_java.
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
+# `conftest.py` prepends tooling/scripts/ to sys.path at test
+# collection time, so `format_java` is importable here.
 import format_java
 
 

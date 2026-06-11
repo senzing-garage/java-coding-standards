@@ -24,7 +24,6 @@ available so a stripped-down checkout doesn't fail CI.
 from __future__ import annotations
 
 import statistics
-import sys
 import time
 from pathlib import Path
 
@@ -32,10 +31,8 @@ import pytest
 
 from conftest import resolve_java_corpus
 
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
+# `conftest.py` prepends tooling/scripts/ to sys.path at test
+# collection time, so `format_java` is importable here.
 import format_java
 
 

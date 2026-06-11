@@ -672,8 +672,12 @@ def _emit_class_declaration(
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.column > _MAX_LINE:
-        # Overflow — backtrack and rewrap.
+    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+        # Overflow — backtrack and rewrap. Use last_lines_max_width
+        # rather than just emitter.column so internal multi-line
+        # source-preservation (super_interfaces / type_parameters
+        # that span rows in the source) still triggers the wrap
+        # when any of those rendered lines exceeded 80 chars.
         emitter.restore(saved)
         _emit_class_header_wrapped(
             emitter,
@@ -1739,12 +1743,13 @@ def _emit_javadoc_block(
                 or _has_orphan_continuation(widths, desc_lines)
             )
             if not needs:
-                # Emit original lines verbatim.
+                # Emit original lines verbatim. `desc_lines` is
+                # guaranteed non-empty here — the `if not
+                # desc_lines: ... continue` guard above handled
+                # the empty case.
                 emitter.newline()
                 emitter.write(
                     star_prefix + tag_prefix + desc_lines[0]
-                    if desc_lines
-                    else star_prefix + tag_prefix.rstrip()
                 )
                 for k in range(1, len(desc_lines)):
                     emitter.newline()
