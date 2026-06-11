@@ -994,6 +994,68 @@ def _emit_parenthesized_expression(
     emitter.write(")")
 
 
+def _emit_method_header_wrapped(
+    emitter: Emitter,
+    source: bytes,
+    type_parameters_node: Node,
+    type_node: Node,
+    name_node: Node,
+    parameters_node: Node,
+    start_col: int,
+) -> None:
+    """Emit a method signature in the spec B11 wrapped form.
+
+    Used by `_emit_method_declaration` when the single-line
+    signature would exceed 80 chars due to a long generic-type
+    parameter list. The shape:
+
+        [modifiers] <T1,
+                ... TN>
+            RETURN_TYPE NAME(PARAMS)
+
+    The first type-parameter stays on the modifiers line right
+    after `<`. Subsequent type-parameters wrap to continuation
+    lines at `start_col + 4`. The closing `>` ends the last
+    type-parameter line. Then a newline + `start_col + 4` indent
+    drops to the return-type / name / parameters portion (so the
+    method header is multi-line and any following `throws` clause
+    or Allman opening brace can land independently per the
+    standard "multi-line condition → Allman brace" interaction).
+
+    Caller has already emitted the modifiers (if any). This
+    function appends the type-parameter list (with wrap) and the
+    return-type / name / parameters portion.
+    """
+    cont_indent = " " * (start_col + 4)
+    params = [
+        c for c in type_parameters_node.named_children
+        if c.type == "type_parameter"
+    ]
+    emitter.write("<")
+    for index, p in enumerate(params):
+        if index > 0:
+            emitter.write(",")
+            emitter.newline()
+            emitter.write(cont_indent)
+        _emit_node(emitter, source, p)
+    emitter.write(">")
+    emitter.newline()
+    emitter.write(cont_indent)
+    _emit_node(emitter, source, type_node)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
+    # Force a fresh emit of the parameter list with overflow-aware
+    # paren-alignment. JDT-source-preservation of the original
+    # signature would otherwise carry over JDT's far-paren-aligned
+    # continuation column, producing >80-char lines after the
+    # type-param wrap moved the signature to a new shorter column.
+    _emit_formal_parameters(
+        emitter, source, parameters_node,
+        force_wrap=True,
+        p3_indent_col=start_col + 8,
+    )
+
+
 def _emit_indented_member_list(
     emitter: Emitter, source: bytes, items: list[Node]
 ) -> None:
@@ -1081,12 +1143,28 @@ def _emit_method_declaration(
             "'parameters' — grammar shape unexpected."
         )
 
+    # Capture the method declaration's start column for the
+    # type-parameter wrap continuation indent. The wrap form
+    # places subsequent type-parameters and the return-type /
+    # name / parameters portion at `start_col + 4`.
+    start_col = emitter.column
+
     if modifiers_node is not None:
         # `_emit_modifiers` emits its own trailing space (for
         # keyword modifiers) or its own trailing newline +
         # indent (for annotation-only modifiers), so the
         # caller does not write a separator here.
         _emit_node(emitter, source, modifiers_node)
+
+    # Try-emit the single-line signature. If it overflows 80
+    # chars AND the method has type parameters, backtrack and
+    # emit the spec B11 wrapped form (type-parameter list
+    # multi-line, return-type/name/parameters on a continuation
+    # line). Without type parameters there's nothing to wrap on
+    # here — overflow caused by long parameter lists is a
+    # separate wrap (formal-parameters P2/P3/P4) not yet
+    # implemented.
+    saved = emitter.snapshot()
     if type_parameters_node is not None:
         # Per spec B11: `<T>` comes BEFORE the return type, with
         # a single space after the closing `>`.
@@ -1096,6 +1174,21 @@ def _emit_method_declaration(
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
     _emit_node(emitter, source, parameters_node)
+
+    if (
+        type_parameters_node is not None
+        and emitter.last_lines_max_width(saved[0]) > _MAX_LINE
+    ):
+        emitter.restore(saved)
+        _emit_method_header_wrapped(
+            emitter,
+            source,
+            type_parameters_node,
+            type_node,
+            name_node,
+            parameters_node,
+            start_col,
+        )
 
     # Per "Method and Constructor Declarations / Throws
     # Clause", `throws` goes on its own line single-indented
@@ -3785,16 +3878,46 @@ def _emit_interface_declaration(
     name = node.child_by_field_name("name")
     body = node.child_by_field_name("body")
 
+    # Capture the interface declaration's start column for the
+    # type-parameter-wrap continuation indent (single-indent past
+    # the interface start = start_col + 4). Mirrors the same
+    # bookkeeping in `_emit_class_declaration`.
+    start_col = emitter.column
+
     if modifiers_node is not None:
         _emit_node(emitter, source, modifiers_node)
     emitter.write("interface ")
     if name is not None:
         _emit_node(emitter, source, name)
+
+    # Try-emit the single-line interface header. If the result
+    # overflows 80 chars (long generic bounds, long extends
+    # clause, etc.), backtrack and emit with type-parameter wrap.
+    # Without this check, an over-80 header silently lands in the
+    # output and the consumer's checkstyle gate fails on LineLength.
+    saved = emitter.snapshot()
     if type_parameters_node is not None:
         _emit_node(emitter, source, type_parameters_node)
     if extends_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, extends_interfaces_node)
+    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+        emitter.restore(saved)
+        # Reuse the class-header wrap helper; interfaces have no
+        # `superclass` so pass `None` there. `extends_interfaces`
+        # plays the same trailing-clause role as `super_interfaces`
+        # — both are dispatched through `_emit_node`, which writes
+        # the correct keyword (`implements` vs `extends`) per the
+        # node type.
+        _emit_class_header_wrapped(
+            emitter,
+            source,
+            type_parameters_node,
+            None,
+            extends_interfaces_node,
+            start_col,
+        )
+
     emitter.newline()
     emitter.write_indent()
     emitter.write("{")
@@ -4034,28 +4157,38 @@ def _emit_throws(
 
 
 def _emit_formal_parameters(
-    emitter: Emitter, source: bytes, node: Node
+    emitter: Emitter, source: bytes, node: Node,
+    force_wrap: bool = False,
+    p3_indent_col: int | None = None,
 ) -> None:
     """Emit `(p1, p2, ...)`.
 
-    Single-line form for parameters whose source span fits on
-    one row. When the source has the parameter list spanning
-    multiple rows, the developer-authored multi-line layout
-    is preserved (paren-aligned continuation lines from
-    source) — the formatter does not collapse them.
+    Default behavior: source-preservation. When the source has
+    the parameter list spanning multiple rows, the developer-
+    authored multi-line layout is preserved verbatim; otherwise
+    a single-line emit.
 
-    The full four-priority wrapping rules from the "Method and
-    Constructor Declarations / Parameter Placement" spec
-    section (auto-wrap when single-line would overflow 80
-    chars, choose P1/P2/P3/P4 by width) land with later wrap-
-    priority phases. The current behavior is source-
-    preservation only.
+    `force_wrap=True` (used by `_emit_method_header_wrapped`)
+    overrides source-preservation and engages the spec's
+    parameter-wrap priority order (P1 single-line → P2 paren-
+    aligned with the first parameter → P3 next-line one-per-
+    line at `p3_indent_col`). Each priority is tried by
+    speculative emit; on overflow the buffer is restored and
+    the next priority emitted.
+
+    `p3_indent_col` (required when `force_wrap=True` AND the
+    parameter list is long enough that P2 paren-alignment would
+    itself overflow): the absolute column at which P3 places
+    each parameter line. Convention is `start_col + 8` — double-
+    indent from the method declaration's first non-modifier
+    column — matching the spec's "Method and Constructor
+    Declarations / Parameter Placement / P3" example.
 
     Receivers (`@This Foo this`) and varargs (`Type... name`)
     are not yet supported and will surface via dispatch
     refusals from the per-parameter / per-type emitters.
     """
-    if _node_spans_multiple_rows(node):
+    if not force_wrap and _node_spans_multiple_rows(node):
         # Preserve developer-authored multi-line params from
         # source. Includes opening `(` and closing `)`.
         emitter.write_raw_lines(_node_source_text(source, node))
@@ -4064,11 +4197,58 @@ def _emit_formal_parameters(
         c for c in node.children
         if c.type in ("formal_parameter", "spread_parameter")
     ]
+    if not force_wrap:
+        # Default single-line emit (caller's responsibility to
+        # have checked for overflow upstream).
+        emitter.write("(")
+        for index, param in enumerate(params):
+            if index > 0:
+                emitter.write(", ")
+            _emit_node(emitter, source, param)
+        emitter.write(")")
+        return
+    # P1: try single-line.
+    saved = emitter.snapshot()
     emitter.write("(")
+    paren_col = emitter.column
     for index, param in enumerate(params):
         if index > 0:
             emitter.write(", ")
         _emit_node(emitter, source, param)
+    emitter.write(")")
+    if emitter.last_lines_max_width(saved[0]) <= _MAX_LINE:
+        return
+    # P2: paren-aligned, one per line at paren_col.
+    emitter.restore(saved)
+    saved2 = emitter.snapshot()
+    emitter.write("(")
+    cont_p2 = " " * paren_col
+    for index, param in enumerate(params):
+        if index > 0:
+            emitter.write(",")
+            emitter.newline()
+            emitter.write(cont_p2)
+        _emit_node(emitter, source, param)
+    emitter.write(")")
+    if emitter.last_lines_max_width(saved2[0]) <= _MAX_LINE:
+        return
+    # P3: next-line, one per line at p3_indent_col. Falls back
+    # to paren_col when no p3_indent_col was supplied (the
+    # caller is presumably comfortable with the resulting layout
+    # — the formatter still emits the wrap so any remaining
+    # overflow surfaces as a checkstyle LineLength rather than
+    # silent under-formatting).
+    emitter.restore(saved2)
+    cont_p3 = " " * (
+        p3_indent_col if p3_indent_col is not None else paren_col
+    )
+    emitter.write("(")
+    for index, param in enumerate(params):
+        emitter.newline()
+        emitter.write(cont_p3)
+        _emit_node(emitter, source, param)
+        if index < len(params) - 1:
+            emitter.write(",")
     emitter.write(")")
 
 
