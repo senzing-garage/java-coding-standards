@@ -74,7 +74,7 @@ def _collect_java_files(corpus: Path) -> list[Path]:
 
 
 def _named_node_signature(tree) -> tuple[str, ...]:
-    """Walk the parse tree in preorder, emitting the `.type` of
+    """Walk the parse tree in pre-order, emitting the `.type` of
     every NAMED node. Excludes anonymous tokens (keywords,
     punctuation) — those reflect surface syntax differences
     that the formatter is allowed to normalize (e.g. blank-line

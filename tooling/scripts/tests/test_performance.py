@@ -6,8 +6,8 @@ in under 10 seconds warm (file-system cache hot, tree-sitter
 grammar already loaded).
 
 This test loads 100 .java files from a corpus, primes the
-caches by running one untimed warm-up pass, then times a
-second pass and asserts total wall-clock time under 10s. It
+caches by running one warm-up pass (not timed), then times
+a second pass and asserts total wall-clock time under 10s. It
 also reports the per-file median + p95 + max so a regression
 shows up as a clear printable metric rather than a single
 binary pass/fail.
@@ -78,7 +78,7 @@ def test_warm_format_100_files_under_10s(
 
     Reads all 100 files into memory first (so the timed loop
     measures pure formatter cost, not disk I/O), runs one
-    untimed warm-up pass to prime caches, then times the
+    warm-up pass (not timed) to prime caches, then times the
     second pass.
     """
     # Read source bytes once; the timed loop reuses the

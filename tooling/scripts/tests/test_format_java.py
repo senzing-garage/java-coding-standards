@@ -1635,13 +1635,13 @@ class TestFormatSourceSubset:
 
     def test_enum_constants_with_arguments(self) -> None:
         out = format_java.format_source(
-            b'enum E { ACTIVE("act"), INACTIVE("inact"); }'
+            b'enum E { ACTIVE("active"), INACTIVE("inactive"); }'
         )
         assert out == (
             b"enum E\n"
             b"{\n"
-            b'    ACTIVE("act"),\n'
-            b'    INACTIVE("inact");\n'
+            b'    ACTIVE("active"),\n'
+            b'    INACTIVE("inactive");\n'
             b"}\n"
         )
 

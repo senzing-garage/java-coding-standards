@@ -3587,8 +3587,8 @@ def _emit_enum_body_members(
     any non-constant members that follow. Per the existing
     spec convention, each non-private enum constant is
     typically preceded by a javadoc block — the grammar
-    exposes such javadocs as `block_comment` siblings of
-    `enum_constant` in the enum_body. Collect leading
+    exposes such Javadoc comments as `block_comment` siblings
+    of `enum_constant` in the enum_body. Collect leading
     comments and emit them above each constant.
 
     Caller emits the opening `{` and closing `}`.
@@ -4519,10 +4519,10 @@ def _emit_variable_declarator(
     current indent level (`indent_level * 4`) rather than
     the source's leading whitespace. This is correct because
     by the time `_emit_variable_declarator` is dispatched,
-    the caller (field_declaration / local_variable_declar-
-    ation) has already written the indent + modifiers +
-    type, so the emitter's column reflects the source's
-    "statement start + leading text".
+    the parent node (field_declaration or
+    local_variable_declaration) has already written the
+    indent + modifiers + type, so the emitter's column
+    reflects the source's "statement start + leading text".
     """
     name = node.child_by_field_name("name")
     value = node.child_by_field_name("value")
