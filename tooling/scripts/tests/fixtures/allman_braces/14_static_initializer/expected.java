@@ -1,6 +1,7 @@
 public class Foo
 {
-    static {
+    static
+    {
         register();
     }
 }

@@ -7,5 +7,7 @@ public class Foo
      *   b.doIt();
      * </pre>
      */
-    public class Foo {}
+    public class Foo
+    {
+    }
 }

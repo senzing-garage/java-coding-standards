@@ -1,8 +1,0 @@
-target/
-.classpath
-.project
-.settings/
-*.class
-# The JAR is published as a GitHub Release asset, never committed.
-# Local Maven builds drop one here for testing; never check it in.
-*.jar

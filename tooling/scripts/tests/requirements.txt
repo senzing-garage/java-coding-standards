@@ -5,6 +5,10 @@
 # Run with:
 #     pytest tooling/scripts/tests/
 #
-# CI installs this same file in the pytest workflow.
+# CI installs this same file in the pytest workflow. Pulls in the
+# runtime dependencies so the formatter under test has its
+# tree-sitter / tree-sitter-java imports available.
+
+-r ../requirements.txt
 
 pytest>=8.0

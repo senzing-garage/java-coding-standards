@@ -1,13 +1,15 @@
 public enum Foo
 {
-    ALPHA {
+    ALPHA
+    {
         @Override
         public String describe()
         {
             return "alpha";
         }
     },
-    BETA {
+    BETA
+    {
         @Override
         public String describe()
         {

@@ -23,6 +23,7 @@
     "ICLA",
     "ignorefile",
     "jacoco",
+    "javax",
     "jface",
     "keepends",
     "kernelsam",
@@ -44,8 +45,10 @@
     "switchstatements",
     "systemstubs",
     "temurin",
+    "Varargs",
     "virtualenv",
     "webcompere",
+    "wrappable",
     "Xshare",
     "xstream",
     "zizmor"

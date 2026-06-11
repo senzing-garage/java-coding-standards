@@ -44,9 +44,15 @@ Read enough of the project to choose the right branches in later steps:
 - **Existing standards artifacts**: look for any of:
   - `.claude/scripts/`, `.claude/faq_server.py`,
     `.claude/java-coding-standards.md`, `.claude/faqs/`
-  - `.vscode/java-formatter.xml`, `.vscode/settings.json`,
-    `.vscode/cspell.json`, `.vscode/tasks.json`,
-    `.vscode/extensions.json`
+  - `.vscode/settings.json`, `.vscode/cspell.json`,
+    `.vscode/tasks.json`, `.vscode/extensions.json`
+  - **Legacy 0.2.x artifacts** to clean up if present (the
+    0.3.0 release removed the JDT pipeline; consumers
+    adopting 0.3.0+ should not have these):
+    `.vscode/java-formatter.xml` (the old Eclipse formatter
+    profile), references to `fix_*.py` scripts in
+    `.vscode/tasks.json` or `.claude/settings.json` hooks,
+    `~/.cache/senzing-jdt-formatter/` cached JAR.
   - `checkstyle.xml`, `checkstyle-suppressions.xml`
   - `.mcp.json`
   - `.claude/CLAUDE.md` (always check; the merge in step 9 depends on
@@ -490,16 +496,31 @@ delete the local copies once the user confirms.
 
 Files to diff and remove (paths in the project root unless noted):
 
-- `.claude/scripts/fix_*.py` ↔ `.java-coding-standards/tooling/scripts/fix_*.py`
 - `.claude/faq_server.py` ↔ `.java-coding-standards/mcp/faq_server.py` (server is generalized; project-name strings will differ — that's expected)
 - `.claude/java-coding-standards.md` ↔ `.java-coding-standards/docs/java-coding-standards.md`
 - `.claude/faqs/<category>/<topic>.md` for each shared topic
   (`building/java-formatting-standards`, `building/javadoc-reflow-conventions`,
   `conventions/adding-new-faqs`, `testing/system-stubs-and-output-capture`)
   ↔ the submodule's `docs/faqs/...` versions
-- `.vscode/java-formatter.xml` ↔ `.java-coding-standards/tooling/ide/java-formatter.xml`
 - `checkstyle.xml` ↔ `.java-coding-standards/checkstyle/senzing-checkstyle.xml`
 - `checkstyle-suppressions.xml` ↔ `.java-coding-standards/checkstyle/senzing-checkstyle-suppressions.xml`
+
+**0.3.0 cleanup**: if a project is upgrading from the 0.2.x
+pipeline, these LEGACY paths should also be removed (no
+counterpart in the submodule anymore — the JDT JAR + override
+scripts + Eclipse profile were removed in the 0.3.0 release):
+
+- `.claude/scripts/fix_*.py` — six legacy override scripts.
+  Delete unconditionally; their behavior is subsumed by the
+  new in-process `format_java.py` formatter.
+- `.vscode/java-formatter.xml` — the Eclipse JDT formatter
+  profile. Delete unconditionally.
+- Any `~/.cache/senzing-jdt-formatter/` directory containing
+  cached JDT JARs. Delete unconditionally.
+- References to `fix_*.py` in `.vscode/tasks.json` keybindings
+  or `.claude/settings.json` hooks. Update to invoke
+  `format_file.py` instead (it now does the whole pipeline
+  in-process).
 
 For each file: if identical → safe to delete. If drift exists → show
 the diff to the user, ask whether the drift is project-specific (move
@@ -636,32 +657,33 @@ mvn test                                      # all tests pass
 python3 .java-coding-standards/tooling/scripts/format_file.py
 ```
 
-The orchestrator's expected output depends on the project's
+The formatter's expected output depends on the project's
 history with the format scripts:
 
-- **Project never ran any version of these scripts**, or last ran
-  them at the same SHA the submodule is now pinned to: 0
+- **Project never ran any version of these scripts**, or last
+  ran them at the same SHA the submodule is now pinned to: 0
   modifications. The codebase is already in steady-state
   compliance and subsequent runs are no-ops.
-- **Project ran an older version of the scripts in the past**
-  (e.g. the older copies at `.claude/scripts/` migrated away in
-  step 10): some files may be modified by the orchestrator on
-  this first post-adoption run. The bulk-format scripts evolve
-  over time — most notably, `fix_allman_braces.py` was corrected
-  to handle wrapped-condition Allman splits, and Case 5 of that
-  script automatically re-aligns previously-buggy outputs left
-  behind by older script versions. Treat the resulting diff as
-  expected work product: review it, commit it as a follow-up
-  "format compliance" commit, and confirm a second orchestrator
-  run reports 0 modifications (idempotency).
+- **Project ran the legacy 0.2.x pipeline** (JDT + six override
+  scripts) and is now upgrading to 0.3.0+: expect a sizeable
+  one-time reformat — the new AST formatter produces output
+  that's spec-compliant by construction, which can differ from
+  what the JDT pipeline produced (case-statement indent under
+  `switch`, method-call paren-alignment, etc.). Treat the
+  resulting diff as expected work product: review it, commit
+  it as a follow-up "format compliance" commit, and confirm a
+  second formatter run reports 0 modifications (idempotency).
+- **Project was last formatted at 0.3.0+ but the spec has
+  evolved**: some files may be modified for the new rules.
+  Same workflow — review, commit, confirm idempotency.
 
-Restart Claude Code at the end of the session so the FAQ MCP server
-re-indexes; verify by calling
+Restart Claude Code at the end of the session so the FAQ MCP
+server re-indexes; verify by calling
 `mcp__<project>-faq__get_faq_categories` after restart.
 
-If checkstyle violations surface, **don't auto-fix the source** — show
-them to the user, suggest running the bulk-format scripts (or the
-orchestrator), and let the user apply.
+If checkstyle violations surface, **don't auto-fix the source** —
+show them to the user, suggest running `format_file.py`, and
+let the user apply.
 
 ## Step 14 — Summarize
 

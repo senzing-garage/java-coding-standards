@@ -15,11 +15,19 @@ updates:
           - "senzing-factory/*"
     schedule:
       interval: "daily"
-  - package-ecosystem: "maven"
+  - package-ecosystem: "pip"
     assignees:
       - "barrycaceres"
     cooldown:
       default-days: 21
-    directory: "/tooling/jdt-formatter"
+    directory: "/tooling/scripts"
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "pip"
+    assignees:
+      - "barrycaceres"
+    cooldown:
+      default-days: 21
+    directory: "/tooling/scripts/tests"
     schedule:
       interval: "daily"

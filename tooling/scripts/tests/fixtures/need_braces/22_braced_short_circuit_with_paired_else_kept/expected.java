@@ -4,8 +4,7 @@ public class Foo
     {
         if (x == null) {
             return null;
-        }
-        else {
+        } else {
             return x.toString();
         }
     }

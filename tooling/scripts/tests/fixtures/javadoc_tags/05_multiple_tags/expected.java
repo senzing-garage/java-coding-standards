@@ -7,5 +7,8 @@ public class Foo
      * @param beta the beta value that drives the second phase
      * @return the combined result
      */
-    public int doThing(int alpha, int beta) { return 0; }
+    public int doThing(int alpha, int beta)
+    {
+        return 0;
+    }
 }

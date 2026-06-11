@@ -63,33 +63,28 @@ the FAQ:
 Run checkstyle: `mvn -Pcheckstyle validate` (must report `BUILD SUCCESS`
 before opening a PR).
 
-### Bulk formatting scripts
+### Bulk formatting
 
-Five scripts in `.java-coding-standards/tooling/scripts/` (run from project
-root) automate common reformat passes — useful for legacy code or batch
-updates, **not a substitute** for writing compliant code in the first
-place:
-
-- `python3 .java-coding-standards/tooling/scripts/fix_allman_braces.py`
-- `python3 .java-coding-standards/tooling/scripts/fix_javadoc_reflow.py`
-- `python3 .java-coding-standards/tooling/scripts/fix_javadoc_inline_tags.py`
-- `python3 .java-coding-standards/tooling/scripts/fix_javadoc_tags.py`
-- `python3 .java-coding-standards/tooling/scripts/fix_need_braces.py`
-
-For single-file reformatting (used by the VSCode keybinding and the Claude
-Code `PostToolUse` hook):
+`.java-coding-standards/tooling/scripts/format_file.py` is the
+single end-user entry point — a thin wrapper that invokes the
+tree-sitter-based AST formatter at `format_java.py` in-process.
+Accepts one or more file or directory targets (directories are
+recursively scanned for `.java` files):
 
 ```bash
+# Format a single file in place.
 python3 .java-coding-standards/tooling/scripts/format_file.py path/to/File.java
+
+# Format every .java file under src/main/java/ in place.
+python3 .java-coding-standards/tooling/scripts/format_file.py src/main/java
 ```
 
-The orchestrator runs all five scripts in canonical order against the
-single file.
-
-VSCode formatter config (`.java-coding-standards/tooling/ide/java-formatter.xml`)
-handles Allman for methods/types and same-line for control flow but cannot
-fully enforce all rules. The `building/java-formatting-standards` FAQ
-summarizes day-to-day usage.
+The same script is wired to the VSCode `Format Java file to
+Senzing standards` task, the `emeraldwalk.runonsave` extension
+(format-on-save), and the Claude Code `PostToolUse` hook — so
+every save runs the canonical formatter. Same input → same
+output, regardless of caller. The `building/java-formatting-
+standards` FAQ summarizes day-to-day usage.
 
 ## FAQ MCP Server
 
