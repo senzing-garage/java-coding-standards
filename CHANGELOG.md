@@ -10,7 +10,7 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-05-26
+## [0.3.0] - 2026-06-11
 
 The architectural cutover from the JDT + six-script pipeline
 to a pure-Python AST-based formatter built on
