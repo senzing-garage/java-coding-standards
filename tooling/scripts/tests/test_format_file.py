@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 import format_file
+from format_java import format_source
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
@@ -48,7 +49,8 @@ def test_unchanged_file_preserves_mtime(tmp_path: Path) -> None:
         "public class Foo\n"
         "{\n"
         "    int x = 1;\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
     # Set a known mtime in the past so we can check restoration.
     past = time.time() - 3600
@@ -74,7 +76,8 @@ def test_changed_file_rewritten(tmp_path: Path) -> None:
         "package com.foo;\n\n"
         "public class Foo {\n"
         "    int x = 1;\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
 
     result = _run_format_file(str(java))
@@ -93,7 +96,8 @@ def test_refused_file_exits_zero(tmp_path: Path) -> None:
     java.write_text(
         "module com.foo {\n"
         "    requires java.base;\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
 
     result = _run_format_file(str(java))
@@ -106,7 +110,9 @@ def test_parse_error_exits_nonzero(tmp_path: Path) -> None:
     # Genuine Java syntax errors fail the run (exit 1) so CI
     # surfaces them rather than silently overwriting source.
     java = tmp_path / "Broken.java"
-    java.write_text("public class Broken { ; ; ; nope")
+    java.write_text(
+        "public class Broken { ; ; ; nope", encoding="utf-8"
+    )
 
     result = _run_format_file(str(java))
     assert result.returncode == 1
@@ -120,7 +126,8 @@ def test_multiple_files_aggregated(tmp_path: Path) -> None:
             f"public class F{i}\n"
             f"{{\n"
             f"    int x = {i};\n"
-            f"}}\n"
+            f"}}\n",
+            encoding="utf-8",
         )
 
     result = _run_format_file(str(tmp_path))
@@ -151,7 +158,7 @@ def test_restore_mtime_warns_on_oserror(
     # When os.utime fails (e.g. read-only fs), the helper warns
     # but doesn't crash.
     java = tmp_path / "Foo.java"
-    java.write_text("class A {}\n")
+    java.write_text("class A {}\n", encoding="utf-8")
 
     def boom(*args: object, **kwargs: object) -> None:
         raise PermissionError("read-only")
@@ -165,15 +172,12 @@ def test_restore_mtime_warns_on_oserror(
 
 def test_format_one_changed(tmp_path: Path) -> None:
     # Unit-test the helper directly for the CHANGED path.
-    # `conftest.py` already prepends SCRIPTS_DIR to sys.path
-    # at collection time, so `format_java` is importable here.
-    from format_java import format_source  # type: ignore
-
     java = tmp_path / "Foo.java"
     java.write_text(
         "public class Foo {\n"
         "    int x = 1;\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
     outcome = format_file._format_one(java, format_source)
     assert outcome == "changed"
@@ -184,14 +188,13 @@ def test_format_one_changed(tmp_path: Path) -> None:
 def test_format_one_unchanged_restores_mtime(
     tmp_path: Path,
 ) -> None:
-    from format_java import format_source  # type: ignore
-
     java = tmp_path / "Foo.java"
     java.write_text(
         "public class Foo\n"
         "{\n"
         "    int x = 1;\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
     past = time.time() - 7200
     os.utime(java, (past, past))

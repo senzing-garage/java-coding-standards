@@ -37,7 +37,6 @@ regardless of whether any were modified), non-zero on errors.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import os
 import sys

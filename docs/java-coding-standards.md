@@ -607,9 +607,9 @@ public class AVeryLongClassName<T1 extends Bar,
 ```
 
 **Priority 3:** push the entire `<...>` to its own line
-single-indented, with each type parameter on its own line at the
-single-indent column. Class name remains on the original line;
-Allman brace:
+double-indented (8 spaces from the class declaration), with
+each type parameter on its own line at the double-indent
+column. Class name remains on the original line; Allman brace:
 
 ```java
 public class AVeryLongClassName<

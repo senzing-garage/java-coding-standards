@@ -45,8 +45,10 @@
     "switchstatements",
     "systemstubs",
     "temurin",
+    "Varargs",
     "virtualenv",
     "webcompere",
+    "wrappable",
     "Xshare",
     "xstream",
     "zizmor"

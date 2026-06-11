@@ -648,6 +648,12 @@ class TestFormatSourceSubset:
         # line; remainder packed onto continuation at +4.
         # (Exact column depends on the value's start column,
         # which here is after `String s = ` at column 15.)
+        # Substring check (rather than exact equality on the
+        # whole output) is deliberate: this test pins the
+        # wrap-relevant fragment only, leaving the surrounding
+        # column choice — which the wrap-priority engine may
+        # legitimately adjust — free to drift without
+        # triggering an unrelated failure.
         assert b'        + "beta"' in out
 
     def test_method_call_without_receiver(self) -> None:

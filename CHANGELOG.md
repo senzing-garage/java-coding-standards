@@ -1432,47 +1432,6 @@ reverse-chronological from Phase 8d.
   they described the JDT-pipeline-plus-six-override-scripts
   architecture that 0.3.0 supersedes.
 
-### Notes
-
-These entries are the in-progress work on the
-`caceres-abandon-jdt-1` branch for the 0.3.0 release. Phase 1
-(spec doc), Phase 2a (scaffolding), Phase 2b (token-stream
-emission), Phase 2c (minimal structural emitters), Phase 2d
-(keyword modifiers), Phase 2e (expression emitters —
-binary / unary / update / parenthesized), Phase 2f
-(single-line expression operations — field access, method
-invocation, cast, instanceof), Phase 2g (method declarations
-with empty bodies, formal parameters, array-type parameter
-types), Phase 2h (statement emitters in method bodies —
-return / expression-statement / local-variable-declaration /
-assignment-expression), Phase 2i (if/else control flow —
-block emitter, if-with-block, cuddled else, else-if chains),
-Phase 2j (loop statements — classic for, enhanced-for,
-while, do-while with cuddled `} while`), Phase 2k
-(try/catch/finally with multi-catch, all clauses cuddled
-per "Closing Brace Rules"), Phase 2l (throw / break /
-continue / labeled statements), Phase 2m (ternary,
-object-creation, and generic types), Phase 2n
-(annotations on classes / fields / methods, with marker
-and arg-bearing forms), Phase 2o (line + block
-comment verbatim emission, no reflow yet), Phase 2p
-(throws clauses on method declarations, single-line form),
-Phase 2q (short-circuit Tier 1 collapse and brace
-synthesis for if-statements), Phase 2r (constructor
-declarations and static initializers, both with Allman
-braces per spec), Phase 2s (interface declarations
-and abstract method declarations), Phase 2t (type-use
-annotations via annotated_type), Phase 2u (wildcard
-and enum declarations), and Phase 2v (lambda
-expressions, single-line form) have landed, but
-`format_java.py` is not yet wired into the format-on-save /
-pre-commit hook — the legacy JDT-plus-six-script pipeline at
-`format_file.py` is still the active entry point. FAQ refresh
-and adoption-template updates are held back until the commit
-that removes JDT and activates `format_java.py`, so every
-committed snapshot on this branch has an internally-consistent
-FAQ-vs-code state.
-
 ## [0.2.8] - 2026-05-05
 
 **Note:** Net-pipeline summary line + mtime preservation on

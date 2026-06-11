@@ -208,6 +208,11 @@ def test_broken_input_raises_value_error(
 # fixed the corresponding entry can be deleted and the test
 # automatically tightens.
 _KNOWN_NON_IDEMPOTENT = (
+    # TODO(0.4.0): remove once the method-chain wrap rework
+    # (a WrapContext-aware emitter, planned alongside spec A2
+    # blank-line enforcement and the _emit_binary_expression
+    # raw-source-path cleanup) lands.
+    #
     # Deeply-chained method-call assignment where the chain
     # wraps in a way that makes the inline vs break-at-`=`
     # decision unstable between passes.

@@ -990,6 +990,38 @@ def _emit_parenthesized_expression(
     emitter.write(")")
 
 
+def _emit_indented_member_list(
+    emitter: Emitter, source: bytes, items: list[Node]
+) -> None:
+    """Emit each item in `items` on its own line at +1 indent
+    relative to the caller's current level, preserving
+    source-authored blank lines between consecutive items
+    (clamped at one per spec A2).
+
+    Used for the bodies of method / constructor / compact-
+    constructor / static-initializer declarations and switch-
+    block cases — all of which place each child on its own
+    line, with at most one blank between consecutive children
+    when the source had at least one between them.
+
+    No-op when `items` is empty (caller still emits the
+    enclosing `{ }`).
+    """
+    if not items:
+        return
+    emitter.push_indent()
+    prev: Node | None = None
+    for item in items:
+        if prev is not None:
+            if item.start_point[0] - prev.end_point[0] > 1:
+                emitter.newline()
+        emitter.write_indent()
+        _emit_node(emitter, source, item)
+        emitter.newline()
+        prev = item
+    emitter.pop_indent()
+
+
 def _emit_method_declaration(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1094,21 +1126,9 @@ def _emit_method_declaration(
     emitter.write_indent()
     emitter.write("{")
     emitter.newline()
-
-    statements = list(body.named_children)
-    if statements:
-        emitter.push_indent()
-        prev_stmt: Node | None = None
-        for stmt in statements:
-            if prev_stmt is not None:
-                if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
-                    emitter.newline()
-            emitter.write_indent()
-            _emit_node(emitter, source, stmt)
-            emitter.newline()
-            prev_stmt = stmt
-        emitter.pop_indent()
-
+    _emit_indented_member_list(
+        emitter, source, list(body.named_children)
+    )
     emitter.write_indent()
     emitter.write("}")
     # Caller appends the trailing newline.
@@ -2274,18 +2294,7 @@ def _emit_switch_block(
     ]
     emitter.write("{")
     emitter.newline()
-    if cases:
-        emitter.push_indent()
-        prev: Node | None = None
-        for case in cases:
-            if prev is not None:
-                if case.start_point[0] - prev.end_point[0] > 1:
-                    emitter.newline()
-            emitter.write_indent()
-            _emit_node(emitter, source, case)
-            emitter.newline()
-            prev = case
-        emitter.pop_indent()
+    _emit_indented_member_list(emitter, source, cases)
     emitter.write_indent()
     emitter.write("}")
 
@@ -2389,11 +2398,20 @@ def _emit_switch_label(
 def _emit_yield_statement(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `yield VALUE;` (Java 14+ switch-expression yield)."""
+    """Emit `yield VALUE;` (Java 14+ switch-expression yield).
+
+    `yield` always requires a value in valid Java — bare `yield;`
+    is semantically invalid even though tree-sitter's error-
+    tolerant grammar may accept it. Refuse rather than emit
+    broken output so the caller sees a clear diagnostic.
+    """
     children = list(node.named_children)
     if not children:
-        emitter.write("yield;")
-        return
+        raise NotImplementedError(
+            "yield_statement missing value — bare `yield;` is "
+            "semantically invalid Java; the input likely has a "
+            "syntax error the grammar recovered past."
+        )
     emitter.write("yield ")
     for c in children:
         _emit_node(emitter, source, c)
@@ -2479,19 +2497,9 @@ def _emit_compact_constructor_declaration(
     emitter.write_indent()
     emitter.write("{")
     emitter.newline()
-    statements = list(body.named_children)
-    if statements:
-        emitter.push_indent()
-        prev: Node | None = None
-        for stmt in statements:
-            if prev is not None:
-                if stmt.start_point[0] - prev.end_point[0] > 1:
-                    emitter.newline()
-            emitter.write_indent()
-            _emit_node(emitter, source, stmt)
-            emitter.newline()
-            prev = stmt
-        emitter.pop_indent()
+    _emit_indented_member_list(
+        emitter, source, list(body.named_children)
+    )
     emitter.write_indent()
     emitter.write("}")
 
@@ -2535,14 +2543,10 @@ def _emit_explicit_constructor_invocation(
     constructor in the same class or the superclass.
 
     Grammar exposes either a `this` or `super` keyword as a
-    named child followed by an `argument_list`. The trailing
-    `;` is part of the node's source span (emitted by us
-    since the constructor body's statement loop expects each
-    statement to write its own terminator? — actually let me
-    check). Looking at the existing statement handling, the
-    block emitter iterates named children and adds newline
-    after each. The statement nodes (return, throw, etc.)
-    write their own `;`. We do the same here.
+    named child followed by an `argument_list`. Per the
+    statement-emission contract (each statement writes its
+    own trailing terminator), this emitter writes the closing
+    `;` itself.
     """
     keyword = None
     args = None
@@ -3882,21 +3886,9 @@ def _emit_constructor_declaration(
     emitter.write_indent()
     emitter.write("{")
     emitter.newline()
-
-    statements = list(body.named_children)
-    if statements:
-        emitter.push_indent()
-        prev_stmt: Node | None = None
-        for stmt in statements:
-            if prev_stmt is not None:
-                if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
-                    emitter.newline()
-            emitter.write_indent()
-            _emit_node(emitter, source, stmt)
-            emitter.newline()
-            prev_stmt = stmt
-        emitter.pop_indent()
-
+    _emit_indented_member_list(
+        emitter, source, list(body.named_children)
+    )
     emitter.write_indent()
     emitter.write("}")
     # Caller appends the trailing newline.
@@ -3933,21 +3925,9 @@ def _emit_static_initializer(
     emitter.write_indent()
     emitter.write("{")
     emitter.newline()
-
-    statements = list(block.named_children)
-    if statements:
-        emitter.push_indent()
-        prev_stmt: Node | None = None
-        for stmt in statements:
-            if prev_stmt is not None:
-                if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
-                    emitter.newline()
-            emitter.write_indent()
-            _emit_node(emitter, source, stmt)
-            emitter.newline()
-            prev_stmt = stmt
-        emitter.pop_indent()
-
+    _emit_indented_member_list(
+        emitter, source, list(block.named_children)
+    )
     emitter.write_indent()
     emitter.write("}")
     # Caller appends the trailing newline.
@@ -4336,14 +4316,13 @@ def _emit_argument_list(
           single-indent (4 spaces) past the call's
           statement start.
 
-    Current implementation: P1 + P2 fully supported using
-    source-text widths. P3 and P4 lands with later phases as
-    fixtures surface them; this emitter falls back to P2
-    behavior even for cases that would technically require
-    P3/P4, leaving an over-80 line that the C1 emit+warn
-    behavior will eventually flag. The current corpus has
-    only P2 cases plus one P4 case (string-concat arg)
-    that's addressed in Phase 5e.
+    Current implementation: P1, P2, and P4 are implemented;
+    the multi-line source-preservation path (when the source
+    already wraps to multiple rows) covers cases that would
+    otherwise need P3 by emitting the developer-authored
+    layout verbatim. P3-via-explicit-emission (paren-aligned
+    one-per-line, generated rather than preserved) lands
+    when a fixture surfaces it.
     """
     args = [c for c in node.children if c.is_named]
     if not args:
@@ -4784,6 +4763,7 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
     # canonical form; emit verbatim.
     "scoped_type_identifier": _emit_verbatim,
 }
+
 
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     """Dispatch a single node to its registered emitter.
