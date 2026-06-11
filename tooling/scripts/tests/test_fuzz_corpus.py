@@ -32,11 +32,12 @@ by `test_parse_error_exits_nonzero` in `test_format_file.py`.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 import pytest
+
+from conftest import resolve_java_corpus
 
 # Add tooling/scripts/ to path so we can import format_java.
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
@@ -44,28 +45,6 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import format_java
-
-
-def _resolve_corpus() -> Path | None:
-    """Locate a Java corpus to fuzz against.
-
-    Precedence:
-        1. `SENZING_JAVA_FUZZ_CORPUS` env var (must exist).
-        2. `senzing-commons-java/src/` two levels up from this
-           submodule — the consumer project's source tree, used
-           by default during development.
-    """
-    env = os.environ.get("SENZING_JAVA_FUZZ_CORPUS")
-    if env:
-        p = Path(env)
-        return p if p.is_dir() else None
-    # The submodule lives at `<consumer>/.java-coding-standards/`;
-    # the consumer's source is at `<consumer>/src/`.
-    submodule = Path(__file__).resolve()
-    # tests/ → scripts/ → tooling/ → submodule root → consumer root
-    consumer_root = submodule.parents[4]
-    src = consumer_root / "src"
-    return src if src.is_dir() else None
 
 
 def _collect_java_files(corpus: Path) -> list[Path]:
@@ -125,7 +104,7 @@ def _named_node_signature(tree) -> tuple[str, ...]:
     return tuple(out)
 
 
-_CORPUS = _resolve_corpus()
+_CORPUS = resolve_java_corpus()
 _FILES = _collect_java_files(_CORPUS) if _CORPUS else []
 
 
@@ -177,7 +156,9 @@ def test_round_trip_ast_equivalence(java_file: Path) -> None:
         # must raise `ValueError` (parse error) cleanly rather
         # than crash with a Python traceback or, worse, silently
         # produce garbled output that would overwrite the source
-        # in `--write` mode.
+        # in `--write` mode. (Empty input is valid Java — covered
+        # by `test_empty_input_yields_empty_output` in
+        # `test_format_java.py`.)
         pytest.param(
             b"public class Broken { ; ; ; nope",
             id="unterminated-class-body",
@@ -195,10 +176,6 @@ def test_round_trip_ast_equivalence(java_file: Path) -> None:
             id="unbalanced-parens",
         ),
         pytest.param(
-            b"",
-            id="empty-input",
-        ),
-        pytest.param(
             b"this is not java at all",
             id="not-java",
         ),
@@ -210,15 +187,7 @@ def test_broken_input_raises_value_error(
     """The formatter must REFUSE syntactically invalid input
     via a typed exception — never produce output that could
     silently overwrite a user's file in `--write` mode.
-
-    Empty input is the lone exception: an empty Java file is
-    LEGAL (tree-sitter parses it to an empty program), so it
-    formats to `b""` cleanly.
     """
-    if not broken_source.strip():
-        # Empty file is valid Java.
-        assert format_java.format_source(broken_source) == b""
-        return
     with pytest.raises(ValueError):
         format_java.format_source(broken_source)
 

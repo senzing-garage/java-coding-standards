@@ -80,7 +80,7 @@ def test_changed_file_rewritten(tmp_path: Path) -> None:
     result = _run_format_file(str(java))
     assert result.returncode == 0, result.stderr
 
-    after = java.read_text()
+    after = java.read_text(encoding="utf-8")
     assert "public class Foo\n{\n" in after
     assert "1 modified" in result.stdout
 
@@ -165,7 +165,8 @@ def test_restore_mtime_warns_on_oserror(
 
 def test_format_one_changed(tmp_path: Path) -> None:
     # Unit-test the helper directly for the CHANGED path.
-    sys.path.insert(0, str(SCRIPTS_DIR))
+    # `conftest.py` already prepends SCRIPTS_DIR to sys.path
+    # at collection time, so `format_java` is importable here.
     from format_java import format_source  # type: ignore
 
     java = tmp_path / "Foo.java"
@@ -176,14 +177,13 @@ def test_format_one_changed(tmp_path: Path) -> None:
     )
     outcome = format_file._format_one(java, format_source)
     assert outcome == "changed"
-    after = java.read_text()
+    after = java.read_text(encoding="utf-8")
     assert "public class Foo\n{\n" in after
 
 
 def test_format_one_unchanged_restores_mtime(
     tmp_path: Path,
 ) -> None:
-    sys.path.insert(0, str(SCRIPTS_DIR))
     from format_java import format_source  # type: ignore
 
     java = tmp_path / "Foo.java"

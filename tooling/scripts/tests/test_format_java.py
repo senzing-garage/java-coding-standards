@@ -649,6 +649,7 @@ class TestFormatSourceSubset:
         # (Exact column depends on the value's start column,
         # which here is after `String s = ` at column 15.)
         assert b'        + "beta"' in out
+
     def test_method_call_without_receiver(self) -> None:
         # Method call with no `object` field — bare
         # method(args) form (typical for same-class methods or

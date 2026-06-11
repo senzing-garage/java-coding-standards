@@ -50,6 +50,20 @@ for 0.3.0:
 - `module_declaration` / `module-info.java` (no consumer
   project uses Java modules; a B-series spec section can be
   added later).
+- Java text blocks (triple-quoted string literals) inside an
+  indented context (i.e. appearing as a value inside a class
+  or method body). The emitter refuses these with
+  `NotImplementedError` so they surface a clear "not yet
+  supported" diagnostic rather than emit mis-aligned output.
+  Text blocks at top-level positions that re-indent cleanly
+  still format. Indented-context support lands in a later
+  release alongside spec B4 full enforcement.
+
+Blank-line counts between class members are preserved from
+the source (clamped at one) rather than rewritten to match the
+spec A2 table. In practice consumer code already follows A2,
+so this matches in calibration; strict A2 spec-enforcement is
+planned for a later release.
 
 CLI
 ---
@@ -113,13 +127,19 @@ def _load_java_language() -> Language:
 # Module-level singletons. The Parser is reusable across files;
 # constructing it is cheap but happens once at import time so
 # downstream code can call `parse_source` without setup ceremony.
-# Note: tree_sitter.Parser is NOT documented as safe to share
-# across threads — today's tests run in-process and sequentially,
-# which is fine. When emitter tests start using pytest-xdist or
-# any parallel scheme, either construct the parser per-thread or
-# guard this singleton.
+# TODO(thread-safety): tree_sitter.Parser is NOT documented as
+# safe to share across threads. Today's tests run in-process and
+# sequentially, which is fine. If `format_java` ever runs under
+# `pytest-xdist`, a parallel batch formatter, or an in-process
+# web service, replace `_PARSER` with a `threading.local()` lazy
+# wrapper that constructs one `Parser(JAVA_LANGUAGE)` per thread,
+# or guard `parse_source` with a `threading.Lock`.
 JAVA_LANGUAGE: Final[Language] = _load_java_language()
 _PARSER: Final[Parser] = Parser(JAVA_LANGUAGE)
+
+# Spec line-length limit. Used throughout the wrap-priority
+# engine and the javadoc-reflow helpers.
+_MAX_LINE: Final[int] = 80
 
 
 def parse_source(source: bytes | bytearray) -> Tree:
@@ -1379,13 +1399,38 @@ def _emit_if_statement(
             _emit_branch_as_block(emitter, source, alternative)
 
 
-_MAX_LINE: Final[int] = 80
-
 _JAVADOC_BLOCK_TOKENS: Final[tuple[str, ...]] = (
     "<p>", "<pre>", "</pre>", "<ul>", "</ul>", "<ol>", "</ol>",
     "<table>", "</table>", "<tr>", "</tr>", "<td>", "</td>",
     "<th>", "</th>",
 )
+
+
+def _looks_like_snippet_file_attr(stripped: str) -> bool:
+    """Return True when `stripped` looks like a `file="..."`
+    attribute line in a `{@snippet}` directive (and therefore
+    should NOT be reflowed as prose).
+
+    Tightens the bare `startswith('file="')` check: a real
+    snippet attribute is followed by snippet termination
+    (closing `}`), another snippet attribute (`lang=`,
+    `region=`, `id=`), or end-of-line. A prose sentence that
+    begins `file="foo.txt" is the config...` continues with
+    English text and is correctly classified as prose.
+    """
+    if not stripped.startswith('file="'):
+        return False
+    close = stripped.find('"', len('file="'))
+    if close < 0:
+        return False
+    after = stripped[close + 1:].lstrip()
+    if not after:
+        return True
+    if after.startswith("}"):
+        return True
+    return any(
+        kw in after for kw in ("lang=", "region=", "id=")
+    )
 
 
 def _javadoc_is_prose_line(content: str) -> bool:
@@ -1420,7 +1465,9 @@ def _javadoc_is_prose_line(content: str) -> bool:
             return False
     if stripped == "*/":
         return False
-    if "{@snippet" in stripped or stripped.startswith('file="'):
+    if "{@snippet" in stripped:
+        return False
+    if _looks_like_snippet_file_attr(stripped):
         return False
     if stripped.startswith("CSOFF") or stripped.startswith("CSON"):
         return False
@@ -1472,6 +1519,32 @@ def _emit_javadoc_sub_paragraph(
             emitter.write(prefix + pl)
 
 
+def _has_orphan_continuation(
+    line_widths: list[int],
+    lines: list[str],
+    cap: int = _MAX_LINE,
+) -> bool:
+    """Return True iff any line in the paragraph is short enough
+    that the first word of the next line would have fit on it
+    (with one space). `line_widths` is the rendered width of
+    each line including its prefix; `lines` are the un-prefixed
+    contents used to extract the next line's first word.
+
+    Shared by `_javadoc_needs_reflow` (uniform-prefix prose
+    paragraphs) and the @tag-continuation reflow decision in
+    `_emit_javadoc_block` (variable-prefix descriptions where
+    the first line sits at `* @tag NAME ` and continuations
+    sit at the continuation column).
+    """
+    for i in range(len(line_widths) - 1):
+        next_words = lines[i + 1].split()
+        if not next_words:
+            continue
+        if line_widths[i] + 1 + len(next_words[0]) <= cap:
+            return True
+    return False
+
+
 def _javadoc_needs_reflow(
     lines: list[str], prefix: str
 ) -> bool:
@@ -1484,21 +1557,10 @@ def _javadoc_needs_reflow(
     verbatim — leaving developer-authored linebreaks alone.
     """
     max_content = _MAX_LINE - len(prefix)
-    # Any overlong line forces reflow.
-    for line in lines:
-        if len(line) > max_content:
-            return True
-    # Orphan-continuation check: any line whose successor's first
-    # word would fit on it (with one space between) indicates an
-    # awkward break that reflow would fix.
-    for i in range(len(lines) - 1):
-        next_words = lines[i + 1].split()
-        if not next_words:
-            continue
-        first_word = next_words[0]
-        if len(lines[i]) + 1 + len(first_word) <= max_content:
-            return True
-    return False
+    if any(len(line) > max_content for line in lines):
+        return True
+    widths = [len(prefix) + len(line) for line in lines]
+    return _has_orphan_continuation(widths, lines)
 
 
 def _emit_javadoc_block(
@@ -1642,61 +1704,20 @@ def _emit_javadoc_block(
                 emitter.write(star_prefix + tag_prefix.rstrip())
                 i = j
                 continue
-            # Decide whether to reflow. First-line max accounts
-            # for the `@tag NAME ` prefix; subsequent lines use
-            # the continuation prefix. Reflow if any line
-            # overflows OR there is an orphan continuation.
-            needs = False
-            if len(desc_lines) == 1:
-                # Single line — only reflow if overlong.
-                if (
-                    full_tag_col + len(desc_lines[0])
-                    > _MAX_LINE
-                ):
-                    needs = True
-            else:
-                # First-line ceiling = MAX - full_tag_col.
-                if (
-                    full_tag_col + len(desc_lines[0])
-                    > _MAX_LINE
-                ):
-                    needs = True
-                else:
-                    # Continuation lines under their narrower
-                    # max; orphan check uses the same width as
-                    # the first line for the first transition.
-                    cont_max = _MAX_LINE - len(cont_prefix)
-                    for k in range(1, len(desc_lines)):
-                        if len(desc_lines[k]) > cont_max:
-                            needs = True
-                            break
-                    if not needs:
-                        # Orphan check across each pair.
-                        # Line 0 uses full_tag_col, others use
-                        # cont_prefix.
-                        for k in range(len(desc_lines) - 1):
-                            this_len = (
-                                full_tag_col
-                                + len(desc_lines[k])
-                                if k == 0
-                                else len(cont_prefix)
-                                + len(desc_lines[k])
-                            )
-                            next_words = desc_lines[k + 1].split()
-                            if not next_words:
-                                continue
-                            first_word = next_words[0]
-                            cap = (
-                                _MAX_LINE
-                                if k == 0
-                                else _MAX_LINE
-                            )
-                            if (
-                                this_len + 1 + len(first_word)
-                                <= cap
-                            ):
-                                needs = True
-                                break
+            # Decide whether to reflow. The first description
+            # line sits at `* @tag NAME ` (column = full_tag_col);
+            # continuation lines sit at the continuation column
+            # (= len(cont_prefix)). Reflow when any rendered line
+            # would overflow 80 chars OR there's an orphan
+            # continuation (the shared `_has_orphan_continuation`
+            # helper handles the variable-prefix case).
+            widths = [full_tag_col + len(desc_lines[0])]
+            for k in range(1, len(desc_lines)):
+                widths.append(len(cont_prefix) + len(desc_lines[k]))
+            needs = (
+                any(w > _MAX_LINE for w in widths)
+                or _has_orphan_continuation(widths, desc_lines)
+            )
             if not needs:
                 # Emit original lines verbatim.
                 emitter.newline()
@@ -3557,12 +3578,16 @@ def _emit_enum_declaration(
 
     name = node.child_by_field_name("name")
     body = node.child_by_field_name("body")
+    if name is None:
+        raise NotImplementedError(
+            "enum_declaration missing 'name' field — grammar "
+            "shape unexpected."
+        )
 
     if modifiers_node is not None:
         _emit_node(emitter, source, modifiers_node)
     emitter.write("enum ")
-    if name is not None:
-        _emit_node(emitter, source, name)
+    _emit_node(emitter, source, name)
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
@@ -3912,10 +3937,15 @@ def _emit_static_initializer(
     statements = list(block.named_children)
     if statements:
         emitter.push_indent()
+        prev_stmt: Node | None = None
         for stmt in statements:
+            if prev_stmt is not None:
+                if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
+                    emitter.newline()
             emitter.write_indent()
             _emit_node(emitter, source, stmt)
             emitter.newline()
+            prev_stmt = stmt
         emitter.pop_indent()
 
     emitter.write_indent()
@@ -4597,7 +4627,7 @@ def _emit_variable_declarator(
     _emit_node(emitter, source, value)
     inline_overflow = (
         emitter.last_lines_max_width(saved[0]) > _MAX_LINE
-        or len(emitter._current) + 1 > _MAX_LINE
+        or emitter.column + 1 > _MAX_LINE
     )
     if not inline_overflow:
         return
@@ -4773,39 +4803,28 @@ def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
 def format_source(source: bytes) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Currently supported subset: a single top-level class with
-    optional keyword modifiers (no annotations yet), no type
-    parameters, no extends / implements / permits, whose body
-    contains primitive- or named-typed field declarations with
-    optional keyword modifiers and optional initializers, or
-    method declarations whose bodies are zero-or-more simple
-    statements. Supported initializer / expression shapes
-    include literal values, identifiers, binary / unary /
-    update / parenthesized expressions, field accesses, casts
-    (no intersection types yet), non-pattern instanceof, and
-    single-line method invocations (no explicit type witness,
-    no wrap-priority logic yet). Supported statement shapes
-    include `return_statement` (with or without a value),
-    `expression_statement` (assignment-as-statement, method-
-    call statement, update statement), `local_variable_-
-    declaration` (with optional keyword modifiers), and
-    `assignment_expression` (with space-space around any
-    assignment operator).
+    Handles every Java construct exercised by the 83 fixture
+    pairs and every file in the consumer codebases pre-flight
+    diff exercise — including classes, interfaces, enums,
+    records, methods, constructors, fields, type parameters,
+    throws clauses, annotations, generics, wildcards, type-use
+    annotations, anonymous classes, sealed/permits, switch
+    statements and expressions (arrow form), pattern matching,
+    multi-catch, try-with-resources, lambdas, method
+    references, ternaries, binary/unary/parenthesized
+    expressions, the full statement set (`if`/`for`/`while`/
+    `do`/`try`/`switch`/`return`/`throw`/`break`/`continue`/
+    labeled statements / assignments), and javadoc reflow.
 
-    Method declarations may carry keyword modifiers, primitive-
-    or named-typed return types (including `Type[]` arrays via
-    `array_type`), and zero-or-more single-line formal
-    parameters. Throws clauses, type parameters, abstract /
-    interface methods, parameter annotations, and control-flow
-    statements (`if`, `for`, `while`, `do`, `try`, `switch`)
-    are NOT yet supported. Anything outside the supported
-    subset raises `NotImplementedError` from the dispatcher
-    (the explicit "this construct isn't supported yet"
-    signal).
+    Constructs deliberately out-of-scope for 0.3.0: see the
+    module docstring's "Coverage" section. Anything outside the
+    supported subset raises `NotImplementedError` from the
+    dispatcher (the explicit "this construct isn't supported
+    yet" signal).
 
-    The `format_file.py` orchestrator still routes end-user
-    formatting through the legacy JDT-plus-six-script pipeline;
-    activation of this path comes in the phase that removes JDT.
+    On syntactically invalid input, raises `ValueError` rather
+    than emitting potentially garbled output — protects
+    `--write` mode from silently corrupting files.
     """
     tree = parse_source(source)
     if has_parse_errors(tree):

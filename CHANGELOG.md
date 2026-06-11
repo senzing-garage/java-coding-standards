@@ -49,8 +49,8 @@ Highlights:
 - **Performance gate** — 100-file warm format completes in
   ~150ms (median ~0.9ms / file), 65× under the 10s budget.
 
-Full per-phase notes in the historical `## [Unreleased]`
-section above, reverse-chronological from Phase 8d.
+Full per-phase notes in the `### Added` section below,
+reverse-chronological from Phase 8d.
 
 ### Added
 
@@ -232,8 +232,8 @@ section above, reverse-chronological from Phase 8d.
     reformat expected, and the legacy artifacts to delete.
   - `docs/faqs/building/javadoc-reflow-conventions.md`
     updated — replaced the small reference to the old
-    `fix_javadoc_*` scripts with a pointer to `format_-
-    java.py`'s javadoc emitter, which respects the same
+    `fix_javadoc_*` scripts with a pointer to
+    `format_java.py`'s javadoc emitter, which respects the same
     "no orphan words" / "no invented filler" rules by
     design. Updated the "When in doubt" pointer to
     `format_file.py`.
@@ -283,8 +283,8 @@ section above, reverse-chronological from Phase 8d.
   still 83/83; pytest suite still 235.
 - Phase 7 JDT pipeline removal — the atomic switch:
   - `tooling/scripts/format_file.py` rewritten as a thin
-    orchestrator that resolves target paths via `_cli.iter_-
-    target_files` and invokes `format_java.format_source`
+    orchestrator that resolves target paths via
+    `_cli.iter_target_files` and invokes `format_java.format_source`
     in-process per file. Same CLI surface as before
     (positional paths, `--src-dirs`, `--exclude`,
     `--exclude-from`). Mtime is restored on byte-identical
@@ -460,8 +460,9 @@ section above, reverse-chronological from Phase 8d.
       imports; one blank between last import and the
       following type declaration; one blank between
       consecutive type declarations).
-    - `_emit_class_body_members`, `_emit_interface_body_-
-      members`, `_emit_block`, and method/constructor body
+    - `_emit_class_body_members`,
+      `_emit_interface_body_members`,
+      `_emit_block`, and method/constructor body
       emitters now preserve source-authored blank lines
       between consecutive members / statements (per spec A2
       blank-line rules; source-preservation captures spec
@@ -870,14 +871,14 @@ section above, reverse-chronological from Phase 8d.
   the continuation of a top-level enum constant declaration
   rather than an inline expression, and the spec's "Brace
   Placement / Allman Style" rule applies. Body content uses
-  standard class-body member emission via `_emit_class_-
-  body_members`, so method declarations inside still take
+  standard class-body member emission via
+  `_emit_class_body_members`, so method declarations inside still take
   their normal Allman brace placement. The body opens at
   the constant's indent column (via `write_indent()`), body
   members indent one level deeper, and the closing `}`
   returns to the constant's column. The trailing `,` or `;`
-  separator continues to be emitted by the parent `_emit_-
-  enum_body_members`, which attaches naturally to the
+  separator continues to be emitted by the parent
+  `_emit_enum_body_members`, which attaches naturally to the
   constant's last token (closing `)` of arguments, closing
   `}` of body, or identifier). Combined form (constructor
   arguments AND body — `PLUS("plus", 1) { ... }`) supported.

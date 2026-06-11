@@ -23,13 +23,14 @@ available so a stripped-down checkout doesn't fail CI.
 
 from __future__ import annotations
 
-import os
 import statistics
 import sys
 import time
 from pathlib import Path
 
 import pytest
+
+from conftest import resolve_java_corpus
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -44,18 +45,7 @@ _FILE_COUNT_TARGET = 100
 _TOTAL_TIME_BUDGET_S = 10.0
 
 
-def _resolve_corpus() -> Path | None:
-    env = os.environ.get("SENZING_JAVA_FUZZ_CORPUS")
-    if env:
-        p = Path(env)
-        return p if p.is_dir() else None
-    submodule = Path(__file__).resolve()
-    consumer_root = submodule.parents[4]
-    src = consumer_root / "src"
-    return src if src.is_dir() else None
-
-
-_CORPUS = _resolve_corpus()
+_CORPUS = resolve_java_corpus()
 _CORPUS_FILES: list[Path] = (
     sorted(_CORPUS.rglob("*.java"))[:_FILE_COUNT_TARGET]
     if _CORPUS
