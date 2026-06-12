@@ -10,6 +10,130 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-12
+
+The wrap-priority engine cutover. The formatter now drives every
+wrappable construct through a single `try_priorities` cascade
+that threads a `tail_reserve` budget through nested contexts —
+each enclosing construct (`if`, `while`, `for`,
+`expression_statement`, `parenthesized_expression`,
+`method_invocation` receiver, `return`/`throw` statements)
+reserves chars for the trailing tokens it knows about, so an
+inner wrap candidate's effective line budget reflects the FULL
+surrounding line, not just the local emission.
+
+This eliminates the long tail of "wrap engine fits locally but
+the trailing `) {` / `;` / `).method()` pushes the line past
+80" failures that the 0.3.0 wrap cascade left behind. The
+consumer adoption gate against `senzing-commons-java` drops
+from 51 LineLength violations to 0; sz-sdk-java verifies
+117/117 files clean and idempotent.
+
+Highlights:
+
+- **`WrapContext` + `try_priorities`** abstractions in
+  `format_java.py`. Replaces the ad-hoc `start_col` arguments
+  and snapshot/restore dances scattered through individual
+  emitters. Documented in
+  `docs/java-coding-standards.md` § "Wrap Priority Engine".
+- **`tail_reserve`** push/restore mechanism on the emitter.
+  Composes additively: `if (binary) {` reserves `2 + 1 = 3`
+  chars (`) {` from the `if`, `)` from the paren-expression)
+  so the binary expr's effective max is 77.
+- **Method-chain wrap** (P1 single / P2 vertical-aligned
+  dots / P3 single-indent fallback) in
+  `_emit_method_invocation`. Method-invocation's simple emit
+  also propagates `tail_reserve` to its receiver so chains
+  inside parenthesized casts wrap correctly.
+- **Ternary wrap** (T1 single / T2 break-before-`?` / T3
+  break-before-both) in `_emit_ternary_expression`.
+- **Binary-expression wrap** with full AST recursion (no
+  more raw-source-rest fallback). P1 / P2 break-leftmost /
+  P3 break-every-op via `try_priorities`.
+- **Condition wrap** for `if`/`while`/`for` — tail_reserve
+  bumped for the trailing `) {` / `) STMT` so nested binary
+  expressions wrap when needed; for-statement adds an Allman
+  brace fallback when `for (...) {` would overflow.
+- **Line comment reflow** (spec § "Line Comment Reflow") —
+  `//` comments that overflow are greedy-reflowed into
+  multiple `// `-prefixed lines at the same indent.
+  Directive exemptions (`CSOFF`, `CSON`, `CHECKSTYLE`,
+  `SUPPRESS`, `@`-tags) and URL-bearing lines are preserved
+  verbatim.
+- **Conditional source-preserve** in arg lists — when an
+  arg list spans multiple rows in source, preserve the
+  developer-authored layout IF the first line still fits at
+  the new emission column. When the surrounding indent has
+  shifted (e.g. JDT's 2-space → AST's 4-space) and the
+  source's first line would overflow, fall through to the
+  wrap engine. Comments inside the arg list always force
+  source-preserve (the wrap engine can't represent
+  comment-between-args). The spec's "Formatted Log and
+  Diagnostic Messages" `// CSOFF` / `// CSON` markers also
+  force source-preserve via `_is_inside_csoff_region`.
+- **Text blocks in indented contexts** (spec B4 full
+  enforcement) — triple-quoted text blocks now emit at any
+  indent level. The closing `"""` lands at +4 from the
+  introducing statement; content lines shift by the same
+  delta so the rendered string is byte-for-byte unchanged.
+- **Class-header wrap** — when type parameters wrap to
+  multiple lines AND the trailing `extends` / `implements`
+  is also long, the clauses move to their own continuation
+  line(s) instead of overhanging the closing `>` line.
+- **Annotation type declarations** (`@interface ...`) and
+  comma-separated `for_statement` init/update expressions
+  (`for (i = 0, j = 0; ...; i++, j++)`) now emit instead of
+  refusing — surfaced by sz-sdk-java adoption.
+- **`_PARSER` thread safety** — replaced the module-level
+  singleton with a `threading.local` lazy wrapper. Formatter
+  is now safe to use from `pytest-xdist`, parallel batch
+  formatters, and in-process services.
+- **Test infrastructure** — added `tests/test_fixtures.py`
+  to auto-discover and verify every fixture pair under
+  `tests/fixtures/CATEGORY/CASE/` (the input + expected
+  pair) as a live golden test (the existing 70 fixture
+  pairs were previously dead data).
+  Every golden case ALSO asserts idempotency (format(actual)
+  == actual). 28 new fixture cases covering all new wrap
+  behaviors. Added unit tests for `WrapContext`,
+  `try_priorities`, and `Emitter.tail_reserve`. Total
+  passing tests: 578 (up from 463 at 0.3.0).
+
+Review-driven fixes (in this same release cycle):
+
+- **`_emit_resource`** restructured to match spec B8
+  preference order — break-at-`=` is now the first fallback
+  when the inline form overflows, BEFORE letting the value's
+  inner wrap engine fire. The previous behavior could keep
+  `try (X r = new Foo(...))` inline (with the value wrapping
+  internally) when the spec calls for the break-at-`=` form
+  with `X r` on the first line and `= new Foo(...)` on the
+  continuation line, with the value emitted single-line.
+- **CSOFF scope set** expanded with `switch_block` and
+  `switch_block_statement_group`. A `// CSOFF` directive
+  inside one colon-form switch case no longer bleeds into
+  subsequent cases.
+- **Source-text-width shortcuts replaced with speculative
+  emission** in `_emit_throws`, `_emit_if_statement`'s
+  Tier 1 short-circuit check, and `_emit_variable_declarator`
+  steps 1–2. Wrap decisions are now uniformly driven by
+  rendered widths, not source-text widths — robust against
+  unusual input whitespace and consistent with the rest of
+  the wrap engine.
+- **`_emit_field_access`** propagates `tail_reserve` to its
+  receiver emit. Nested method-chain wrap inside a
+  field-access head (e.g. `chain.thing().result.method()`)
+  now correctly accounts for the trailing `.field`.
+- **`_emit_variable_declarator`** consumes
+  `emitter.tail_reserve` in its width calculations, matching
+  the rest of the wrap engine's tail-reserve composition.
+- **For-statement paren-aligned header wrap** — when the
+  for-header is over budget but contains no binary expression
+  to wrap (the previous condition-wrap engine relied on
+  `&&`/`||`), init/condition/update each move to their own
+  line at the column after `for (`, mirroring the
+  multi-resource try-with-resources shape.
+
 ## [0.3.0] - 2026-06-11
 
 The architectural cutover from the JDT + six-script pipeline
@@ -126,67 +250,69 @@ reverse-chronological from Phase 8d.
   New `tooling/scripts/tests/test_fuzz_corpus.py` exercises
   the formatter against a real-world Java corpus and
   verifies three properties for every file:
-    1. **Round-trip AST equivalence** — formatter output
-       re-parses to the same named-node-type sequence as
-       the input (modulo formatter-allowed normalizations
-       like `enum_body_declarations` and `block` brace
-       wrapping). Catches emitter bugs that would silently
-       change Java semantics.
-    2. **Idempotency** — `format(format(src)) == format
-       (src)`.
-    3. **Refusal cleanliness** — declined constructs raise
-       a typed exception with a diagnostic; never a
-       traceback into formatter internals.
-  Plus a six-case parametrized `test_broken_input_raises_-
-  value_error` for the error-recovery property: malformed
-  inputs (unterminated class body, malformed condition,
-  missing RHS, unbalanced parens, non-Java text) raise
-  `ValueError` cleanly; the empty input is a valid Java
-  program and formats to `b""`.
-  Default corpus: `senzing-commons-java/src/` (~106 files).
-  Set `SENZING_JAVA_FUZZ_CORPUS` to an absolute path to
-  fuzz against a different / larger corpus.
+  1. **Round-trip AST equivalence** — formatter output
+     re-parses to the same named-node-type sequence as
+     the input (modulo formatter-allowed normalizations
+     like `enum_body_declarations` and `block` brace
+     wrapping). Catches emitter bugs that would silently
+     change Java semantics.
+  2. **Idempotency** — formatting twice produces the same
+     output: `format(format(src)) == format(src)`.
+  3. **Refusal cleanliness** — declined constructs raise
+     a typed exception with a diagnostic; never a
+     traceback into formatter internals.
+     Plus a six-case parametrized
+     `test_broken_input_raises_value_error` for the
+     error-recovery property: malformed
+     inputs (unterminated class body, malformed condition,
+     missing RHS, unbalanced parens, non-Java text) raise
+     `ValueError` cleanly; the empty input is a valid Java
+     program and formats to `b""`.
+     Default corpus: `senzing-commons-java/src/` (~106 files).
+     Set `SENZING_JAVA_FUZZ_CORPUS` to an absolute path to
+     fuzz against a different / larger corpus.
 
   The fuzz harness surfaced **five real formatter bugs**
   that landed alongside the harness in this phase:
-    - `_emit_variable_declarator` silently dropped C-style
-      array dimensions on the variable name
-      (`Class<?> params[] = ...` → `Class<?> params = ...`,
-      losing the array type). The grammar exposes those as
-      a `dimensions` named child of `variable_declarator`;
-      the emitter now dispatches it between the name and
-      the `=`.
-    - `_emit_variable_declarator` had a `value_is_multiline:
-      return` shortcut that skipped the inline-overflow
-      check. When the multi-line source value collapsed to
-      a long single line on first emission, the first pass
-      kept the over-80 line; the second pass (now seeing a
-      single-line value) correctly broke at `=`, causing
-      non-idempotency. Removed the shortcut; the overflow
-      check now runs regardless of `value_is_multiline`.
-    - `_emit_for_statement` chose the brace placement
-      based on source-row span, not on the formatter's
-      eventual rendered layout. When wrapping inside the
-      init / condition / update produced a multi-row
-      header from single-row source, the first pass emitted
-      same-line brace (wrong) and the second pass switched
-      to Allman (correct), causing non-idempotency. Now
-      snapshots emitter state before the header and
-      switches to Allman when `emitter.line_count` grew
-      during emission.
-    - `_emit_while_statement` had the same flaw for the
-      single-row-source path; applied the same
-      `line_count`-grew check.
-    - `_javadoc_is_prose_line` only recognized list-item
-      markers when `<li>` appeared at position 0 of the
-      content. The (common!) leading-indent variant
-      `*   <li>...` (extra spaces between `*` and `<li>`
-      for visual nesting under `<ol>` / `<ul>`) was
-      misclassified as prose; the following non-`<li>`
-      line got reflowed into the `<li>` paragraph. Fixed
-      by stripping leading whitespace before all the
-      structural-marker checks (`@`, `<li>`, block tags,
-      etc.).
+  - `_emit_variable_declarator` silently dropped C-style
+    array dimensions on the variable name
+    (`Class<?> params[] = ...` → `Class<?> params = ...`,
+    losing the array type). The grammar exposes those as
+    a `dimensions` named child of `variable_declarator`;
+    the emitter now dispatches it between the name and
+    the `=`.
+  - `_emit_variable_declarator` had a
+    `value_is_multiline: return` shortcut that skipped the
+    inline-overflow check. When the multi-line source
+    value collapsed to
+    a long single line on first emission, the first pass
+    kept the over-80 line; the second pass (now seeing a
+    single-line value) correctly broke at `=`, causing
+    non-idempotency. Removed the shortcut; the overflow
+    check now runs regardless of `value_is_multiline`.
+  - `_emit_for_statement` chose the brace placement
+    based on source-row span, not on the formatter's
+    eventual rendered layout. When wrapping inside the
+    init / condition / update produced a multi-row
+    header from single-row source, the first pass emitted
+    same-line brace (wrong) and the second pass switched
+    to Allman (correct), causing non-idempotency. Now
+    snapshots emitter state before the header and
+    switches to Allman when `emitter.line_count` grew
+    during emission.
+  - `_emit_while_statement` had the same flaw for the
+    single-row-source path; applied the same
+    `line_count`-grew check.
+  - `_javadoc_is_prose_line` only recognized list-item
+    markers when `<li>` appeared at position 0 of the
+    content. The (common!) leading-indent variant
+    `*   <li>...` (extra spaces between `*` and `<li>`
+    for visual nesting under `<ol>` / `<ul>`) was
+    misclassified as prose; the following non-`<li>`
+    line got reflowed into the `<li>` paragraph. Fixed
+    by stripping leading whitespace before all the
+    structural-marker checks (`@`, `<li>`, block tags,
+    etc.).
 
   One known non-idempotent file is `xfail`-marked in the
   test:
@@ -218,6 +344,7 @@ reverse-chronological from Phase 8d.
   - Method-chain wrap awareness (the BulkDataSupport.java
     fix).
   - Version bump + tag 0.3.0.
+
 - Phase 8b FAQ refresh for 0.3.0 architecture:
   - `docs/faqs/building/java-formatting-standards.md`
     rewritten — replaced the JDT + six-script "Formatter
@@ -225,8 +352,9 @@ reverse-chronological from Phase 8d.
     the in-process tree-sitter formatter (Emitter /
     dispatch / wrap-priority engine). Replaced the "Running
     the pipeline" section with the new CLI usage (single
-    `format_file.py` entry point + `format_java.py --format
-    FILE` for inspection). Removed the per-script behavior
+    `format_file.py` entry point plus
+    `format_java.py --format FILE` for inspection).
+    Removed the per-script behavior
     summary list. Added an "Upgrading from 0.2.x" section
     explaining the architectural shift, the one-time
     reformat expected, and the legacy artifacts to delete.
@@ -237,9 +365,9 @@ reverse-chronological from Phase 8d.
     "no orphan words" / "no invented filler" rules by
     design. Updated the "When in doubt" pointer to
     `format_file.py`.
-  No code, test, or non-FAQ doc changes. The FAQ MCP
-  server picks up the new content on next restart per the
-  standard re-index flow.
+    No code, test, or non-FAQ doc changes. The FAQ MCP
+    server picks up the new content on next restart per the
+    standard re-index flow.
 - Phase 8a Docstring updates + adoption-template refresh:
   - `tooling/scripts/format_java.py` module docstring
     rewritten — the old narrative documented incremental
@@ -251,8 +379,8 @@ reverse-chronological from Phase 8d.
     file traverses; deliberate out-of-scope:
     `module_declaration`), and a CLI section listing the
     new `--format FILE` flags (`--write`, `--check`).
-  - `adoption/claude-md-templates/vscode-settings-
-    snippet.json` rewritten — removed the
+  - `adoption/claude-md-templates/vscode-settings-snippet.json`
+    rewritten — removed the
     `java.format.settings.url` entry pointing at the
     deleted `tooling/ide/java-formatter.xml`, simplified
     the orchestrator commentary to describe the in-
@@ -279,8 +407,8 @@ reverse-chronological from Phase 8d.
     wording in the VSCode section was replaced with a
     cleaner explanation of the redhat.java +
     emeraldwalk.runonsave split.
-  No formatter code changes, no test changes. Calibration
-  still 83/83; pytest suite still 235.
+    No formatter code changes, no test changes. Calibration
+    still 83/83; pytest suite still 235.
 - Phase 7 JDT pipeline removal — the atomic switch:
   - `tooling/scripts/format_file.py` rewritten as a thin
     orchestrator that resolves target paths via
@@ -299,9 +427,10 @@ reverse-chronological from Phase 8d.
     anything.
   - The Eclipse JDT formatter Maven module deleted:
     `tooling/jdt-formatter/` (pom.xml, the JdtFormatter.java
-    shim, .gitignore). The XML profile `tooling/ide/-
-    java-formatter.xml` deleted with it; the `tooling/ide/`
-    directory is now empty and was pruned. Consumers no
+    shim, .gitignore). The XML profile
+    `tooling/ide/java-formatter.xml` was deleted with it;
+    the `tooling/ide/` directory is now empty and was
+    pruned. Consumers no
     longer need a JDK on `PATH` to run `format_file.py`.
   - `.github/workflows/release.yaml` deleted — its only
     purpose was building and publishing the JDT JAR on
@@ -320,7 +449,7 @@ reverse-chronological from Phase 8d.
   - Test cleanup: deleted `test_format_file_jdt_pipeline.py`,
     `test_jar_resolution.py`, `test_helpers.py` (a unit
     test for `fix_allman_braces` helpers), and
-    `test_idempotency.py` (which iterated each fix_*.py
+    `test_idempotency.py` (which iterated each fix\_\*.py
     script over fixtures). Rewrote `test_format_file.py`
     as a smaller, sharper suite focused on the new
     orchestrator's contract (10 tests covering unchanged /
@@ -336,202 +465,207 @@ reverse-chronological from Phase 8d.
     `/init-java` flow still references the JDT JAR /
     profile / script-pipeline; needs a rewrite to describe
     the new single-file architecture.
-  - FAQ refresh under `docs/faqs/building/` — `java-format-
-    ting-standards.md` and `javadoc-reflow-conventions.md`
-    still document the old pipeline.
+  - FAQ refresh under `docs/faqs/building/` — both
+    `java-formatting-standards.md` and
+    `javadoc-reflow-conventions.md` still document the old
+    pipeline.
   - Module / class-level docstrings in `format_java.py`
     and `format_file.py` still describe the migration as
     pending; bump them to "complete" wording.
+
 - Phase 6c switch_expression + record_declaration emitters:
   the last two REFUSED node types from the senzing-commons-
   java pre-flight are now handled, dropping REFUSED to 0/106.
   Switch support (spec B2):
-    - `_emit_switch_expression` covers both the statement
-      form and the expression form (same node type in
-      tree-sitter-java). The `switch (cond)` header keeps
-      the cond on its source line; the body opens Allman
-      because cases flow on multiple lines.
-    - `_emit_switch_block` emits the `{ CASES }` block with
-      cases indented `+4` from the block's left anchor
-      per spec B2's revised case-indent rule. Source-
-      preservation of blank lines between cases.
-    - `_emit_switch_rule` handles the arrow form
-      (`case LABEL -> body[;]`) with single space around
-      `->` per spec B2. Multi-row sources fall through to
-      verbatim emission.
-    - `_emit_switch_block_statement_group` handles the
-      colon form (`case LABEL: stmts...`). One or more
-      `switch_label` children stack as fall-through labels
-      at the case indent; statements indent `+4` from the
-      case label. Each statement emits via dispatch so
-      authoritative re-indentation propagates correctly.
-    - `_emit_switch_label` emits `case VAL[, VAL...]` or
-      `default` (handles both single-value and multi-value
-      cases per spec B2's multi-label rule).
-    - `_emit_yield_statement` emits `yield VALUE;` for
-      Java 14+ switch-expression block-body yields.
-  Record support (Java 16+):
-    - `_emit_record_declaration` emits
-      `[modifiers] record NAME(components) [implements ...]
-      { body }` with Allman brace placement (records are
-      type declarations like classes).
-    - `_emit_compact_constructor_declaration` emits a
-      record's compact constructor (`[modifiers] NAME { body
-      }`) with Allman braces per spec B9.
-  Unit-test cleanup: the `test_unknown_node_type_raises`
-  test used `switch_expression` as the "intentionally
-  unregistered" example; replaced with `module_declaration`
-  (which IS intentionally out-of-scope per the plan's
-  "module-info.java" exclusion). Calibration-recon: MATCH
-  stays 83/83 (no regressions). Pre-flight against the
-  senzing-commons-java consumer codebase:
-  MATCH 12 / CHANGED 94 / REFUSED 0 / ERROR 0 — every one
-  of the 106 consumer files now traverses the formatter
-  end-to-end. CHANGED aggregate diff grew (avg +21 / -26
-  per file) because the newly-unblocked switch files have
-  large reformatting diffs from the spec's stricter case-
-  indent rule (case at +4 from switch column, vs the older
-  Java convention of case at switch column that consumer
-  code currently uses).
+  - `_emit_switch_expression` covers both the statement
+    form and the expression form (same node type in
+    tree-sitter-java). The `switch (cond)` header keeps
+    the cond on its source line; the body opens Allman
+    because cases flow on multiple lines.
+  - `_emit_switch_block` emits the `{ CASES }` block with
+    cases indented `+4` from the block's left anchor
+    per spec B2's revised case-indent rule. Source-
+    preservation of blank lines between cases.
+  - `_emit_switch_rule` handles the arrow form
+    (`case LABEL -> body[;]`) with single space around
+    `->` per spec B2. Multi-row sources fall through to
+    verbatim emission.
+  - `_emit_switch_block_statement_group` handles the
+    colon form (`case LABEL: stmts...`). One or more
+    `switch_label` children stack as fall-through labels
+    at the case indent; statements indent `+4` from the
+    case label. Each statement emits via dispatch so
+    authoritative re-indentation propagates correctly.
+  - `_emit_switch_label` emits `case VAL[, VAL...]` or
+    `default` (handles both single-value and multi-value
+    cases per spec B2's multi-label rule).
+  - `_emit_yield_statement` emits `yield VALUE;` for
+    Java 14+ switch-expression block-body yields.
+    Record support (Java 16+):
+  - `_emit_record_declaration` emits
+    `[modifiers] record NAME(components) [implements ...]
+{ body }` with Allman brace placement (records are
+    type declarations like classes).
+  - `_emit_compact_constructor_declaration` emits a
+    record's compact constructor (`[modifiers] NAME { body
+}`) with Allman braces per spec B9.
+    Unit-test cleanup: the `test_unknown_node_type_raises`
+    test used `switch_expression` as the "intentionally
+    unregistered" example; replaced with `module_declaration`
+    (which IS intentionally out-of-scope per the plan's
+    "module-info.java" exclusion). Calibration-recon: MATCH
+    stays 83/83 (no regressions). Pre-flight against the
+    senzing-commons-java consumer codebase:
+    MATCH 12 / CHANGED 94 / REFUSED 0 / ERROR 0 — every one
+    of the 106 consumer files now traverses the formatter
+    end-to-end. CHANGED aggregate diff grew (avg +21 / -26
+    per file) because the newly-unblocked switch files have
+    large reformatting diffs from the spec's stricter case-
+    indent rule (case at +4 from switch column, vs the older
+    Java convention of case at switch column that consumer
+    code currently uses).
 - Phase 6b Pre-flight bug fixes — spot-check survey of CHANGED
   files surfaced three real bugs:
-    - **Varargs parameter silently dropped**: `_emit_formal_-
-      parameters` filtered to `formal_parameter` children
-      only, so `spread_parameter` (the grammar's node type for
-      `Type... name` varargs) was excluded — methods like
-      `logError(Object... lines)` became `logError()`. Added
-      `_emit_spread_parameter` per spec B12 (no space before
-      `...`, single space after) and updated the parameter
-      filter.
-    - **Blank line inserted between leading javadoc and class**:
-      `_emit_program`'s blank-line rule emitted a blank between
-      any two consecutive top-level children, including a
-      `block_comment` (javadoc) and the class it documents. Per
-      spec A1 ("Class-level javadoc placement"), the javadoc
-      attaches to the type with NO blank between. Fix: when
-      `prev` is a `block_comment` / `line_comment`, follow
-      source — emit a blank only if the source had one.
-    - **IndexError on `@param NAME` with empty description**:
-      `_emit_javadoc_block`'s tag reflow accessed `desc_lines
-      [0]` without checking for empty `desc_lines`. Some
-      consumer files have bare `@param NAME` with no
-      description (or the description on a continuation line
-      that the collector didn't pick up). Fix: short-circuit
-      with `emitter.write(star_prefix + tag_prefix.rstrip())`
-      when no description was collected.
-  Calibration-recon: MATCH stays 83/83 (no regressions). Pre-
-  flight against the senzing-commons-java consumer codebase:
-  MATCH 0 → 12, CHANGED 90 → 79, ERROR 1 → 0. The 15 REFUSED
-  files (14 × `switch_expression`, 1 × `record_declaration`)
-  await their respective emitters.
+  - **Varargs parameter silently dropped**:
+    `_emit_formal_parameters` filtered to `formal_parameter`
+    children only, so `spread_parameter` (the grammar's
+    node type for
+    `Type... name` varargs) was excluded — methods like
+    `logError(Object... lines)` became `logError()`. Added
+    `_emit_spread_parameter` per spec B12 (no space before
+    `...`, single space after) and updated the parameter
+    filter.
+  - **Blank line inserted between leading javadoc and class**:
+    `_emit_program`'s blank-line rule emitted a blank between
+    any two consecutive top-level children, including a
+    `block_comment` (javadoc) and the class it documents. Per
+    spec A1 ("Class-level javadoc placement"), the javadoc
+    attaches to the type with NO blank between. Fix: when
+    `prev` is a `block_comment` / `line_comment`, follow
+    source — emit a blank only if the source had one.
+  - **IndexError on `@param NAME` with empty description**:
+    `_emit_javadoc_block`'s tag reflow accessed
+    `desc_lines[0]` without checking for empty
+    `desc_lines`. Some
+    consumer files have bare `@param NAME` with no
+    description (or the description on a continuation line
+    that the collector didn't pick up). Fix: short-circuit
+    with `emitter.write(star_prefix + tag_prefix.rstrip())`
+    when no description was collected.
+    Calibration-recon: MATCH stays 83/83 (no regressions). Pre-
+    flight against the senzing-commons-java consumer codebase:
+    MATCH 0 → 12, CHANGED 90 → 79, ERROR 1 → 0. The 15 REFUSED
+    files (14 × `switch_expression`, 1 × `record_declaration`)
+    await their respective emitters.
 - Phase 6a Pre-flight infrastructure (Step A + Step B groundwork):
   Add the end-user formatter entry point and a batch of
   emitters needed for real consumer code:
-    - `format_java.py` CLI gains `--format FILE [--write |
-      --check]` for single-file formatting. The `--write`
-      form rewrites the file in place; `--check` exits 0 if
-      compliant / 1 if formatting would change the file / 2
-      on parse or refused-construct errors. NotImplementedError
-      and ValueError from format_source surface as clean
-      diagnostics on stderr.
-    - New emitters for `package_declaration`,
-      `import_declaration` (including static and wildcard
-      `.*` via the named `asterisk` child),
-      `scoped_identifier`, `class_literal`,
-      `array_initializer`, `element_value_array_initializer`,
-      `array_creation_expression`, `array_access`,
-      `dimensions`, `dimensions_expr`,
-      `synchronized_statement`,
-      `explicit_constructor_invocation` (`this(...)` /
-      `super(...)`), `extends_interfaces` (on interface
-      declarations), and `method_reference` (`Class::method`).
-    - `_emit_enum_declaration` now accepts `super_interfaces`
-      (enum implementing interfaces); `_emit_interface_-
-      declaration` accepts `extends_interfaces` (interface
-      extending parent interfaces); `_emit_formal_parameter`
-      accepts modifiers (keyword `final` + parameter
-      annotations like `@NonNull`) inline — explicit inline
-      emission since `_emit_modifiers` puts annotations on
-      their own line (suitable for declarations, not for
-      parameters).
-    - `_emit_program` orchestrates blank-line separators
-      between top-level declarations (one blank after
-      `package_declaration`; no blank between consecutive
-      imports; one blank between last import and the
-      following type declaration; one blank between
-      consecutive type declarations).
-    - `_emit_class_body_members`,
-      `_emit_interface_body_members`,
-      `_emit_block`, and method/constructor body
-      emitters now preserve source-authored blank lines
-      between consecutive members / statements (per spec A2
-      blank-line rules; source-preservation captures spec
-      A2 implicitly because real consumer code already
-      follows the rules). Detection uses `next.start_point
-      [0] - prev.end_point[0] > 1`.
-    - `_emit_enum_body_members` collects `block_comment` /
-      `line_comment` siblings of `enum_constant` nodes as
-      "preceding javadoc" groups and emits them above each
-      constant — the grammar surfaces these as enum-body
-      siblings, not enum_constant children.
-    - `_emit_variable_declarator` rebalances its wrap
-      decision: it now prefers a clean break-at-`=` form
-      over inline-with-value-wrap when break-at-`=` gives a
-      single-line value. Order: (1) inline single-line if
-      fits; (2) break-at-`=` if single-line value fits at
-      the continuation column; (3) inline with value-wrap.
-    - `_emit_binary_expression` rest-text emission now uses
-      `write_raw_lines` when the source span contains
-      newlines (the previous `emitter.write(text)` rejected
-      embedded newlines and crashed on consumer code with
-      already-wrapped binary expressions).
-  Calibration-recon impact: MATCH stays 83/83 (no
-  regressions). Pre-flight against the senzing-commons-java
-  consumer codebase (~106 Java files under `src/`) now
-  shows REFUSED 100% → 14% (only `switch_expression` and
-  `record_declaration` remain unhandled in the corpus);
-  CHANGED 0% → 85%; ERROR 1 file (an `IndexError` to
-  diagnose).
+  - `format_java.py` CLI gains `--format FILE [--write |
+--check]` for single-file formatting. The `--write`
+    form rewrites the file in place; `--check` exits 0 if
+    compliant / 1 if formatting would change the file / 2
+    on parse or refused-construct errors. NotImplementedError
+    and ValueError from format_source surface as clean
+    diagnostics on stderr.
+  - New emitters for `package_declaration`,
+    `import_declaration` (including static and wildcard
+    `.*` via the named `asterisk` child),
+    `scoped_identifier`, `class_literal`,
+    `array_initializer`, `element_value_array_initializer`,
+    `array_creation_expression`, `array_access`,
+    `dimensions`, `dimensions_expr`,
+    `synchronized_statement`,
+    `explicit_constructor_invocation` (`this(...)` /
+    `super(...)`), `extends_interfaces` (on interface
+    declarations), and `method_reference` (`Class::method`).
+  - `_emit_enum_declaration` now accepts `super_interfaces`
+    (enum implementing interfaces);
+    `_emit_interface_declaration` accepts
+    `extends_interfaces` (interface extending parent
+    interfaces); `_emit_formal_parameter`
+    accepts modifiers (keyword `final` + parameter
+    annotations like `@NonNull`) inline — explicit inline
+    emission since `_emit_modifiers` puts annotations on
+    their own line (suitable for declarations, not for
+    parameters).
+  - `_emit_program` orchestrates blank-line separators
+    between top-level declarations (one blank after
+    `package_declaration`; no blank between consecutive
+    imports; one blank between last import and the
+    following type declaration; one blank between
+    consecutive type declarations).
+  - `_emit_class_body_members`,
+    `_emit_interface_body_members`,
+    `_emit_block`, and method/constructor body
+    emitters now preserve source-authored blank lines
+    between consecutive members / statements (per spec A2
+    blank-line rules; source-preservation captures spec
+    A2 implicitly because real consumer code already
+    follows the rules). Detection uses
+    `next.start_point[0] - prev.end_point[0] > 1`.
+  - `_emit_enum_body_members` collects `block_comment` /
+    `line_comment` siblings of `enum_constant` nodes as
+    "preceding javadoc" groups and emits them above each
+    constant — the grammar surfaces these as enum-body
+    siblings, not enum_constant children.
+  - `_emit_variable_declarator` rebalances its wrap
+    decision: it now prefers a clean break-at-`=` form
+    over inline-with-value-wrap when break-at-`=` gives a
+    single-line value. Order: (1) inline single-line if
+    fits; (2) break-at-`=` if single-line value fits at
+    the continuation column; (3) inline with value-wrap.
+  - `_emit_binary_expression` rest-text emission now uses
+    `write_raw_lines` when the source span contains
+    newlines (the previous `emitter.write(text)` rejected
+    embedded newlines and crashed on consumer code with
+    already-wrapped binary expressions).
+    Calibration-recon impact: MATCH stays 83/83 (no
+    regressions). Pre-flight against the senzing-commons-java
+    consumer codebase (~106 Java files under `src/`) now
+    shows REFUSED 100% → 14% (only `switch_expression` and
+    `record_declaration` remain unhandled in the corpus);
+    CHANGED 0% → 85%; ERROR 1 file (an `IndexError` to
+    diagnose).
 - Phase 5g Wave-3 method-call P4 + binary-expression wrap
   — closes the calibration gate at MATCH 83/83.
   Two interlocking wrap-priority additions for the final
-  DIFFER fixture (`orchestrator/08_string_concat_spec_-
-  layout`):
-    - `_emit_argument_list` now emits the spec's P4 form
-      (next-line single-indent) when a SINGLE-arg call's
-      P1 single-line form overflows 80 chars. Layout:
-      `methodName(\n<single-indent>arg)`. The arg is
-      emitted at `(indent_level + 1) * 4` (single-indent
-      past the call's statement start). The closing `)`
-      stays on the arg's last line. P4 fires only for
-      single-arg overflow; multi-arg overflow continues to
-      use P2 (paren-aligned, comma-packed).
-    - `_emit_binary_expression` now uses speculate-
-      measure-backtrack. The emitter speculates the
-      single-line shape; on overflow it backtracks and
-      re-emits with a break BEFORE the leftmost binary
-      operator in the chain. The leftmost operand lands on
-      its own line; the operator plus the remainder of the
-      chain wraps to a continuation at `+4` indent (per
-      spec C3 cumulative continuation rule). Implementation
-      walks the left-associative grammar tree to find the
-      leftmost binary_expression — for `a + b + c + d`
-      parsed as `((a + b) + c) + d`, the visually-leftmost
-      `+` is the one owned by the deepest left-descendant
-      binary_expression. After the leftmost operand and
-      operator, the remainder of the expression emits from
-      the source text (verbatim) because the source's
-      whitespace around remaining operators is already
-      spec-compliant for the current corpus.
-  Calibration-recon impact: the last DIFFER fixture
-  graduated to MATCH. **MATCH 82 → 83 (out of 83). DIFFER
-  1 → 0. PARTIAL still 0. MISSING still 0.** The
-  calibration gate (verification step 0 in the original
-  plan) is now closed: every one of the 83 existing
-  fixtures passes byte-for-byte against the spec-compliant
-  formatter.
-- Phase 5f Wave-3 class headers — `superclass` + `super_-
-  interfaces` + type-parameter wrap on overflow:
+  DIFFER fixture
+  (`orchestrator/08_string_concat_spec_layout`):
+  - `_emit_argument_list` now emits the spec's P4 form
+    (next-line single-indent) when a SINGLE-arg call's
+    P1 single-line form overflows 80 chars. Layout:
+    `methodName(\n<single-indent>arg)`. The arg is
+    emitted at `(indent_level + 1) * 4` (single-indent
+    past the call's statement start). The closing `)`
+    stays on the arg's last line. P4 fires only for
+    single-arg overflow; multi-arg overflow continues to
+    use P2 (paren-aligned, comma-packed).
+  - `_emit_binary_expression` now uses speculate-
+    measure-backtrack. The emitter speculates the
+    single-line shape; on overflow it backtracks and
+    re-emits with a break BEFORE the leftmost binary
+    operator in the chain. The leftmost operand lands on
+    its own line; the operator plus the remainder of the
+    chain wraps to a continuation at `+4` indent (per
+    spec C3 cumulative continuation rule). Implementation
+    walks the left-associative grammar tree to find the
+    leftmost binary_expression — for `a + b + c + d`
+    parsed as `((a + b) + c) + d`, the visually-leftmost
+    `+` is the one owned by the deepest left-descendant
+    binary_expression. After the leftmost operand and
+    operator, the remainder of the expression emits from
+    the source text (verbatim) because the source's
+    whitespace around remaining operators is already
+    spec-compliant for the current corpus.
+    Calibration-recon impact: the last DIFFER fixture
+    graduated to MATCH. **MATCH 82 → 83 (out of 83). DIFFER
+    1 → 0. PARTIAL still 0. MISSING still 0.** The
+    calibration gate (verification step 0 in the original
+    plan) is now closed: every one of the 83 existing
+    fixtures passes byte-for-byte against the spec-compliant
+    formatter.
+- Phase 5f Wave-3 class headers — `superclass` plus
+  `super_interfaces` plus type-parameter wrap on overflow:
   `_emit_class_declaration` no longer refuses `superclass`
   / `super_interfaces` clauses. Two new emitters cover
   the single-line forms — `_emit_superclass` emits
@@ -554,9 +688,10 @@ reverse-chronological from Phase 8d.
   emit-and-warn applies if even the wrapped form
   overflows. The `permits` clause continues to refuse
   pending a follow-up. Calibration-recon impact: the
-  previously-PARTIAL `orchestrator/10_long_generic_class_-
-  decl_wraps` fixture graduated straight to MATCH. MATCH
-  81 → 82. DIFFER unchanged at 1. PARTIAL 1 → 0.
+  previously-PARTIAL
+  `orchestrator/10_long_generic_class_decl_wraps` fixture
+  graduated straight to MATCH. MATCH 81 → 82. DIFFER
+  unchanged at 1. PARTIAL 1 → 0.
 - Phase 5e Wave-3 argument-list source-preservation:
   `_emit_argument_list` now preserves a source-authored
   multi-row argument list verbatim (via
@@ -581,8 +716,9 @@ reverse-chronological from Phase 8d.
   `+4` from the statement's indent (single-indent past the
   statement start). New `Emitter.snapshot()` and
   `Emitter.restore()` capture/restore the lines buffer +
-  current line + indent; new `Emitter.last_lines_max_width
-  (since)` reports the max width across all lines
+  current line + indent; new
+  `Emitter.last_lines_max_width(since)` reports the max
+  width across all lines
   finalized after a snapshot, so the wrap-priority engine
   can detect overflow. The variable-declarator emitter
   speculates the inline form, measures, and backtracks to
@@ -621,41 +757,42 @@ reverse-chronological from Phase 8d.
 - Phase 5b Wave-3 multi-line-header Allman + Tier-1 width
   fallback: three brace-placement decisions now hinge on
   source span / measured width:
-    - `_emit_while_statement` switches to Allman brace when
-      the `condition` (`parenthesized_expression`) spans
-      multiple source rows. Per spec
-      "Brace Placement / Exception: Multi-Line Conditions".
-      The developer-authored condition layout is preserved
-      verbatim from source.
-    - `_emit_for_statement` switches to Allman brace when
-      the for-header (init / condition / update bundle)
-      spans multiple source rows. Detection compares the
-      body's start row to the for-keyword's start row; when
-      they differ, the header is emitted verbatim from
-      source bytes (paren-aligned continuation lines from
-      source, semicolon separators preserved).
-    - `_emit_formal_parameters` now preserves source-
-      authored multi-line parameter lists (when the params
-      node spans multiple rows, emit verbatim via
-      `write_raw_lines`). Method bodies are already Allman,
-      so this combines naturally to produce the spec's
-      multi-line-params-with-Allman shape.
-    - `_emit_if_statement` Tier-1 short-circuit collapse
-      now gates on a measured width check: if the would-be
-      Tier-1 line (leading indent + `if ` + condition
-      source + ` ` + short-circuit statement source) exceeds
-      80 chars, fall back to Tier 2 (braced). Also inhibits
-      Tier 1 when the condition spans multiple rows (no
-      Tier 1 form makes sense for a multi-row condition).
-  New shared helper `_node_spans_multiple_rows(node)` —
-  used by all four call sites. Calibration-recon impact:
-  six previously-DIFFER fixtures graduated to MATCH —
-  `allman_braces/04_method_wrapped_params`, `/05_while_-
-  multiline_condition`, `/06_for_wrapped_header`, `/10_-
-  case5_cleanup_buggy_split`, `need_braces/09_long_short_-
-  circuit_uses_braces`, `/13_braced_short_circuit_too_-
-  long_kept`. MATCH 70 → 76. DIFFER 12 → 6. PARTIAL
-  unchanged at 1.
+  - `_emit_while_statement` switches to Allman brace when
+    the `condition` (`parenthesized_expression`) spans
+    multiple source rows. Per spec
+    "Brace Placement / Exception: Multi-Line Conditions".
+    The developer-authored condition layout is preserved
+    verbatim from source.
+  - `_emit_for_statement` switches to Allman brace when
+    the for-header (init / condition / update bundle)
+    spans multiple source rows. Detection compares the
+    body's start row to the for-keyword's start row; when
+    they differ, the header is emitted verbatim from
+    source bytes (paren-aligned continuation lines from
+    source, semicolon separators preserved).
+  - `_emit_formal_parameters` now preserves source-
+    authored multi-line parameter lists (when the params
+    node spans multiple rows, emit verbatim via
+    `write_raw_lines`). Method bodies are already Allman,
+    so this combines naturally to produce the spec's
+    multi-line-params-with-Allman shape.
+  - `_emit_if_statement` Tier-1 short-circuit collapse
+    now gates on a measured width check: if the would-be
+    Tier-1 line (leading indent + `if ` + condition
+    source + ` ` + short-circuit statement source) exceeds
+    80 chars, fall back to Tier 2 (braced). Also inhibits
+    Tier 1 when the condition spans multiple rows (no
+    Tier 1 form makes sense for a multi-row condition).
+    New shared helper `_node_spans_multiple_rows(node)` —
+    used by all four call sites. Calibration-recon impact:
+    six previously-DIFFER fixtures graduated to MATCH —
+    `allman_braces/04_method_wrapped_params`,
+    `allman_braces/05_while_multiline_condition`,
+    `allman_braces/06_for_wrapped_header`,
+    `allman_braces/10_case5_cleanup_buggy_split`,
+    `need_braces/09_long_short_circuit_uses_braces`, and
+    `need_braces/13_braced_short_circuit_too_long_kept`.
+    MATCH 70 → 76. DIFFER 12 → 6. PARTIAL unchanged at 1.
 - Phase 5a Wave-3 throws-clause wrap-priority (start of the
   wrap-priority engine): `_emit_throws` now measures the
   would-be single-line P1 width (caller's leading-indent
@@ -671,11 +808,12 @@ reverse-chronological from Phase 8d.
   not exercised by the current corpus and remain TODO
   pending fixtures. Calibration-recon impact: all five
   throws-overflow fixtures graduated to MATCH —
-  `throws_alignment/04_multi_exception_wraps_column_-
-  aligned`, `/05_compact_packed_input_re_aligns`,
-  `/07_already_correct_idempotent`, `/12_constructor_-
-  throws_wraps_column_aligned`, and `orchestrator/13_-
-  throws_clause_multi_exception_wraps_column_aligned`.
+  `throws_alignment/04_multi_exception_wraps_column_aligned`,
+  `throws_alignment/05_compact_packed_input_re_aligns`,
+  `throws_alignment/07_already_correct_idempotent`,
+  `throws_alignment/12_constructor_throws_wraps_column_aligned`,
+  and
+  `orchestrator/13_throws_clause_multi_exception_wraps_column_aligned`.
   MATCH 65 → 70. DIFFER 17 → 12. PARTIAL unchanged at 1.
 - Phase 4b Wave-2 javadoc reflow port: `_emit_comment` now
   dispatches block comments whose text begins with `/**`
@@ -684,57 +822,58 @@ reverse-chronological from Phase 8d.
   pipeline (`fix_javadoc_reflow.py`,
   `fix_javadoc_inline_tags.py`, `fix_javadoc_tags.py`) onto
   tree-sitter-identified comment ranges. Behaviors:
-    - Plain prose paragraphs (consecutive `* TEXT` lines not
-      starting with `@` / `<li>` / block HTML / `{@snippet`)
-      are reflowed to fill lines near 80 chars under the
-      orphan-or-overlong gate: reflow fires when ANY line
-      exceeds 80 chars OR when a paragraph has an awkward
-      orphan continuation (next line's first word could fit
-      on the previous line). Balanced paragraphs whose lines
-      fit and have no orphan are emitted verbatim — the
-      formatter doesn't churn developer-authored breaks just
-      because lines happen to be short.
-    - `{@link}` / `<code>` / similar inline-tag lines act as
-      paragraph BOUNDARIES (per the legacy
-      `fix_javadoc_reflow.py` rule). They emit as singletons
-      while adjacent prose sub-paragraphs are reflowed
-      independently. If ANY line in the surrounding
-      paragraph overflows 80 chars, the whole paragraph
-      reflows together (the legacy
-      `fix_javadoc_inline_tags.py` fallback).
-    - `@param NAME desc` / `@return desc` / `@throws Type desc`
-      descriptions are reflowed under the same orphan-or-
-      overlong gate. Continuation lines align with the
-      description's start column (one space past `NAME` /
-      `Type`, or one space past `@return`).
-    - `<pre> ... </pre>` interior content is preserved
-      verbatim — never reflowed (the spec carves out code
-      examples).
-    - `{@snippet ...}` directives and their continuation
-      `file="..."` lines emit verbatim (checkstyle's
-      `@snippet` ignorePattern grants them an 80-char
-      exemption).
-    - Comment delimiters (`/**`, `*/`), blank `*` separator
-      lines, and standalone block HTML openers / closers
-      (`<p>`, `<ul>`, etc.) emit verbatim.
-  Output re-indents to the formatter's authoritative
-  `emitter.indent_level` regardless of the source's leading
-  indent. Calibration-recon impact: ten previously-DIFFER
-  javadoc fixtures graduated to MATCH
-  (`javadoc_inline_tags/01_link_tag_paragraph` and `/02`;
-  `javadoc_reflow/01_orphan_continuation_reflowed`, `/02`,
-  and `/05`; `javadoc_tags/01_param_orphan`, `/02`, `/03`,
-  `/05`, `/06`, `/07`). The eleventh, `javadoc_reflow/-
-  06_at_param_skipped`, had its `expected.java`
-  regenerated as part of this commit — the fixture's
-  pre-spec expected output reflected the intermediate state
-  after the legacy `fix_javadoc_reflow.py` ran alone
-  (which intentionally SKIPS `@param` tags), not the
-  unified pipeline's final output (where the subsequent
-  `fix_javadoc_tags.py` collapses a fitting `@param`
-  description to one line). MATCH 54 → 65. DIFFER 28 → 17.
-  PARTIAL unchanged at 1.
-- Phase 4a Wave-2-prep fixture cleanup: nine more javadoc-*
+  - Plain prose paragraphs (consecutive `* TEXT` lines not
+    starting with `@` / `<li>` / block HTML / `{@snippet`)
+    are reflowed to fill lines near 80 chars under the
+    orphan-or-overlong gate: reflow fires when ANY line
+    exceeds 80 chars OR when a paragraph has an awkward
+    orphan continuation (next line's first word could fit
+    on the previous line). Balanced paragraphs whose lines
+    fit and have no orphan are emitted verbatim — the
+    formatter doesn't churn developer-authored breaks just
+    because lines happen to be short.
+  - `{@link}` / `<code>` / similar inline-tag lines act as
+    paragraph BOUNDARIES (per the legacy
+    `fix_javadoc_reflow.py` rule). They emit as singletons
+    while adjacent prose sub-paragraphs are reflowed
+    independently. If ANY line in the surrounding
+    paragraph overflows 80 chars, the whole paragraph
+    reflows together (the legacy
+    `fix_javadoc_inline_tags.py` fallback).
+  - `@param NAME desc` / `@return desc` / `@throws Type desc`
+    descriptions are reflowed under the same orphan-or-
+    overlong gate. Continuation lines align with the
+    description's start column (one space past `NAME` /
+    `Type`, or one space past `@return`).
+  - `<pre> ... </pre>` interior content is preserved
+    verbatim — never reflowed (the spec carves out code
+    examples).
+  - `{@snippet ...}` directives and their continuation
+    `file="..."` lines emit verbatim (checkstyle's
+    `@snippet` ignorePattern grants them an 80-char
+    exemption).
+  - Comment delimiters (`/**`, `*/`), blank `*` separator
+    lines, and standalone block HTML openers / closers
+    (`<p>`, `<ul>`, etc.) emit verbatim.
+    Output re-indents to the formatter's authoritative
+    `emitter.indent_level` regardless of the source's leading
+    indent. Calibration-recon impact: ten previously-DIFFER
+    javadoc fixtures graduated to MATCH
+    (`javadoc_inline_tags/01_link_tag_paragraph` and `/02`;
+    `javadoc_reflow/01_orphan_continuation_reflowed`, `/02`,
+    and `/05`; `javadoc_tags/01_param_orphan`, `/02`, `/03`,
+    `/05`, `/06`, `/07`). The eleventh fixture,
+    `javadoc_reflow/06_at_param_skipped`, had its
+    `expected.java`
+    regenerated as part of this commit — the fixture's
+    pre-spec expected output reflected the intermediate state
+    after the legacy `fix_javadoc_reflow.py` ran alone
+    (which intentionally SKIPS `@param` tags), not the
+    unified pipeline's final output (where the subsequent
+    `fix_javadoc_tags.py` collapses a fitting `@param`
+    description to one line). MATCH 54 → 65. DIFFER 28 → 17.
+    PARTIAL unchanged at 1.
+- Phase 4a Wave-2-prep fixture cleanup: nine more javadoc-\*
   fixture `expected.java` files updated to expand their
   incidental inline-`{}` method / class / constructor bodies
   to the spec's Allman form. Same drift category as Phase 3b
@@ -749,11 +888,14 @@ reverse-chronological from Phase 8d.
   itself. Fixtures updated:
   `javadoc_inline_tags/01_link_tag_paragraph`,
   `javadoc_inline_tags/02_code_tag_paragraph`,
-  `javadoc_reflow/02_inline_tag_line_preserved_prose_-
-  reflows`, and `javadoc_tags/01_param_orphan`,
-  `02_return_orphan`, `03_throws_orphan`, `05_multiple_-
-  tags`, `06_long_param_name_alignment`,
-  `07_single_line_param_overshoots_eighty`. No formatter
+  `javadoc_reflow/02_inline_tag_line_preserved_prose_reflows`,
+  and `javadoc_tags/01_param_orphan`,
+  `javadoc_tags/02_return_orphan`,
+  `javadoc_tags/03_throws_orphan`,
+  `javadoc_tags/05_multiple_tags`,
+  `javadoc_tags/06_long_param_name_alignment`, and
+  `javadoc_tags/07_single_line_param_overshoots_eighty`.
+  No formatter
   changes in this commit; fixture-only. Calibration counts
   unchanged: MATCH 54, DIFFER 28, MISSING 0, PARTIAL 1.
 - Phase 3b fixture-vs-spec drift cleanup (Wave 1 — fixtures):
@@ -763,42 +905,42 @@ reverse-chronological from Phase 8d.
   drift by either tightening the spec rule or updating the
   fixture"), the spec is correct in each case and the
   fixtures move. The drifts:
-    - `allman_braces/11_if_with_inline_comment` — fixture
-      had one space between `{` and `//`; spec C6 requires
-      exactly two. (Formatter behavior was already correct
-      in Phase 3a; this commit retires the off-by-1-byte
-      DIFFER.)
-    - `allman_braces/14_static_initializer` — fixture had
-      same-line `static {`; spec B10 requires Allman
-      (`static` and `{` on separate lines).
-    - `allman_braces/18_enum_constant_body` — fixture had
-      same-line `ALPHA {`; spec B9 requires Allman body
-      opening for enum-constant anonymous bodies.
-    - `need_braces/22_braced_short_circuit_with_paired_else_-
-      kept` — fixture had `}\n        else {` (uncuddled
-      else); spec C5 requires cuddled `} else {`.
-    - `throws_alignment/13_annotation_with_comma_args` —
-      fixture had `@MyAnno(a=1, b=2)` (no spaces around `=`
-      in annotation arguments); spec A4 requires single
-      space on each side of assignment-style operators in
-      `element_value_pair` nodes.
-    - `javadoc_inline_tags/03_already_reflowed_idempotent`,
-      `javadoc_inline_tags/04_pre_block_preserved`,
-      `javadoc_reflow/06_at_param_skipped`, and
-      `javadoc_tags/04_already_compact_idempotent` — each
-      had `public class Foo {}` (or
-      `public int doThing(int input) { return 0; }`)
-      single-line/inline-`{}` body shapes for the test's
-      otherwise-incidental class/method body; the spec
-      requires Allman expansion of all type and method
-      bodies regardless of contents. The javadoc content
-      in each fixture was already correct, so the brace-
-      shape update alone unlocks them.
-  Calibration-recon impact: all 9 updated fixtures graduated
-  to MATCH. MATCH 45 → 54. DIFFER 37 → 28. PARTIAL unchanged
-  at 1. After Wave 1, MATCH is 65% (54/83); the remaining
-  DIFFER fixtures all hinge on the wrap-priority engine
-  (Wave 3) or the javadoc reflow port (Wave 2).
+  - `allman_braces/11_if_with_inline_comment` — fixture
+    had one space between `{` and `//`; spec C6 requires
+    exactly two. (Formatter behavior was already correct
+    in Phase 3a; this commit retires the off-by-1-byte
+    DIFFER.)
+  - `allman_braces/14_static_initializer` — fixture had
+    same-line `static {`; spec B10 requires Allman
+    (`static` and `{` on separate lines).
+  - `allman_braces/18_enum_constant_body` — fixture had
+    same-line `ALPHA {`; spec B9 requires Allman body
+    opening for enum-constant anonymous bodies.
+  - `need_braces/22_braced_short_circuit_with_paired_else_kept`
+    — fixture had `}\n        else {` (uncuddled else);
+    spec C5 requires cuddled `} else {`.
+  - `throws_alignment/13_annotation_with_comma_args` —
+    fixture had `@MyAnno(a=1, b=2)` (no spaces around `=`
+    in annotation arguments); spec A4 requires single
+    space on each side of assignment-style operators in
+    `element_value_pair` nodes.
+  - `javadoc_inline_tags/03_already_reflowed_idempotent`,
+    `javadoc_inline_tags/04_pre_block_preserved`,
+    `javadoc_reflow/06_at_param_skipped`, and
+    `javadoc_tags/04_already_compact_idempotent` — each
+    had `public class Foo {}` (or
+    `public int doThing(int input) { return 0; }`)
+    single-line/inline-`{}` body shapes for the test's
+    otherwise-incidental class/method body; the spec
+    requires Allman expansion of all type and method
+    bodies regardless of contents. The javadoc content
+    in each fixture was already correct, so the brace-
+    shape update alone unlocks them.
+    Calibration-recon impact: all 9 updated fixtures graduated
+    to MATCH. MATCH 45 → 54. DIFFER 37 → 28. PARTIAL unchanged
+    at 1. After Wave 1, MATCH is 65% (54/83); the remaining
+    DIFFER fixtures all hinge on the wrap-priority engine
+    (Wave 3) or the javadoc reflow port (Wave 2).
 - Phase 3a-2 nested type-declaration brace indentation fix:
   `_emit_class_declaration`, `_emit_interface_declaration`,
   and `_emit_enum_declaration` previously emitted the
@@ -819,49 +961,50 @@ reverse-chronological from Phase 8d.
   inner-class bodies were emitting visibly broken output.
 - Phase 3a real formatter bug fixes (three bugs surfaced by
   DIFFER-fixture diagnosis after Phase 2z):
-    - Tier 1 short-circuit collapse no longer fires on an
-      `if_statement` that is the `alternative` of a parent
-      `if_statement` (i.e. an `else if` branch). Per spec
-      "Short-Circuit Conditionals / `if`/`else` pairs always
-      use braces" — once any branch in an if/else chain has
-      an `else`, every branch is braced, INCLUDING
-      intermediate `else if` branches whose body would
-      otherwise be Tier-1-eligible. New helper
-      `_is_else_branch_if(node)` performs the check; the
-      Tier 1 condition in `_emit_if_statement` adds it as a
-      third clause. (Tree-sitter Node objects don't support
-      Python `is` identity since each accessor returns a
-      fresh wrapper; comparison uses `==` which the binding
-      implements as structural equality on the underlying
-      node id.)
-    - Tier 1 collapse from a source Tier 2 block is now
-      inhibited when the developer authored a blank line
-      between the opening `{` and the short-circuit
-      statement. The blank line is a deliberate visual-
-      separation cue that single-line form would erase. The
-      `_short_circuit_body` helper now compares the brace's
-      source row to the statement's row and returns None
-      (refusing collapse) when there is at least one empty
-      line between them.
-    - `_emit_block` now preserves a developer-authored blank
-      line between the opening `{` and the first statement
-      AND emits inline side-comments on the brace line. A
-      `line_comment` or `block_comment` child whose source
-      row equals the opening `{`'s row is emitted on the
-      same line as the brace, separated by exactly two
-      spaces per spec C6 ("End-of-line side comments").
-      Subsequent statements emit on their own lines as
-      normal.
-  Calibration-recon impact: two previously-DIFFER fixtures
-  graduated to MATCH (`need_braces/18_braced_else_if_chain_-
-  kept` and `need_braces/19_braced_short_circuit_with_blank_-
-  line_kept`). MATCH 43 → 45. DIFFER 39 → 37. PARTIAL
-  unchanged at 1. The third targeted fixture
-  (`allman_braces/11_if_with_inline_comment`) remains DIFFER
-  by exactly 1 byte — the fixture has one space between `{`
-  and `//`, the spec C6 rule requires two, and the formatter
-  now emits two. Fixture-vs-spec drift; the fixture itself
-  needs updating in the Wave-1 fixture-cleanup commit.
+  - Tier 1 short-circuit collapse no longer fires on an
+    `if_statement` that is the `alternative` of a parent
+    `if_statement` (i.e. an `else if` branch). Per spec
+    "Short-Circuit Conditionals / `if`/`else` pairs always
+    use braces" — once any branch in an if/else chain has
+    an `else`, every branch is braced, INCLUDING
+    intermediate `else if` branches whose body would
+    otherwise be Tier-1-eligible. New helper
+    `_is_else_branch_if(node)` performs the check; the
+    Tier 1 condition in `_emit_if_statement` adds it as a
+    third clause. (Tree-sitter Node objects don't support
+    Python `is` identity since each accessor returns a
+    fresh wrapper; comparison uses `==` which the binding
+    implements as structural equality on the underlying
+    node id.)
+  - Tier 1 collapse from a source Tier 2 block is now
+    inhibited when the developer authored a blank line
+    between the opening `{` and the short-circuit
+    statement. The blank line is a deliberate visual-
+    separation cue that single-line form would erase. The
+    `_short_circuit_body` helper now compares the brace's
+    source row to the statement's row and returns None
+    (refusing collapse) when there is at least one empty
+    line between them.
+  - `_emit_block` now preserves a developer-authored blank
+    line between the opening `{` and the first statement
+    AND emits inline side-comments on the brace line. A
+    `line_comment` or `block_comment` child whose source
+    row equals the opening `{`'s row is emitted on the
+    same line as the brace, separated by exactly two
+    spaces per spec C6 ("End-of-line side comments").
+    Subsequent statements emit on their own lines as
+    normal.
+    Calibration-recon impact: two previously-DIFFER fixtures
+    graduated to MATCH:
+    `need_braces/18_braced_else_if_chain_kept` and
+    `need_braces/19_braced_short_circuit_with_blank_line_kept`.
+    MATCH 43 → 45. DIFFER 39 → 37. PARTIAL unchanged at 1.
+    The third targeted fixture
+    (`allman_braces/11_if_with_inline_comment`) remains DIFFER
+    by exactly 1 byte — the fixture has one space between `{`
+    and `//`, the spec C6 rule requires two, and the formatter
+    now emits two. Fixture-vs-spec drift; the fixture itself
+    needs updating in the Wave-1 fixture-cleanup commit.
 - Phase 2z enum constants with anonymous bodies:
   `_emit_enum_constant` now dispatches the optional body
   rather than refusing it. Per spec B9 ("Enum Constant
@@ -933,9 +1076,10 @@ reverse-chronological from Phase 8d.
   aligned with the first parameter, P3 next-line single-
   indented with each parameter on its own line, plus the
   bound-clause-overflow `&` alignment) land with the wrap-
-  priority phase. Calibration-recon impact: the previously-
-  PARTIAL `throws_alignment/11_generic_type_parameter_in_-
-  throws` fixture moved straight into MATCH. MATCH 42 → 43.
+  priority phase. Calibration-recon impact: the
+  previously-PARTIAL
+  `throws_alignment/11_generic_type_parameter_in_throws`
+  fixture moved straight into MATCH. MATCH 42 → 43.
 - Phase 2w try-with-resources: new
   `_emit_try_with_resources_statement` and `_emit_resource`
   emitters cover both shapes from spec B8. A single resource
@@ -1030,19 +1174,20 @@ reverse-chronological from Phase 8d.
   `_emit_interface_body_members` mirrors the existing
   class-body member emission. `constant_declaration`
   registered to reuse `_emit_field_declaration` since the
-  grammar shapes are identical (optional modifiers + type
-  + variable_declarator(s) + `;`). `_emit_method_-
-  declaration` extended to handle the abstract-method
-  case (no `body` field): emits `signature [throws];`
-  with the indented throws-line carrying the trailing
-  `;`, no Allman braces. Refuses `type_parameters`,
-  `extends_interfaces`, and `permits` clauses on the
-  interface header — those land with the "Class Headers"
-  wrap-priority phase. Calibration-recon impact: all 4
-  `interface_declaration` fixtures moved straight into
-  MATCH; the formerly-deferred abstract-method case is
-  now supported. MATCH count bumped 34 → 38 of 83
-  fixtures.
+  grammar shapes are identical: optional modifiers, type,
+  one or more variable declarators, trailing semicolon.
+  `_emit_method_declaration` extended to handle the
+  abstract-method case (no `body` field): emits the
+  signature plus an optional throws clause followed by a
+  trailing semicolon, with the indented throws-line
+  carrying the `;`, no Allman braces. Refuses
+  `type_parameters`, `extends_interfaces`, and `permits`
+  clauses on the interface header — those land with the
+  "Class Headers" wrap-priority phase. Calibration-recon
+  impact: all 4 `interface_declaration` fixtures moved
+  straight into MATCH; the formerly-deferred
+  abstract-method case is now supported. MATCH count
+  bumped 34 → 38 of 83 fixtures.
 - Phase 2r constructor declarations + static initializers:
   `_emit_constructor_declaration` handles the
   `[modifiers] NAME(params) [throws] { body }` shape with
@@ -1157,14 +1302,16 @@ reverse-chronological from Phase 8d.
   each side of `?` and `:` per the "Whitespace and Operator
   Spacing" spec section. The multi-tier wrapping (Tiers 2,
   3, 4 per "Line Continuation / Ternary Operator") lands
-  with the wrap-priority phase. `_emit_object_creation_-
-  expression` emits `new TYPE(ARGS)` with single space
-  after `new`, no space before the argument list. Refuses
-  anonymous class bodies (`new Type() { ... }`, Phase 2c8
-  scope) and explicit type-argument constructors
+  with the wrap-priority phase.
+  `_emit_object_creation_expression` emits
+  `new TYPE(ARGS)` with single space after `new`, no
+  space before the argument list. Refuses anonymous class
+  bodies (`new Type() { ... }`, Phase 2c8 scope) and
+  explicit type-argument constructors
   (`new <T>Foo(...)`, later phase). `_emit_generic_type`
-  emits `TYPE<TYPE_ARGS>` with no spaces; `_emit_type_-
-  arguments` emits `<TYPE, TYPE, ...>` or the diamond
+  emits `TYPE<TYPE_ARGS>` with no spaces;
+  `_emit_type_arguments` emits `<TYPE, TYPE, ...>` or the
+  diamond
   `<>` with comma-space separators per the spec.
   `scoped_type_identifier` (`Outer.Inner`) registered as
   `_emit_verbatim`. After Phase 2m the formatter handles

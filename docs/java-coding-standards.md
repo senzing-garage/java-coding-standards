@@ -242,19 +242,19 @@ public class Foo
 
 ## Whitespace and Operator Spacing
 
-| Where | Rule |
-|---|---|
-| Around binary operators (`+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&`, `\|`, `^`, `<<`, `>>`, `>>>`, `&&`, `\|\|`) | Single space on each side |
-| Around assignment operators (`=`, `+=`, `-=`, `*=`, `/=`, etc.) | Single space on each side |
-| Unary operators (`!`, `-`, `+`, `~`, `++`, `--`) | No space between operator and operand |
-| Type casts | Single space after closing cast paren: `(Type) value` |
-| After commas | Exactly one space |
-| After semicolons in `for` headers | Exactly one space |
-| Inside parentheses | No leading/trailing space |
-| Inside braces (non-empty array/collection initializers) | Single space after `{`, single space before `}`: `{ 1, 2, 3 }` |
-| Empty braces | `{}` (no space) |
-| Around generic type angle brackets `<>` | No space inside or around: `List<String>`, `Map<K, V>`, `<>` |
-| Wildcards | Space after `?` before `extends`/`super`: `? extends Foo`, `? super Bar` |
+| Where                                                                                                                                | Rule                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| Around binary operators (`+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&`, `\|`, `^`, `<<`, `>>`, `>>>`, `&&`, `\|\|`) | Single space on each side                                                |
+| Around assignment operators (`=`, `+=`, `-=`, `*=`, `/=`, etc.)                                                                      | Single space on each side                                                |
+| Unary operators (`!`, `-`, `+`, `~`, `++`, `--`)                                                                                     | No space between operator and operand                                    |
+| Type casts                                                                                                                           | Single space after closing cast paren: `(Type) value`                    |
+| After commas                                                                                                                         | Exactly one space                                                        |
+| After semicolons in `for` headers                                                                                                    | Exactly one space                                                        |
+| Inside parentheses                                                                                                                   | No leading/trailing space                                                |
+| Inside braces (non-empty array/collection initializers)                                                                              | Single space after `{`, single space before `}`: `{ 1, 2, 3 }`           |
+| Empty braces                                                                                                                         | `{}` (no space)                                                          |
+| Around generic type angle brackets `<>`                                                                                              | No space inside or around: `List<String>`, `Map<K, V>`, `<>`             |
+| Wildcards                                                                                                                            | Space after `?` before `extends`/`super`: `? extends Foo`, `? super Bar` |
 
 ---
 
@@ -968,7 +968,7 @@ listener / SAM-implementation patterns):
   with the `new Type(args)` expression, separated by a single
   space. This differs from class/method declarations (which use
   Allman) but matches the convention: the anonymous class is
-  structurally an *expression* (an instance-creation), not a
+  structurally an _expression_ (an instance-creation), not a
   top-level declaration.
 - The body inside the anonymous class follows standard rules for
   any class body — method declarations use Allman braces per the
@@ -1517,12 +1517,12 @@ result = service.executeWithFallback(
         + " " + describeInputs(input));
 ```
 
-| Wrap level | Content | Indent |
-|---|---|---|
-| 0 — statement base | `result = service.executeWithFallback(` | column 0 |
-| 1 — call arg list wraps to next-line | `"primary failed: "` | +4 |
-| 2 — string-concat operator breaks | `+ describe...(input)` | +8 |
-| 2 — same string-concat continues | `+ " " + describe...` | +8 (aligned with prior) |
+| Wrap level                           | Content                                 | Indent                  |
+| ------------------------------------ | --------------------------------------- | ----------------------- |
+| 0 — statement base                   | `result = service.executeWithFallback(` | column 0                |
+| 1 — call arg list wraps to next-line | `"primary failed: "`                    | +4                      |
+| 2 — string-concat operator breaks    | `+ describe...(input)`                  | +8                      |
+| 2 — same string-concat continues     | `+ " " + describe...`                   | +8 (aligned with prior) |
 
 Both `+` continuation lines are at +8 — they belong to the same
 wrap level (the string-concat inside the call arg). Only a NEW
@@ -1552,12 +1552,12 @@ compute(
             / (first - second) * thirdAndLongerName);
 ```
 
-| Level | Content | Indent |
-|---|---|---|
-| 0 | `compute(` | column 0 |
-| 1 | `(int first, ...` (lambda inside call) | +4 |
-| 2 | `-> ...` (arrow on own line within lambda) | +8 |
-| 3 | `/ (first - second) ...` (body operator continuation) | +12 |
+| Level | Content                                               | Indent   |
+| ----- | ----------------------------------------------------- | -------- |
+| 0     | `compute(`                                            | column 0 |
+| 1     | `(int first, ...` (lambda inside call)                | +4       |
+| 2     | `-> ...` (arrow on own line within lambda)            | +8       |
+| 3     | `/ (first - second) ...` (body operator continuation) | +12      |
 
 **Edge case — when cumulative indent itself exceeds 80**: the
 emit-and-warn rule from "Wrap Behavior — Cross-Cutting Rules"
@@ -1624,7 +1624,7 @@ cumulative +4 rule.
 The closing `}` of a preceding block is followed by a single space
 and the next keyword (`else`, `else if`, `catch`, `finally`,
 `while` in do-while). The keyword always shares a line with the
-closing `}`. This holds whether the *previous* block's condition
+closing `}`. This holds whether the _previous_ block's condition
 was single-line or multi-line:
 
 ```java
@@ -1749,19 +1749,19 @@ for (int i = 0; i < n; i++) {
 
 ### Member-level rules
 
-| Boundary | Rule |
-|---|---|
-| Right after class opening `{` (before first member) | No blank |
-| Right before class closing `}` (after last member) | No blank |
-| Between consecutive constructors | One blank line |
-| Between consecutive methods | One blank line |
-| Between method and inner class (either order) | One blank line |
-| Between consecutive inner classes / nested types | One blank line |
-| Around static initializer blocks | One blank line on each side |
-| Around instance initializer blocks | One blank line on each side |
-| Between last field and first non-field | One blank line |
-| Between last enum constant and the `;` separator | No blank — `;` directly after last constant |
-| Between the `;` (after enum constants) and the first method/field, if any | One blank line |
+| Boundary                                                                  | Rule                                        |
+| ------------------------------------------------------------------------- | ------------------------------------------- |
+| Right after class opening `{` (before first member)                       | No blank                                    |
+| Right before class closing `}` (after last member)                        | No blank                                    |
+| Between consecutive constructors                                          | One blank line                              |
+| Between consecutive methods                                               | One blank line                              |
+| Between method and inner class (either order)                             | One blank line                              |
+| Between consecutive inner classes / nested types                          | One blank line                              |
+| Around static initializer blocks                                          | One blank line on each side                 |
+| Around instance initializer blocks                                        | One blank line on each side                 |
+| Between last field and first non-field                                    | One blank line                              |
+| Between last enum constant and the `;` separator                          | No blank — `;` directly after last constant |
+| Between the `;` (after enum constants) and the first method/field, if any | One blank line                              |
 
 ### Javadoc-driven blank-line rule
 
@@ -1771,13 +1771,13 @@ it, separating it from the previous member. Fields and enum
 constants with no leading javadoc pack together with no blank line
 between them.
 
-| Member shape | Layout |
-|---|---|
-| Non-private field with javadoc | One blank line above the `/**` opening |
-| Private field with javadoc (allowed but not required) | One blank line above the `/**` opening |
-| Adjacent fields without javadoc (typically private) | No blank — packed |
-| Non-private enum constant (always javadoc'd by convention) | One blank line above the `/**` opening |
-| Private nested utility enum constants (no javadoc) | Single line if all constants fit within 80 chars (e.g. `private enum Mode { QUIET, NORMAL, VERBOSE; }`); otherwise one constant per line, no blanks between |
+| Member shape                                               | Layout                                                                                                                                                      |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Non-private field with javadoc                             | One blank line above the `/**` opening                                                                                                                      |
+| Private field with javadoc (allowed but not required)      | One blank line above the `/**` opening                                                                                                                      |
+| Adjacent fields without javadoc (typically private)        | No blank — packed                                                                                                                                           |
+| Non-private enum constant (always javadoc'd by convention) | One blank line above the `/**` opening                                                                                                                      |
+| Private nested utility enum constants (no javadoc)         | Single line if all constants fit within 80 chars (e.g. `private enum Mode { QUIET, NORMAL, VERBOSE; }`); otherwise one constant per line, no blanks between |
 
 **Convention note:** non-private fields and non-private enum
 constants should be individually javadoc'd describing their
@@ -1802,6 +1802,47 @@ clauses, implements/permits lists, multi-catch types, switch
 multi-label, lambda parameters, generic type parameters, array
 initializers, etc.).
 
+### Wrap Priority Engine
+
+Every wrappable construct in this document is emitted through a
+single priority-cascade engine. Each construct declares an ordered
+list of **candidate shapes** (single-line, paren-aligned, next-line
+single-indent, etc.). The engine commits the **first candidate
+whose rendered output fits** within the line-length budget; if all
+candidates overflow, the engine commits the last candidate anyway
+per the **emit-but-warn** rule (see "When wrap rules can't bring
+a line under 80").
+
+**How the budget is computed.** The budget for any wrap decision
+is `_MAX_LINE` (80) minus a **tail reserve** that accounts for
+trailing tokens the candidate cannot see — the `;` after an
+expression statement, the `)` closing an enclosing parenthesized
+expression, the `) {` after an `if` / `while` / `for` condition,
+the trailing `.method(args)` after a chain's receiver, and so on.
+Each enclosing construct bumps the reserve before emitting its
+inner expression and restores it afterwards. The composition is
+additive: an `if (binary && other) {` reserves `2 + 1 = 3` chars
+(`) {` from the `if`, `)` from the paren-expression that holds
+the condition), so the binary expression's wrap engine treats the
+effective max as 77 even though no character past column 77 has
+yet been written.
+
+**Speculative emission.** Candidates emit their full shape into
+the buffer; the engine measures the resulting line widths and,
+on overflow, rolls back the buffer and tries the next candidate.
+This means a wrap decision is a function of the **rendered**
+widths — including any nested wraps that fired during the
+candidate's emission — not of the source-text widths. Different
+input layouts that parse to the same AST produce the same output,
+which is what makes the formatter idempotent.
+
+**Cumulative continuation indent.** Each wrap level adds 4 spaces
+of continuation indent on top of the surrounding context. Multiple
+continuation lines at the same wrap level share the same indent;
+only entering a deeper wrap level adds another 4. The full rule
+and worked examples are in "Line Continuation / General
+Continuation Indentation" above.
+
 ### Wrap promotion is all-or-nothing
 
 When **any** item in a wrappable list would overflow at the
@@ -1823,7 +1864,7 @@ comma-packed args across two lines). These are not partial-mix
 anti-patterns — they are intentional, fully-specified shapes
 defined for the case where the entire item list fits on exactly
 two lines. The all-or-nothing rule applies at the transition
-*from* those two-line packed forms to the one-per-line form
+_from_ those two-line packed forms to the one-per-line form
 (priority 3), and from priority 3 to next-line-indented (priority
 4). Within the two-line packed shape, the break point is the
 latest separator that keeps both lines under 80 — that's a fixed
@@ -1923,6 +1964,69 @@ documentation hints): standard spacing — space before and after:
 ```java
 result = compute(/* timeoutMs= */ 5000, /* retry= */ true);
 ```
+
+### Line Comment Reflow
+
+A `//` line comment that starts at the current indent column
+and would render past 80 characters is **greedy-reflowed** into
+multiple `// `-prefixed lines at the same indent. Each
+reflowed line carries the `// ` prefix so the result re-parses
+as a sequence of individual `line_comment` nodes — that's
+what keeps the reflow idempotent across passes.
+
+**Greedy fill** — words are placed onto each line until the
+next word would exceed the budget; the next word starts a new
+line at the same column.
+
+```java
+// Before:
+                    // this comment is exceptionally long and exceeds the eighty character budget by a wide margin
+
+// After:
+                    // this comment is exceptionally long and exceeds the eighty
+                    // character budget by a wide margin
+```
+
+**Exemptions — these comments are NEVER reflowed:**
+
+- **Checkstyle / suppression directives** — the meaning of
+  these markers depends on a single-line shape that pairs with
+  a matching marker elsewhere in the file. Any comment whose
+  content begins with one of these tokens is preserved as-is:
+
+  - `CSOFF` (and its closing `CSON`)
+  - `CHECKSTYLE:OFF` (and its closing `CHECKSTYLE:ON`)
+  - `SUPPRESS` (e.g. `// SUPPRESS CHECKSTYLE …`)
+
+- **`@`-prefixed tags** — any comment whose content begins
+  with `@`. The exemption is intentionally broad (it covers
+  `// @snippet`, `// @param`, `// @SuppressWarnings`-style
+  markers, `// @author` notes, tool-specific `@`-prefixed
+  pragmas, etc.) — the assumption is that any `@`-token
+  carries syntactic meaning the developer placed deliberately,
+  and reflowing the comment could split the tag from its
+  argument across lines.
+
+- **URLs** — any comment containing `://` is preserved
+  verbatim. Splitting a URL on whitespace would mangle it; the
+  trade-off is that URL-bearing comments may exceed 80 chars.
+  Wrap the URL in a `<code>` block inside javadoc if the URL
+  is documentation rather than an inline note.
+
+**No paragraph merge.** Consecutive `//` comments are reflowed
+**independently**, never merged into a single paragraph. The
+developer might have authored adjacent comments that document
+distinct things, and merging them would conflate unrelated
+text. If a logical paragraph needs reflow as a unit, use a
+javadoc `/** */` block (which IS reflowed as a paragraph).
+
+**Side comments (end-of-line `// …`)** are NOT reflowed — they
+are tied positionally to the preceding code on the same line,
+and shifting them to additional lines below would break that
+association. A side comment that would push the line past 80
+characters is left as a LineLength violation for the developer
+to address (rephrase the comment, shorten the code, or hoist
+the comment to its own line above the statement).
 
 ### Array initializers
 
