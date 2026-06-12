@@ -567,6 +567,13 @@ _CSOFF_SCOPE_TYPES: Final[frozenset[str]] = frozenset({
     "enum_body",
     "constructor_body",
     "program",
+    # Switch bodies need their own entry: a `// CSOFF` placed
+    # inside one `case` of an old-style colon-form switch must
+    # NOT bleed into subsequent cases. Without these scope
+    # entries the walk-up would halt at the enclosing method
+    # `block` and find a stale-but-still-open CSOFF marker.
+    "switch_block",
+    "switch_block_statement_group",
 })
 
 
@@ -692,9 +699,14 @@ def _emit_text_block(emitter: Emitter, text: str) -> None:
         elif delta < 0:
             # Remove `-delta` leading spaces. Valid Java text
             # blocks always have content lines with leading
-            # whitespace ≥ closing-delimiter column, so this
-            # is safe; the defensive `lstrip` fallback covers
-            # malformed inputs without crashing.
+            # whitespace ≥ the closing-delimiter column per
+            # JLS § 3.10.6 ("Incidental White Space"), so this
+            # is safe — the `lstrip` fallback covers malformed
+            # inputs that wouldn't compile anyway. The compiler
+            # will reject any source where a content line is
+            # indented less than the closing `"""`; the
+            # formatter just avoids crashing on it so the rest
+            # of the file can still be processed.
             stripped = line.lstrip(" ")
             leading = len(line) - len(stripped)
             if leading >= -delta:
@@ -1833,20 +1845,28 @@ def _emit_if_statement(
         and not _is_else_branch_if(node)
         and not _node_spans_multiple_rows(condition)
     ):
-        # Tier 1 is structurally eligible. Measure the would-be
-        # width: leading indent + `if ` + condition + ` ` +
-        # short-circuit statement. If it overflows 80 chars,
-        # fall through to Tier 2 (braced) per spec
-        # "Short-Circuit Conditionals / Tier 2".
-        start_col = emitter.column
-        tier1_width = (
-            start_col
-            + len("if ")
-            + len(_node_source_text(source, condition))
-            + 1
-            + len(_node_source_text(source, short_circuit))
+        # Tier 1 is structurally eligible. Speculatively emit
+        # the would-be single-line `if (cond) STMT;` form;
+        # commit if the line fits and the condition/statement
+        # didn't introduce any newlines. Per spec
+        # "Short-Circuit Conditionals / Tier 2", an overflow
+        # falls through to the braced form below.
+        #
+        # The speculative-emit approach measures rendered
+        # widths (not source-text widths), so wrap decisions
+        # are deterministic from the AST regardless of input
+        # whitespace.
+        tier1_saved = emitter.snapshot()
+        emitter.write("if ")
+        _emit_node(emitter, source, condition)
+        emitter.write(" ")
+        _emit_node(emitter, source, short_circuit)
+        tier1_fits = (
+            emitter.last_lines_max_width(tier1_saved[0])
+            <= _MAX_LINE - emitter.tail_reserve
+            and emitter.line_count == tier1_saved[0]
         )
-        if tier1_width <= _MAX_LINE:
+        if tier1_fits:
             # Tier 1: `if (cond) STMT;`. The short-circuit
             # statement emitters (`return`/`continue`/`break`/
             # `throw`) write their own trailing `;`. Per the
@@ -1857,11 +1877,10 @@ def _emit_if_statement(
             # parent (the `_is_else_branch_if` check), since
             # "once any branch has an `else`, every branch is
             # braced".
-            emitter.write("if ")
-            _emit_node(emitter, source, condition)
-            emitter.write(" ")
-            _emit_node(emitter, source, short_circuit)
             return
+        # Roll back the Tier 1 attempt so the Tier 2 (braced)
+        # path below emits cleanly from the original state.
+        emitter.restore(tier1_saved)
 
     # Bump tail_reserve while emitting the condition so any
     # binary-expression wrap inside it accounts for the upcoming
@@ -3517,19 +3536,16 @@ def _emit_for_statement(
     # rule (the brace decision must reflect the FINAL
     # rendered shape, not the source's input shape).
     header_start = emitter.snapshot()
-    emitter.write("for (")
-    # Bump tail_reserve while emitting the for header parts so
-    # any binary-expression wrap inside accounts for the
-    # upcoming `) {`. Restored after the closing `)` is written.
-    prev_reserve = emitter.set_tail_reserve(
-        emitter.tail_reserve + 2
-    )
-    try:
-        # `local_variable_declaration` (the C-style declaring
-        # form `for (int i = 0; ...; ...)`) carries its own
-        # trailing `;`. Bare-expression init lists and
-        # comma-separated init expressions need an explicit
-        # `;` after the last init.
+
+    def emit_for_init_section() -> None:
+        """Init expression(s) + trailing `;`.
+
+        `local_variable_declaration` (the C-style declaring
+        form `for (int i = 0; ...; ...)`) carries its own
+        trailing `;`. Bare-expression init lists and
+        comma-separated init expressions need an explicit
+        `;` after the last init.
+        """
         if not inits:
             emitter.write(";")
         elif (
@@ -3544,11 +3560,20 @@ def _emit_for_statement(
                 _emit_node(emitter, source, init)
             emitter.write(";")
 
+    emitter.write("for (")
+    paren_col = emitter.column
+    # Bump tail_reserve while emitting the for header parts so
+    # any binary-expression wrap inside accounts for the
+    # upcoming `) {`. Restored after the closing `)` is written.
+    prev_reserve = emitter.set_tail_reserve(
+        emitter.tail_reserve + 2
+    )
+    try:
+        emit_for_init_section()
         if condition is not None:
             emitter.write(" ")
             _emit_node(emitter, source, condition)
         emitter.write(";")
-
         for index, update in enumerate(updates):
             if index == 0:
                 emitter.write(" ")
@@ -3558,6 +3583,44 @@ def _emit_for_statement(
     finally:
         emitter.set_tail_reserve(prev_reserve)
     emitter.write(")")
+
+    # If the header ended up too wide on a single line — no
+    # inner wrap fired (e.g. no `&&`/`||` for the condition
+    # wrap to break at) but the rendered text still exceeds
+    # `_MAX_LINE` — backtrack and emit a paren-aligned wrap at
+    # the `for (` column. Init/cond/update each get their own
+    # line, separated by `;`-terminated sections. This mirrors
+    # the multi-resource try-with-resources shape.
+    effective_max = _MAX_LINE - emitter.tail_reserve
+    single_line_header = emitter.line_count == header_start[0]
+    header_too_wide = (
+        emitter.last_lines_max_width(header_start[0])
+        > effective_max
+    )
+    if single_line_header and header_too_wide:
+        emitter.restore(header_start)
+        emitter.write("for (")
+        cont_indent = " " * paren_col
+        prev_reserve = emitter.set_tail_reserve(
+            emitter.tail_reserve + 2
+        )
+        try:
+            emit_for_init_section()
+            if condition is not None:
+                emitter.newline()
+                emitter.write(cont_indent)
+                _emit_node(emitter, source, condition)
+            emitter.write(";")
+            if updates:
+                emitter.newline()
+                emitter.write(cont_indent)
+                for index, update in enumerate(updates):
+                    if index > 0:
+                        emitter.write(", ")
+                    _emit_node(emitter, source, update)
+        finally:
+            emitter.set_tail_reserve(prev_reserve)
+        emitter.write(")")
     # Three reasons to switch to Allman brace placement:
     #   (1) the header itself emitted newlines (multi-row
     #       source or wrap inside the header),
@@ -3915,24 +3978,44 @@ def _emit_resource(
     # Spec B8 ("Try-with-resources / Single-resource form,
     # P2+"): when `TYPE NAME = VALUE` would overflow the line,
     # break BEFORE `=`. The `=` lands at the start of a
-    # continuation line at +4 past the resource's start column
-    # — same continuation rule as the standard
-    # variable-declarator break-at-= wrap.
+    # continuation line at +4 past the resource's start column.
+    #
+    # Preference order (matches `_emit_variable_declarator`):
+    #   (1) Inline single-line: `TYPE NAME = VALUE` all on one
+    #       line with VALUE rendered without internal wrap.
+    #   (2) Break-at-`=`: `TYPE NAME` on one line, `= VALUE` on
+    #       a continuation line with VALUE single-line. Spec B8
+    #       calls this the first fallback — preferred over
+    #       letting the value wrap internally.
+    #   (3) Inline with value-wrap: emit inline and let VALUE
+    #       handle its own multi-line wrap.
+    #
+    # Detecting "value didn't internally wrap" uses
+    # `emitter.line_count` — a clean inline emission produces no
+    # additional finalized lines.
     start_col = emitter.column
+    effective_max = _MAX_LINE - emitter.tail_reserve
+
+    # Step 1: try inline with no value-wrap.
     saved = emitter.snapshot()
     _emit_node(emitter, source, type_node)
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
     emitter.write(" = ")
     _emit_node(emitter, source, value_node)
-    effective_max = _MAX_LINE - emitter.tail_reserve
-    if (
+    value_introduced_newlines = emitter.line_count > saved[0]
+    inline_fits = (
         emitter.last_lines_max_width(saved[0]) <= effective_max
         and emitter.column < effective_max
-    ):
+    )
+    if inline_fits and not value_introduced_newlines:
         return
-    # Overflow — backtrack and emit with break-at-`=`.
+
+    # Step 2: try break-at-`=`. The value emits on the
+    # continuation line; if IT fits within the budget there
+    # we prefer this shape over Step 3.
     emitter.restore(saved)
+    p2_saved = emitter.snapshot()
     _emit_node(emitter, source, type_node)
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
@@ -3940,6 +4023,30 @@ def _emit_resource(
     emitter.write(" " * (start_col + 4))
     emitter.write("= ")
     _emit_node(emitter, source, value_node)
+    value_introduced_newlines_p2 = (
+        emitter.line_count > p2_saved[0] + 1
+    )
+    p2_fits = (
+        emitter.last_lines_max_width(p2_saved[0]) <= effective_max
+        and emitter.column < effective_max
+    )
+    if p2_fits and not value_introduced_newlines_p2:
+        return
+
+    # Step 3: fall back. Prefer inline-with-value-wrap when it
+    # actually fits within the budget; otherwise keep the
+    # break-at-`=` form already emitted (which at least bounds
+    # the LHS to its own line).
+    if inline_fits:
+        emitter.restore(saved)
+        _emit_node(emitter, source, type_node)
+        emitter.write(" ")
+        _emit_node(emitter, source, name_node)
+        emitter.write(" = ")
+        _emit_node(emitter, source, value_node)
+        return
+    # Break-at-`=` with value-wrap is already in the buffer
+    # from the Step 2 attempt — leave it committed.
 
 
 def _emit_lambda_expression(
@@ -4767,36 +4874,27 @@ def _emit_throws(
         emitter.write("throws")
         return
 
-    # Measure the would-be P1 single-line width. `emitter.column`
-    # is the current line position right before we emit "throws".
-    # That's the leading-indent column for the throws line. The
-    # P1 width therefore equals indent + `throws ` + sum of type
-    # source widths + 2*(n-1) comma-space separators.
-    start_col = emitter.column
-    type_widths = [
-        len(_node_source_text(source, t)) for t in types
-    ]
-    single_line_width = (
-        start_col
-        + len("throws ")
-        + sum(type_widths)
-        + 2 * (len(types) - 1)
-    )
-
+    # P1: try comma-space single-line. Speculative emission
+    # measures the actual rendered widths (avoids the
+    # source-text-width pitfall when the throws clause carries
+    # types with weird internal whitespace in source). If P1
+    # overflows we backtrack and emit P2 — one type per line,
+    # continuation-aligned with the first type's column.
+    saved = emitter.snapshot()
     emitter.write("throws ")
-    # `emitter.column` is now start_col + 7 — the continuation
-    # column for P2 lines.
     cont_col = emitter.column
-
-    if single_line_width <= _MAX_LINE:
-        # P1: all types on one line, comma-space separated.
-        for index, t in enumerate(types):
-            if index > 0:
-                emitter.write(", ")
-            _emit_node(emitter, source, t)
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.write(", ")
+        _emit_node(emitter, source, t)
+    effective_max = _MAX_LINE - emitter.tail_reserve
+    if emitter.last_lines_max_width(saved[0]) <= effective_max:
         return
 
-    # P2: one type per line, continuation aligned at `cont_col`.
+    # P2: one type per line, continuation aligned at the
+    # column immediately after `throws `.
+    emitter.restore(saved)
+    emitter.write("throws ")
     for index, t in enumerate(types):
         if index > 0:
             emitter.newline()
@@ -5026,7 +5124,19 @@ def _emit_field_access(
             "field_access missing 'object' or 'field' — grammar "
             "shape unexpected."
         )
-    _emit_node(emitter, source, object_node)
+    # Propagate tail_reserve to the object emit so any nested
+    # wrap engine inside the receiver accounts for the
+    # trailing `.field` (and whatever surrounds us above).
+    # Uses source-text width for the field — for identifiers
+    # the source matches the rendered width exactly.
+    field_text = _node_source_text(source, field_node)
+    prev_reserve = emitter.set_tail_reserve(
+        emitter.tail_reserve + 1 + len(field_text)
+    )
+    try:
+        _emit_node(emitter, source, object_node)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     emitter.write(".")
     _emit_node(emitter, source, field_node)
 
@@ -5648,30 +5758,41 @@ def _emit_variable_declarator(
     #   (3) Inline with value-wrap: fall back to letting the
     #       value emit its own wrap (method-call P2/P4, binary-
     #       expression wrap, etc.).
-    value_text = _node_source_text(source, value)
-    value_is_multiline = "\n" in value_text
-    if not value_is_multiline:
-        # Step 1: try inline single-line.
-        cont_col = (emitter.indent_level + 1) * 4
-        inline_width = (
-            emitter.column + len(" = ") + len(value_text) + 1
-        )
-        if inline_width <= _MAX_LINE:
-            emitter.write(" = ")
-            _emit_node(emitter, source, value)
-            return
-        # Step 2: try break-at-`=` with single-line value.
-        break_width = (
-            cont_col + len("= ") + len(value_text) + 1
-        )
-        if break_width <= _MAX_LINE:
-            emitter.newline()
-            emitter.push_indent()
-            emitter.write_indent()
-            emitter.write("= ")
-            _emit_node(emitter, source, value)
-            emitter.pop_indent()
-            return
+    effective_max = _MAX_LINE - emitter.tail_reserve
+
+    # Step 1: try inline single-line via speculative emission.
+    # If the value's emission stays on one line AND the line
+    # fits within the budget (counting the trailing `;` the
+    # field/local-variable declaration will write), commit.
+    saved = emitter.snapshot()
+    emitter.write(" = ")
+    _emit_node(emitter, source, value)
+    inline_fits = (
+        emitter.line_count == saved[0]
+        and emitter.column + 1 <= effective_max
+    )
+    if inline_fits:
+        return
+    emitter.restore(saved)
+
+    # Step 2: try break-at-`=` with single-line value.
+    # Continuation indent is one level deeper than the
+    # surrounding statement.
+    p2_saved = emitter.snapshot()
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
+    emitter.write("= ")
+    _emit_node(emitter, source, value)
+    p2_fits = (
+        emitter.line_count == p2_saved[0] + 1
+        and emitter.column + 1 <= effective_max
+    )
+    if p2_fits:
+        emitter.pop_indent()
+        return
+    emitter.pop_indent()
+    emitter.restore(p2_saved)
 
     # Step 3 (and the multi-line-value path): emit inline and
     # let the value handle its own wrap. The overflow check

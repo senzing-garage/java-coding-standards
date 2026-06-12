@@ -86,7 +86,8 @@ _CASES = _collect_fixture_cases()
 )
 def test_fixture_golden(case_dir: Path) -> None:
     """`format_source(input.java)` must equal `expected.java`
-    byte-for-byte.
+    byte-for-byte, AND a second pass on the output must be a
+    fixed point (idempotency).
 
     Calibration gate: the entire fixture suite is the
     contract surface for the formatter's emitted shape. A
@@ -94,8 +95,21 @@ def test_fixture_golden(case_dir: Path) -> None:
     the formatter started producing a different layout
     (genuine regression) or the spec/fixture changed
     intentionally and the other side needs updating.
+
+    The idempotency check is essential because the wrap
+    engine's decisions thread through tail-reserve and
+    speculative emission; a subtle change to the way one
+    wrap decision sees its surrounding context can produce
+    a different shape on the second pass that still happens
+    to match `expected.java` on the first. By asserting
+    `format(actual) == actual`, we lock the second-pass
+    behavior to the same fixed point.
     """
     input_bytes = (case_dir / "input.java").read_bytes()
     expected_bytes = (case_dir / "expected.java").read_bytes()
     actual = format_java.format_source(input_bytes)
     assert actual == expected_bytes
+    second_pass = format_java.format_source(actual)
+    assert second_pass == actual, (
+        "formatter is not idempotent on this fixture's output"
+    )

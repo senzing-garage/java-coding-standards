@@ -1998,8 +1998,14 @@ line at the same column.
   - `CHECKSTYLE:OFF` (and its closing `CHECKSTYLE:ON`)
   - `SUPPRESS` (e.g. `// SUPPRESS CHECKSTYLE …`)
 
-- **`@`-prefixed tags** — `// @snippet`, `// @param`,
-  `// @SuppressWarnings`-style markers, etc.
+- **`@`-prefixed tags** — any comment whose content begins
+  with `@`. The exemption is intentionally broad (it covers
+  `// @snippet`, `// @param`, `// @SuppressWarnings`-style
+  markers, `// @author` notes, tool-specific `@`-prefixed
+  pragmas, etc.) — the assumption is that any `@`-token
+  carries syntactic meaning the developer placed deliberately,
+  and reflowing the comment could split the tag from its
+  argument across lines.
 
 - **URLs** — any comment containing `://` is preserved
   verbatim. Splitting a URL on whitespace would mangle it; the

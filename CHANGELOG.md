@@ -92,10 +92,45 @@ Highlights:
   to auto-discover and verify every `tests/fixtures/<cat>/
   <case>/{input,expected}.java` pair as a live golden test
   (the existing 70 fixture pairs were previously dead data).
-  Added 25+ new fixture cases covering all new wrap
+  Every golden case ALSO asserts idempotency (format(actual)
+  == actual). 28 new fixture cases covering all new wrap
   behaviors. Added unit tests for `WrapContext`,
   `try_priorities`, and `Emitter.tail_reserve`. Total
-  passing tests: 575 (up from 463 at 0.3.0).
+  passing tests: 578 (up from 463 at 0.3.0).
+
+Review-driven fixes (in this same release cycle):
+
+- **`_emit_resource`** restructured to match spec B8
+  preference order — break-at-`=` is now the first fallback
+  when the inline form overflows, BEFORE letting the value's
+  inner wrap engine fire. The previous behavior could keep
+  `try (X r = new Foo(...))` inline (with the value wrapping
+  internally) when the spec calls for `try (X r\n    = new
+  Foo(...))` with the value single-line.
+- **CSOFF scope set** expanded with `switch_block` and
+  `switch_block_statement_group`. A `// CSOFF` directive
+  inside one colon-form switch case no longer bleeds into
+  subsequent cases.
+- **Source-text-width shortcuts replaced with speculative
+  emission** in `_emit_throws`, `_emit_if_statement`'s
+  Tier 1 short-circuit check, and `_emit_variable_declarator`
+  steps 1–2. Wrap decisions are now uniformly driven by
+  rendered widths, not source-text widths — robust against
+  unusual input whitespace and consistent with the rest of
+  the wrap engine.
+- **`_emit_field_access`** propagates `tail_reserve` to its
+  receiver emit. Nested method-chain wrap inside a
+  field-access head (e.g. `chain.thing().result.method()`)
+  now correctly accounts for the trailing `.field`.
+- **`_emit_variable_declarator`** consumes
+  `emitter.tail_reserve` in its width calculations, matching
+  the rest of the wrap engine's tail-reserve composition.
+- **For-statement paren-aligned header wrap** — when the
+  for-header is over budget but contains no binary expression
+  to wrap (the previous condition-wrap engine relied on
+  `&&`/`||`), init/condition/update each move to their own
+  line at the column after `for (`, mirroring the
+  multi-resource try-with-resources shape.
 
 ## [0.3.0] - 2026-06-11
 
