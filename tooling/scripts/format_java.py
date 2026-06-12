@@ -5519,9 +5519,14 @@ def _emit_method_chain_wrapped(
     "Method Chains"):
 
         - P1: single line `head.s1().s2()...sN()`.
-        - P2: head + first segment on line 1; subsequent
-          segments on their own lines, `.` chars vertically
-          aligned to the first `.` of the chain.
+        - P2: head + first segment on line 1 (or, when
+          `head is None`, the first two segments on line 1);
+          subsequent segments on their own lines, `.` chars
+          vertically aligned to the first `.` of the chain.
+          The head=None shape mirrors the head=Some shape so
+          the first wrap point is consistently at the second
+          `.` of the chain regardless of whether the chain has
+          an explicit receiver.
         - P3: head alone on line 1 (or first segment alone if
           `head is None`); each remaining segment on its own
           continuation line at single-indent past the
@@ -5571,10 +5576,14 @@ def _emit_method_chain_wrapped(
             first_dot_col = emitter.column
             emitter.write(".")
             emit_segment(segments[0])
+            wrap_from = 1
         else:
             emit_segment(segments[0])
             first_dot_col = emitter.column
-        for seg in segments[1:]:
+            emitter.write(".")
+            emit_segment(segments[1])
+            wrap_from = 2
+        for seg in segments[wrap_from:]:
             emitter.newline()
             emitter.write(" " * first_dot_col)
             emitter.write(".")
