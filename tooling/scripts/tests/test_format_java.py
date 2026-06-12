@@ -3407,7 +3407,7 @@ class TestTryPriorities:
         # last one is left committed rather than refused.
         # Both candidates emit past `_MAX_LINE`; the test
         # references the constant so it remains correct if
-        # the line-length cap is ever retuned.
+        # the line-length cap is ever changed.
         e = format_java.Emitter()
         long_first = "a" * (format_java._MAX_LINE + 10)
         long_last = "b" * (format_java._MAX_LINE + 20)
@@ -3446,7 +3446,7 @@ class TestTryPriorities:
         # `_MAX_LINE - 5`, so an emission of `_MAX_LINE - 2`
         # chars overflows and should fall through to the next
         # candidate. Anchored to the constant so the test
-        # stays correct if `_MAX_LINE` is retuned.
+        # stays correct if `_MAX_LINE` is ever changed.
         reserve = 5
         e = format_java.Emitter()
         e.set_tail_reserve(reserve)

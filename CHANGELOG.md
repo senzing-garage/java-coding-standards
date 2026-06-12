@@ -89,9 +89,10 @@ Highlights:
   is now safe to use from `pytest-xdist`, parallel batch
   formatters, and in-process services.
 - **Test infrastructure** — added `tests/test_fixtures.py`
-  to auto-discover and verify every `tests/fixtures/<cat>/
-<case>/{input,expected}.java` pair as a live golden test
-  (the existing 70 fixture pairs were previously dead data).
+  to auto-discover and verify every fixture pair under
+  `tests/fixtures/CATEGORY/CASE/` (the input + expected
+  pair) as a live golden test (the existing 70 fixture
+  pairs were previously dead data).
   Every golden case ALSO asserts idempotency (format(actual)
   == actual). 28 new fixture cases covering all new wrap
   behaviors. Added unit tests for `WrapContext`,
@@ -105,8 +106,9 @@ Review-driven fixes (in this same release cycle):
   when the inline form overflows, BEFORE letting the value's
   inner wrap engine fire. The previous behavior could keep
   `try (X r = new Foo(...))` inline (with the value wrapping
-  internally) when the spec calls for `try (X r\n    = new
-Foo(...))` with the value single-line.
+  internally) when the spec calls for the break-at-`=` form
+  with `X r` on the first line and `= new Foo(...)` on the
+  continuation line, with the value emitted single-line.
 - **CSOFF scope set** expanded with `switch_block` and
   `switch_block_statement_group`. A `// CSOFF` directive
   inside one colon-form switch case no longer bleeds into
@@ -254,13 +256,14 @@ reverse-chronological from Phase 8d.
      like `enum_body_declarations` and `block` brace
      wrapping). Catches emitter bugs that would silently
      change Java semantics.
-  2. **Idempotency** — `format(format(src)) == format
-(src)`.
+  2. **Idempotency** — formatting twice produces the same
+     output: `format(format(src)) == format(src)`.
   3. **Refusal cleanliness** — declined constructs raise
      a typed exception with a diagnostic; never a
      traceback into formatter internals.
-     Plus a six-case parametrized `test_broken_input_raises_-
-value_error` for the error-recovery property: malformed
+     Plus a six-case parametrized
+     `test_broken_input_raises_value_error` for the
+     error-recovery property: malformed
      inputs (unterminated class body, malformed condition,
      missing RHS, unbalanced parens, non-Java text) raise
      `ValueError` cleanly; the empty input is a valid Java
@@ -278,9 +281,10 @@ value_error` for the error-recovery property: malformed
     a `dimensions` named child of `variable_declarator`;
     the emitter now dispatches it between the name and
     the `=`.
-  - `_emit_variable_declarator` had a `value_is_multiline:
-return` shortcut that skipped the inline-overflow
-    check. When the multi-line source value collapsed to
+  - `_emit_variable_declarator` had a
+    `value_is_multiline: return` shortcut that skipped the
+    inline-overflow check. When the multi-line source
+    value collapsed to
     a long single line on first emission, the first pass
     kept the over-80 line; the second pass (now seeing a
     single-line value) correctly broke at `=`, causing
@@ -348,8 +352,9 @@ return` shortcut that skipped the inline-overflow
     the in-process tree-sitter formatter (Emitter /
     dispatch / wrap-priority engine). Replaced the "Running
     the pipeline" section with the new CLI usage (single
-    `format_file.py` entry point + `format_java.py --format
-FILE` for inspection). Removed the per-script behavior
+    `format_file.py` entry point plus
+    `format_java.py --format FILE` for inspection).
+    Removed the per-script behavior
     summary list. Added an "Upgrading from 0.2.x" section
     explaining the architectural shift, the one-time
     reformat expected, and the legacy artifacts to delete.
@@ -374,8 +379,8 @@ FILE` for inspection). Removed the per-script behavior
     file traverses; deliberate out-of-scope:
     `module_declaration`), and a CLI section listing the
     new `--format FILE` flags (`--write`, `--check`).
-  - `adoption/claude-md-templates/vscode-settings-
-snippet.json` rewritten — removed the
+  - `adoption/claude-md-templates/vscode-settings-snippet.json`
+    rewritten — removed the
     `java.format.settings.url` entry pointing at the
     deleted `tooling/ide/java-formatter.xml`, simplified
     the orchestrator commentary to describe the in-
@@ -422,9 +427,10 @@ snippet.json` rewritten — removed the
     anything.
   - The Eclipse JDT formatter Maven module deleted:
     `tooling/jdt-formatter/` (pom.xml, the JdtFormatter.java
-    shim, .gitignore). The XML profile `tooling/ide/-
-java-formatter.xml` deleted with it; the `tooling/ide/`
-    directory is now empty and was pruned. Consumers no
+    shim, .gitignore). The XML profile
+    `tooling/ide/java-formatter.xml` was deleted with it;
+    the `tooling/ide/` directory is now empty and was
+    pruned. Consumers no
     longer need a JDK on `PATH` to run `format_file.py`.
   - `.github/workflows/release.yaml` deleted — its only
     purpose was building and publishing the JDT JAR on
@@ -459,9 +465,10 @@ java-formatter.xml` deleted with it; the `tooling/ide/`
     `/init-java` flow still references the JDT JAR /
     profile / script-pipeline; needs a rewrite to describe
     the new single-file architecture.
-  - FAQ refresh under `docs/faqs/building/` — `java-format-
-ting-standards.md` and `javadoc-reflow-conventions.md`
-    still document the old pipeline.
+  - FAQ refresh under `docs/faqs/building/` — both
+    `java-formatting-standards.md` and
+    `javadoc-reflow-conventions.md` still document the old
+    pipeline.
   - Module / class-level docstrings in `format_java.py`
     and `format_file.py` still describe the migration as
     pending; bump them to "complete" wording.
@@ -519,9 +526,10 @@ ting-standards.md` and `javadoc-reflow-conventions.md`
     code currently uses).
 - Phase 6b Pre-flight bug fixes — spot-check survey of CHANGED
   files surfaced three real bugs:
-  - **Varargs parameter silently dropped**: `_emit_formal_-
-parameters` filtered to `formal_parameter` children
-    only, so `spread_parameter` (the grammar's node type for
+  - **Varargs parameter silently dropped**:
+    `_emit_formal_parameters` filtered to `formal_parameter`
+    children only, so `spread_parameter` (the grammar's
+    node type for
     `Type... name` varargs) was excluded — methods like
     `logError(Object... lines)` became `logError()`. Added
     `_emit_spread_parameter` per spec B12 (no space before
@@ -536,8 +544,9 @@ parameters` filtered to `formal_parameter` children
     `prev` is a `block_comment` / `line_comment`, follow
     source — emit a blank only if the source had one.
   - **IndexError on `@param NAME` with empty description**:
-    `_emit_javadoc_block`'s tag reflow accessed `desc_lines
-[0]` without checking for empty `desc_lines`. Some
+    `_emit_javadoc_block`'s tag reflow accessed
+    `desc_lines[0]` without checking for empty
+    `desc_lines`. Some
     consumer files have bare `@param NAME` with no
     description (or the description on a continuation line
     that the collector didn't pick up). Fix: short-circuit
@@ -570,9 +579,10 @@ parameters` filtered to `formal_parameter` children
     `super(...)`), `extends_interfaces` (on interface
     declarations), and `method_reference` (`Class::method`).
   - `_emit_enum_declaration` now accepts `super_interfaces`
-    (enum implementing interfaces); `_emit_interface_-
-declaration` accepts `extends_interfaces` (interface
-    extending parent interfaces); `_emit_formal_parameter`
+    (enum implementing interfaces);
+    `_emit_interface_declaration` accepts
+    `extends_interfaces` (interface extending parent
+    interfaces); `_emit_formal_parameter`
     accepts modifiers (keyword `final` + parameter
     annotations like `@NonNull`) inline — explicit inline
     emission since `_emit_modifiers` puts annotations on
@@ -591,8 +601,8 @@ declaration` accepts `extends_interfaces` (interface
     between consecutive members / statements (per spec A2
     blank-line rules; source-preservation captures spec
     A2 implicitly because real consumer code already
-    follows the rules). Detection uses `next.start_point
-[0] - prev.end_point[0] > 1`.
+    follows the rules). Detection uses
+    `next.start_point[0] - prev.end_point[0] > 1`.
   - `_emit_enum_body_members` collects `block_comment` /
     `line_comment` siblings of `enum_constant` nodes as
     "preceding javadoc" groups and emits them above each
@@ -619,8 +629,8 @@ declaration` accepts `extends_interfaces` (interface
 - Phase 5g Wave-3 method-call P4 + binary-expression wrap
   — closes the calibration gate at MATCH 83/83.
   Two interlocking wrap-priority additions for the final
-  DIFFER fixture (`orchestrator/08_string_concat_spec_-
-layout`):
+  DIFFER fixture
+  (`orchestrator/08_string_concat_spec_layout`):
   - `_emit_argument_list` now emits the spec's P4 form
     (next-line single-indent) when a SINGLE-arg call's
     P1 single-line form overflows 80 chars. Layout:
@@ -654,8 +664,8 @@ layout`):
     plan) is now closed: every one of the 83 existing
     fixtures passes byte-for-byte against the spec-compliant
     formatter.
-- Phase 5f Wave-3 class headers — `superclass` + `super_-
-interfaces` + type-parameter wrap on overflow:
+- Phase 5f Wave-3 class headers — `superclass` plus
+  `super_interfaces` plus type-parameter wrap on overflow:
   `_emit_class_declaration` no longer refuses `superclass`
   / `super_interfaces` clauses. Two new emitters cover
   the single-line forms — `_emit_superclass` emits
@@ -678,9 +688,10 @@ interfaces` + type-parameter wrap on overflow:
   emit-and-warn applies if even the wrapped form
   overflows. The `permits` clause continues to refuse
   pending a follow-up. Calibration-recon impact: the
-  previously-PARTIAL `orchestrator/10_long_generic_class_-
-decl_wraps` fixture graduated straight to MATCH. MATCH
-  81 → 82. DIFFER unchanged at 1. PARTIAL 1 → 0.
+  previously-PARTIAL
+  `orchestrator/10_long_generic_class_decl_wraps` fixture
+  graduated straight to MATCH. MATCH 81 → 82. DIFFER
+  unchanged at 1. PARTIAL 1 → 0.
 - Phase 5e Wave-3 argument-list source-preservation:
   `_emit_argument_list` now preserves a source-authored
   multi-row argument list verbatim (via
@@ -705,8 +716,9 @@ decl_wraps` fixture graduated straight to MATCH. MATCH
   `+4` from the statement's indent (single-indent past the
   statement start). New `Emitter.snapshot()` and
   `Emitter.restore()` capture/restore the lines buffer +
-  current line + indent; new `Emitter.last_lines_max_width
-(since)` reports the max width across all lines
+  current line + indent; new
+  `Emitter.last_lines_max_width(since)` reports the max
+  width across all lines
   finalized after a snapshot, so the wrap-priority engine
   can detect overflow. The variable-declarator emitter
   speculates the inline form, measures, and backtracks to
@@ -774,12 +786,13 @@ decl_wraps` fixture graduated straight to MATCH. MATCH
     New shared helper `_node_spans_multiple_rows(node)` —
     used by all four call sites. Calibration-recon impact:
     six previously-DIFFER fixtures graduated to MATCH —
-    `allman_braces/04_method_wrapped_params`, `/05_while_-
-multiline_condition`, `/06_for_wrapped_header`, `/10_-
-case5_cleanup_buggy_split`, `need_braces/09_long_short_-
-circuit_uses_braces`, `/13_braced_short_circuit_too_-
-long_kept`. MATCH 70 → 76. DIFFER 12 → 6. PARTIAL
-    unchanged at 1.
+    `allman_braces/04_method_wrapped_params`,
+    `allman_braces/05_while_multiline_condition`,
+    `allman_braces/06_for_wrapped_header`,
+    `allman_braces/10_case5_cleanup_buggy_split`,
+    `need_braces/09_long_short_circuit_uses_braces`, and
+    `need_braces/13_braced_short_circuit_too_long_kept`.
+    MATCH 70 → 76. DIFFER 12 → 6. PARTIAL unchanged at 1.
 - Phase 5a Wave-3 throws-clause wrap-priority (start of the
   wrap-priority engine): `_emit_throws` now measures the
   would-be single-line P1 width (caller's leading-indent
@@ -795,11 +808,12 @@ long_kept`. MATCH 70 → 76. DIFFER 12 → 6. PARTIAL
   not exercised by the current corpus and remain TODO
   pending fixtures. Calibration-recon impact: all five
   throws-overflow fixtures graduated to MATCH —
-  `throws_alignment/04_multi_exception_wraps_column_-
-aligned`, `/05_compact_packed_input_re_aligns`,
-  `/07_already_correct_idempotent`, `/12_constructor_-
-throws_wraps_column_aligned`, and `orchestrator/13_-
-throws_clause_multi_exception_wraps_column_aligned`.
+  `throws_alignment/04_multi_exception_wraps_column_aligned`,
+  `throws_alignment/05_compact_packed_input_re_aligns`,
+  `throws_alignment/07_already_correct_idempotent`,
+  `throws_alignment/12_constructor_throws_wraps_column_aligned`,
+  and
+  `orchestrator/13_throws_clause_multi_exception_wraps_column_aligned`.
   MATCH 65 → 70. DIFFER 17 → 12. PARTIAL unchanged at 1.
 - Phase 4b Wave-2 javadoc reflow port: `_emit_comment` now
   dispatches block comments whose text begins with `/**`
@@ -848,8 +862,9 @@ throws_clause_multi_exception_wraps_column_aligned`.
     (`javadoc_inline_tags/01_link_tag_paragraph` and `/02`;
     `javadoc_reflow/01_orphan_continuation_reflowed`, `/02`,
     and `/05`; `javadoc_tags/01_param_orphan`, `/02`, `/03`,
-    `/05`, `/06`, `/07`). The eleventh, `javadoc_reflow/-
-06_at_param_skipped`, had its `expected.java`
+    `/05`, `/06`, `/07`). The eleventh fixture,
+    `javadoc_reflow/06_at_param_skipped`, had its
+    `expected.java`
     regenerated as part of this commit — the fixture's
     pre-spec expected output reflected the intermediate state
     after the legacy `fix_javadoc_reflow.py` ran alone
@@ -873,11 +888,14 @@ throws_clause_multi_exception_wraps_column_aligned`.
   itself. Fixtures updated:
   `javadoc_inline_tags/01_link_tag_paragraph`,
   `javadoc_inline_tags/02_code_tag_paragraph`,
-  `javadoc_reflow/02_inline_tag_line_preserved_prose_-
-reflows`, and `javadoc_tags/01_param_orphan`,
-  `02_return_orphan`, `03_throws_orphan`, `05_multiple_-
-tags`, `06_long_param_name_alignment`,
-  `07_single_line_param_overshoots_eighty`. No formatter
+  `javadoc_reflow/02_inline_tag_line_preserved_prose_reflows`,
+  and `javadoc_tags/01_param_orphan`,
+  `javadoc_tags/02_return_orphan`,
+  `javadoc_tags/03_throws_orphan`,
+  `javadoc_tags/05_multiple_tags`,
+  `javadoc_tags/06_long_param_name_alignment`, and
+  `javadoc_tags/07_single_line_param_overshoots_eighty`.
+  No formatter
   changes in this commit; fixture-only. Calibration counts
   unchanged: MATCH 54, DIFFER 28, MISSING 0, PARTIAL 1.
 - Phase 3b fixture-vs-spec drift cleanup (Wave 1 — fixtures):
@@ -898,9 +916,9 @@ tags`, `06_long_param_name_alignment`,
   - `allman_braces/18_enum_constant_body` — fixture had
     same-line `ALPHA {`; spec B9 requires Allman body
     opening for enum-constant anonymous bodies.
-  - `need_braces/22_braced_short_circuit_with_paired_else_-
-kept` — fixture had `}\n        else {` (uncuddled
-    else); spec C5 requires cuddled `} else {`.
+  - `need_braces/22_braced_short_circuit_with_paired_else_kept`
+    — fixture had `}\n        else {` (uncuddled else);
+    spec C5 requires cuddled `} else {`.
   - `throws_alignment/13_annotation_with_comma_args` —
     fixture had `@MyAnno(a=1, b=2)` (no spaces around `=`
     in annotation arguments); spec A4 requires single
@@ -977,10 +995,11 @@ kept` — fixture had `}\n        else {` (uncuddled
     Subsequent statements emit on their own lines as
     normal.
     Calibration-recon impact: two previously-DIFFER fixtures
-    graduated to MATCH (`need_braces/18_braced_else_if_chain_-
-kept` and `need_braces/19_braced_short_circuit_with_blank_-
-line_kept`). MATCH 43 → 45. DIFFER 39 → 37. PARTIAL
-    unchanged at 1. The third targeted fixture
+    graduated to MATCH:
+    `need_braces/18_braced_else_if_chain_kept` and
+    `need_braces/19_braced_short_circuit_with_blank_line_kept`.
+    MATCH 43 → 45. DIFFER 39 → 37. PARTIAL unchanged at 1.
+    The third targeted fixture
     (`allman_braces/11_if_with_inline_comment`) remains DIFFER
     by exactly 1 byte — the fixture has one space between `{`
     and `//`, the spec C6 rule requires two, and the formatter
@@ -1057,9 +1076,10 @@ line_kept`). MATCH 43 → 45. DIFFER 39 → 37. PARTIAL
   aligned with the first parameter, P3 next-line single-
   indented with each parameter on its own line, plus the
   bound-clause-overflow `&` alignment) land with the wrap-
-  priority phase. Calibration-recon impact: the previously-
-  PARTIAL `throws_alignment/11_generic_type_parameter_in_-
-throws` fixture moved straight into MATCH. MATCH 42 → 43.
+  priority phase. Calibration-recon impact: the
+  previously-PARTIAL
+  `throws_alignment/11_generic_type_parameter_in_throws`
+  fixture moved straight into MATCH. MATCH 42 → 43.
 - Phase 2w try-with-resources: new
   `_emit_try_with_resources_statement` and `_emit_resource`
   emitters cover both shapes from spec B8. A single resource
@@ -1154,16 +1174,20 @@ throws` fixture moved straight into MATCH. MATCH 42 → 43.
   `_emit_interface_body_members` mirrors the existing
   class-body member emission. `constant_declaration`
   registered to reuse `_emit_field_declaration` since the
-  grammar shapes are identical (optional modifiers + type
-  - variable*declarator(s) + `;`). `\_emit_method*-
-    declaration`extended to handle the abstract-method
-case (no`body`field): emits`signature [throws];`with the indented throws-line carrying the trailing`;`, no Allman braces. Refuses `type_parameters`,
-`extends_interfaces`, and `permits`clauses on the
-interface header — those land with the "Class Headers"
-wrap-priority phase. Calibration-recon impact: all 4`interface_declaration` fixtures moved straight into
-    MATCH; the formerly-deferred abstract-method case is
-    now supported. MATCH count bumped 34 → 38 of 83
-    fixtures.
+  grammar shapes are identical: optional modifiers, type,
+  one or more variable declarators, trailing semicolon.
+  `_emit_method_declaration` extended to handle the
+  abstract-method case (no `body` field): emits the
+  signature plus an optional throws clause followed by a
+  trailing semicolon, with the indented throws-line
+  carrying the `;`, no Allman braces. Refuses
+  `type_parameters`, `extends_interfaces`, and `permits`
+  clauses on the interface header — those land with the
+  "Class Headers" wrap-priority phase. Calibration-recon
+  impact: all 4 `interface_declaration` fixtures moved
+  straight into MATCH; the formerly-deferred
+  abstract-method case is now supported. MATCH count
+  bumped 34 → 38 of 83 fixtures.
 - Phase 2r constructor declarations + static initializers:
   `_emit_constructor_declaration` handles the
   `[modifiers] NAME(params) [throws] { body }` shape with
@@ -1278,14 +1302,16 @@ wrap-priority phase. Calibration-recon impact: all 4`interface_declaration` fixt
   each side of `?` and `:` per the "Whitespace and Operator
   Spacing" spec section. The multi-tier wrapping (Tiers 2,
   3, 4 per "Line Continuation / Ternary Operator") lands
-  with the wrap-priority phase. `_emit_object_creation_-
-expression` emits `new TYPE(ARGS)` with single space
-  after `new`, no space before the argument list. Refuses
-  anonymous class bodies (`new Type() { ... }`, Phase 2c8
-  scope) and explicit type-argument constructors
+  with the wrap-priority phase.
+  `_emit_object_creation_expression` emits
+  `new TYPE(ARGS)` with single space after `new`, no
+  space before the argument list. Refuses anonymous class
+  bodies (`new Type() { ... }`, Phase 2c8 scope) and
+  explicit type-argument constructors
   (`new <T>Foo(...)`, later phase). `_emit_generic_type`
-  emits `TYPE<TYPE_ARGS>` with no spaces; `_emit_type_-
-arguments` emits `<TYPE, TYPE, ...>` or the diamond
+  emits `TYPE<TYPE_ARGS>` with no spaces;
+  `_emit_type_arguments` emits `<TYPE, TYPE, ...>` or the
+  diamond
   `<>` with comma-space separators per the spec.
   `scoped_type_identifier` (`Outer.Inner`) registered as
   `_emit_verbatim`. After Phase 2m the formatter handles

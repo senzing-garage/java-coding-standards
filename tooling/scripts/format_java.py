@@ -538,6 +538,13 @@ def try_priorities(
         )
     initial = emitter.snapshot()
     last_index = len(candidates) - 1
+    # `effective_max` is captured once because `initial`
+    # already carries the tail_reserve in effect at entry,
+    # and `restore(initial)` at the top of each loop
+    # iteration resets tail_reserve to that same value —
+    # so the cap stays consistent across all attempts even
+    # if a misbehaving candidate adjusts tail_reserve
+    # internally without unwinding it.
     effective_max = _MAX_LINE - emitter.tail_reserve
     for index, fn in enumerate(candidates):
         emitter.restore(initial)
@@ -730,9 +737,6 @@ def _emit_text_block(emitter: Emitter, text: str) -> None:
                 adjusted.append(line[-delta:])
             else:
                 adjusted.append(stripped)
-        # The `delta == 0` case short-circuits via the
-        # early-return above (we never reach this loop with
-        # delta == 0), so no `else` branch is needed here.
     emitter.write_raw_lines("\n".join(adjusted))
 
 
@@ -2929,16 +2933,25 @@ def _emit_switch_block(
     Caller positions the emitter at the column where `{`
     starts. Case rules (`switch_rule` or `switch_block_-
     statement_group`) are emitted at indent_level + 1.
+    `line_comment` and `block_comment` children that
+    tree-sitter parks at the `switch_block` level (typically
+    a comment sitting between two `case` groups, which the
+    grammar can't unambiguously attach to either side) are
+    emitted at the same indent so the comment is preserved
+    rather than silently dropped.
     """
-    cases = [
+    items = [
         c for c in node.named_children
         if c.type in (
-            "switch_rule", "switch_block_statement_group"
+            "switch_rule",
+            "switch_block_statement_group",
+            "line_comment",
+            "block_comment",
         )
     ]
     emitter.write("{")
     emitter.newline()
-    _emit_indented_member_list(emitter, source, cases)
+    _emit_indented_member_list(emitter, source, items)
     emitter.write_indent()
     emitter.write("}")
 
@@ -3627,6 +3640,12 @@ def _emit_for_statement(
         > effective_max
     )
     if single_line_header and header_too_wide:
+        # `paren_col` was captured during the first-pass write
+        # of `"for ("` above. After `restore(header_start)`,
+        # the indent level is back to what it was at the start
+        # of the for-header, so re-emitting `"for ("` lands the
+        # `(` at the same column — re-using `paren_col` for
+        # the continuation indent is safe.
         emitter.restore(header_start)
         emitter.write("for (")
         cont_indent = " " * paren_col
@@ -4066,6 +4085,12 @@ def _emit_resource(
     # actually fits within the budget; otherwise keep the
     # break-at-`=` form already emitted (which at least bounds
     # the LHS to its own line).
+    #
+    # `saved` is the pre-Step-1 snapshot. Step 2 already called
+    # `restore(saved)` once to start its attempt cleanly, so
+    # restoring `saved` here from the post-Step-2 buffer state
+    # rewinds to the same pre-Step-1 starting point — exactly
+    # what the inline form needs.
     if inline_fits:
         emitter.restore(saved)
         _emit_node(emitter, source, type_node)
@@ -5829,7 +5854,9 @@ def _emit_variable_declarator(
     if p2_fits:
         emitter.pop_indent()
         return
-    emitter.pop_indent()
+    # No explicit pop_indent on the failing path —
+    # `restore()` resets `self._indent` to the snapshot's
+    # captured value, which already undoes the push above.
     emitter.restore(p2_saved)
 
     # Step 3 (and the multi-line-value path): emit inline and

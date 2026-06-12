@@ -60,7 +60,14 @@ def _collect_fixture_cases() -> list[tuple[str, Path]]:
     `<category>/<case>` so pytest output stays readable.
     """
     if not _FIXTURES_DIR.is_dir():
-        return []
+        # Fail loudly rather than silently collecting zero
+        # cases — a missing fixtures dir means the test suite
+        # would pass with no coverage. The skip-with-message
+        # surfaces the problem in pytest's output.
+        pytest.skip(
+            f"fixtures directory not found: {_FIXTURES_DIR}",
+            allow_module_level=True,
+        )
     out: list[tuple[str, Path]] = []
     for category in sorted(_FIXTURES_DIR.iterdir()):
         if not category.is_dir() or category.name.startswith("."):
