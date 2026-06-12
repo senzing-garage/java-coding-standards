@@ -2212,19 +2212,42 @@ class TestFormatSourceSubset:
         # (`for (i = 0, j = 0; ...)`) — the grammar surfaces
         # them as multiple children sharing the `init` field
         # name; the emitter collects all of them and emits
-        # comma-separated.
+        # comma-separated. Pin the full output so a regression
+        # that corrupts the surrounding class body would also
+        # be caught.
         out = format_java.format_source(
             b"class A { void m() { "
             b"for (i = 0, j = 0; i < n; i++) {} } }"
         )
-        assert b"for (i = 0, j = 0; i < n; i++) {" in out
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        for (i = 0, j = 0; i < n; i++) {\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
 
     def test_for_multi_update(self) -> None:
+        # Mirror of `test_for_multi_init` for the update slot
+        # (`for (... ; ... ; i++, j++)`). Full-output pin for
+        # the same surrounding-context regression reason.
         out = format_java.format_source(
             b"class A { void m() { "
             b"for (int i = 0; i < n; i++, j++) {} } }"
         )
-        assert b"for (int i = 0; i < n; i++, j++) {" in out
+        assert out == (
+            b"class A\n"
+            b"{\n"
+            b"    void m()\n"
+            b"    {\n"
+            b"        for (int i = 0; i < n; i++, j++) {\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
 
     # --- try/catch/finally (Phase 2k) ---
 

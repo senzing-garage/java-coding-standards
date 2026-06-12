@@ -5436,6 +5436,21 @@ def _emit_argument_list(
             if index == len(args) - 1:
                 # Reserve 1 char of slack on the final arg
                 # for the trailing `)` that follows.
+                #
+                # Asymmetry-justification: `widths_ok` above is
+                # a multi-line check (`last_lines_max_width`),
+                # while this final-arg check is column-only
+                # (`emitter.column`, the in-progress line's
+                # width). The combined gate is still correct
+                # because the multi-line check has already
+                # rejected any speculative emit whose
+                # intermediate wrapped line overflows; only the
+                # last line's tail (current column) still needs
+                # to leave room for the `)`. If a future
+                # refactor splits the gate, preserve that
+                # invariant: any intermediate line's width must
+                # be `<= effective_max`, only the final line
+                # needs the `< effective_max` (strict) cap.
                 widths_ok = (
                     widths_ok
                     and emitter.column < effective_max
