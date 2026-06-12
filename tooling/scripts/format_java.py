@@ -315,12 +315,12 @@ class Emitter:
         self._tail_reserve = value
         return previous
 
-    def snapshot(self) -> tuple[int, str, int]:
+    def snapshot(self) -> tuple[int, str, int, int]:
         """Capture the emitter state for speculative emission.
 
-        Returns a tuple `(lines_count, current, indent)`
-        suitable for `restore()`. The wrap-priority engines use
-        the pattern:
+        Returns a tuple `(lines_count, current, indent,
+        tail_reserve)` suitable for `restore()`. The
+        wrap-priority engines use the pattern:
 
             saved = emitter.snapshot()
             <try emitting in some shape>
@@ -330,23 +330,31 @@ class Emitter:
 
         Cheap because the lines list is immutable from the
         perspective of restore (we capture its length, not its
-        contents).
+        contents). `tail_reserve` is included so a candidate
+        that adjusts it via `set_tail_reserve()` without using
+        try/finally still restores cleanly on backtrack.
         """
-        return (len(self._lines), self._current, self._indent)
+        return (
+            len(self._lines),
+            self._current,
+            self._indent,
+            self._tail_reserve,
+        )
 
     def restore(
-        self, snap: tuple[int, str, int]
+        self, snap: tuple[int, str, int, int]
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
 
         Truncates the lines list back to its captured length
-        and resets the current line + indent. Any text emitted
-        after the snapshot is discarded.
+        and resets the current line, indent, and tail reserve.
+        Any text emitted after the snapshot is discarded.
         """
-        lines_count, current, indent = snap
+        lines_count, current, indent, tail_reserve = snap
         del self._lines[lines_count:]
         self._current = current
         self._indent = indent
+        self._tail_reserve = tail_reserve
 
     def last_lines_max_width(self, since: int) -> int:
         """Return the maximum width across all lines finalized
@@ -713,8 +721,9 @@ def _emit_text_block(emitter: Emitter, text: str) -> None:
                 adjusted.append(line[-delta:])
             else:
                 adjusted.append(stripped)
-        else:
-            adjusted.append(line)
+        # The `delta == 0` case short-circuits via the
+        # early-return above (we never reach this loop with
+        # delta == 0), so no `else` branch is needed here.
     emitter.write_raw_lines("\n".join(adjusted))
 
 
@@ -1521,13 +1530,11 @@ def _emit_method_declaration(
         _emit_node(emitter, source, modifiers_node)
 
     # Try-emit the single-line signature. If it overflows 80
-    # chars AND the method has type parameters, backtrack and
-    # emit the spec B11 wrapped form (type-parameter list
-    # multi-line, return-type/name/parameters on a continuation
-    # line). Without type parameters there's nothing to wrap on
-    # here — overflow caused by long parameter lists is a
-    # separate wrap (formal-parameters P2/P3/P4) not yet
-    # implemented.
+    # chars, backtrack and emit the wrapped form. With type
+    # parameters present, the spec B11 type-parameter wrap
+    # applies (`_emit_method_header_wrapped`). Without type
+    # parameters, the parameter list itself is force-wrapped
+    # via `_emit_formal_parameters(force_wrap=True)`.
     saved = emitter.snapshot()
     if type_parameters_node is not None:
         # Per spec B11: `<T>` comes BEFORE the return type, with
@@ -5310,7 +5317,7 @@ def _emit_argument_list(
         # list MUST source-preserve — the wrap engine has no
         # concept of "comment between args" and would either
         # drop the comment or treat it as a syntactic arg
-        # (producing unparseable output). The first-line-fit
+        # (producing output that fails to parse). The first-line-fit
         # gate is bypassed in that case; the CSOFF gate is
         # likewise unconditional.
         has_comment = any(

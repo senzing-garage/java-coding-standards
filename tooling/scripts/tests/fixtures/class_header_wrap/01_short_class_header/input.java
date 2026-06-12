@@ -1,3 +1,3 @@
-public class Demo extends Base implements Iface
+public class Demo extends Base implements Interface
 {
 }
