@@ -26,15 +26,17 @@ Conventions for new cases:
   doc. The current set:
 
       allman_braces/            — brace-placement rules
-      method_chain_wrap/        — `.method()` chain wrap
-      ternary_wrap/             — `?:` cascade
       class_header_wrap/        — extends/implements wrap
-      method_decl_wrap/         — non-generic param wrap
       condition_wrap/           — if/while/for + tail_reserve
       javadoc_inline_tags/      — `{@code}`, `{@link}` etc.
       javadoc_reflow/           — paragraph reflow
       javadoc_tags/             — `@param`/`@return` etc.
+      line_comment_reflow/      — `//` reflow + directive exempt
+      method_chain_wrap/        — `.method()` chain wrap
+      method_decl_wrap/         — non-generic param wrap
       need_braces/              — Tier-1 brace synthesis
+      ternary_wrap/             — `?:` cascade
+      text_block/               — triple-quoted indent-shift
       throws_alignment/         — throws-clause wrap
 """
 

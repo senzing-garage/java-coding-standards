@@ -6,6 +6,7 @@ arrive with subsequent phases.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import subprocess
 import sys
@@ -3346,8 +3347,16 @@ class TestWrapContext:
         # this invariant guards against accidental aliasing
         # bugs in wrap helpers that pass the same ctx down
         # multiple recursion levels.
+        #
+        # Python 3.11+ raises `FrozenInstanceError` from
+        # `dataclasses`; earlier 3.10 still raises a plain
+        # `AttributeError`. The narrow catch ensures an
+        # unrelated typo or import error in the test doesn't
+        # silently pass this assertion.
         ctx = format_java.WrapContext.at(0)
-        with pytest.raises(Exception):
+        with pytest.raises(
+            (dataclasses.FrozenInstanceError, AttributeError)
+        ):
             ctx.start_col = 99  # type: ignore[misc]
 
     def test_uses_slots_no_dict(self) -> None:
@@ -3396,19 +3405,22 @@ class TestTryPriorities:
     def test_commits_last_when_all_overflow(self) -> None:
         # spec C1: emit + warn — when no candidate fits, the
         # last one is left committed rather than refused.
+        # Both candidates emit past `_MAX_LINE`; the test
+        # references the constant so it remains correct if
+        # the line-length cap is ever retuned.
         e = format_java.Emitter()
-        long_a = "a" * 90
-        long_b = "b" * 100
+        long_first = "a" * (format_java._MAX_LINE + 10)
+        long_last = "b" * (format_java._MAX_LINE + 20)
 
         def p1() -> None:
-            e.write(long_a)
+            e.write(long_first)
 
         def p2() -> None:
-            e.write(long_b)
+            e.write(long_last)
 
         index = format_java.try_priorities(e, [p1, p2])
         assert index == 1
-        assert e.finish() == (long_b + "\n").encode("utf-8")
+        assert e.finish() == (long_last + "\n").encode("utf-8")
 
     def test_buffer_rolled_back_between_candidates(
         self,
@@ -3430,16 +3442,20 @@ class TestTryPriorities:
         assert out == b"CLEAN\n"
 
     def test_respects_tail_reserve(self) -> None:
-        # With tail_reserve = 5, the effective max is 75, so a
-        # 78-char emission should overflow and fall through.
+        # With `tail_reserve = 5`, the effective max is
+        # `_MAX_LINE - 5`, so an emission of `_MAX_LINE - 2`
+        # chars overflows and should fall through to the next
+        # candidate. Anchored to the constant so the test
+        # stays correct if `_MAX_LINE` is retuned.
+        reserve = 5
         e = format_java.Emitter()
-        e.set_tail_reserve(5)
+        e.set_tail_reserve(reserve)
 
         def p1() -> None:
-            e.write("x" * 78)
+            e.write("x" * (format_java._MAX_LINE - 2))
 
         def p2() -> None:
-            e.write("y" * 70)
+            e.write("y" * (format_java._MAX_LINE - reserve - 5))
 
         index = format_java.try_priorities(e, [p1, p2])
         assert index == 1

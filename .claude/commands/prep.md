@@ -1,6 +1,7 @@
 # Prepare for Commit
 
 **TWO MODES:**
+
 - **DEFAULT (fast)**: same correctness checks as `--full`, but parallelized and with hardcoded omissions (doc-build, examples, assembly, redundant builds). NO LLM JUDGMENT about what's relevant — the only "skips" are mechanical (hardcoded fast-mode-omits) or trivially testable (lock-file diff is a one-line shell test, not a decision the agent makes).
 - **`--full` (thorough)**: adds doc build, examples, dep audit unconditionally, assembly. Use before a release tag.
 
@@ -9,6 +10,7 @@
 **MANDATORY: You MUST launch an Opus agent (`model: "opus"`) to perform the checks. This is NOT optional. The agent provides independent verification. If you skip the agent or run checks manually instead, you are violating this directive. "Nothing to commit" or "already pushed" does NOT exempt you from launching the agent — the agent validates the CURRENT STATE of the branch.**
 
 **EXECUTION:** Pass this entire prompt as the agent's task, plus the **mode** (`fast` or `full`). The agent must:
+
 1. Detect ALL languages present in the project (`pom.xml` / `build.gradle` → Java; `pyproject.toml` / `requirements.txt` → Python; etc.). Run checks for **every** detected language; the agent does NOT decide which ones to skip based on diff content.
 2. **Run independent checks in parallel** via the Bash tool's `run_in_background: true` and `Monitor` for completion. Sequential is the wrong default.
 3. Cap checks with timeouts (`mvn test` 15 min, `pytest` 5 min, others 5 min) — kill and report timeout as ❌ if exceeded.
@@ -16,15 +18,18 @@
 5. **Final line of the report MUST be a `/clear` readiness verdict.** See "/clear Handoff Verdict" section below — this is mandatory and non-negotiable. /prep is BOTH a commit-readiness gate AND a session-handoff gate; the latter is the more rigorous of the two and dominates the summary line.
 
 **FAST-MODE OMISSIONS (hardcoded; NOT diff-dependent):**
+
 - `mvn javadoc:javadoc`, `mvn site` — `--full` only (these aren't correctness gates)
 - `mvn package` / `mvn install` — `--full` only (compile + test already prove the bulk of the build)
 - `markdown-table-formatter` + `prettier --write` over the whole tree — SKIP unconditionally; rewriting hand-tuned plan files mid-prep is a foot-gun. Use `prettier --check` (no write) on the whole `.md` tree instead.
 
 **SHELL-GATED (mechanical; deterministic test, no LLM judgment):**
+
 - `mvn -Pspotbugs spotbugs:check` — run iff `git diff --name-only origin/main...HEAD -- 'src/**/*.java' 'pom.xml' | grep .` is non-empty. Otherwise skip with note "no Java code changes."
 - `pip-audit` / `safety check` — run iff `git diff --name-only origin/main...HEAD -- '**/requirements*.txt' '**/pyproject.toml' | grep .` is non-empty.
 
 **ALWAYS RUN (no skip ever, both modes):**
+
 - All language formatters (`format_file.py` for Java; `ruff format --check` for Python if configured).
 - All language linters (`mvn -Pcheckstyle validate`; `ruff check` if configured).
 - All language compilers / type-checkers (`mvn compile`; `mypy` if configured).
@@ -33,30 +38,32 @@
 
 **MANDATORY PARALLELISM:**
 The agent must fan out independent checks concurrently:
+
 ```
 parallel group A (Java):     mvn -Pcheckstyle validate  &  format_file.py --check
 parallel group B (Python):   ruff check  &  pytest -q
 parallel group C (universal): git status --porcelain  &  prettier --check '**/*.md'
 parallel group D (tests):    mvn test  &  pytest tests/
 ```
+
 Group D dominates wall time; A, B, C should complete while tests run. Sequential execution of independent checks is a bug.
 
 ## Quick Reference
 
-| Check | Java (Maven) | Java (Gradle) | Python |
-|-------|--------------|---------------|--------|
-| Stale files | `git status` | `git status` | `git status` |
-| Markdown | `markdown-table-formatter` + `prettier --check` | `markdown-table-formatter` + `prettier --check` | `markdown-table-formatter` + `prettier --check` |
-| Format | `format_file.py` (Senzing) | `format_file.py` (Senzing) | `ruff format --check` (if configured) |
-| Lint | `mvn -Pcheckstyle validate` | `./gradlew checkstyleMain` | `ruff check` (if configured) |
-| Type Check | (compile catches it) | (compile catches it) | `mypy` (if configured) |
-| Compile | `mvn compile` | `./gradlew compileJava` | (none — interpreted) |
-| Static Analysis | `mvn -Pspotbugs spotbugs:check` (if profile exists) | `./gradlew spotbugsMain` | (Bandit if configured) |
-| Tests | `mvn test` | `./gradlew test` | `pytest` |
-| Coverage | `mvn -Pjacoco verify` (if profile exists) | `./gradlew jacocoTestReport` | `pytest --cov` (if configured) |
-| Package | `mvn package` (`--full` only) | `./gradlew build -x test` (`--full` only) | (none for libraries) |
-| Docs | `mvn javadoc:javadoc` (`--full` only) | `./gradlew javadoc` (`--full` only) | (n/a) |
-| Changelog | CHANGELOG.md | CHANGELOG.md | CHANGELOG.md |
+| Check           | Java (Maven)                                        | Java (Gradle)                                   | Python                                          |
+| --------------- | --------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------- |
+| Stale files     | `git status`                                        | `git status`                                    | `git status`                                    |
+| Markdown        | `markdown-table-formatter` + `prettier --check`     | `markdown-table-formatter` + `prettier --check` | `markdown-table-formatter` + `prettier --check` |
+| Format          | `format_file.py` (Senzing)                          | `format_file.py` (Senzing)                      | `ruff format --check` (if configured)           |
+| Lint            | `mvn -Pcheckstyle validate`                         | `./gradlew checkstyleMain`                      | `ruff check` (if configured)                    |
+| Type Check      | (compile catches it)                                | (compile catches it)                            | `mypy` (if configured)                          |
+| Compile         | `mvn compile`                                       | `./gradlew compileJava`                         | (none — interpreted)                            |
+| Static Analysis | `mvn -Pspotbugs spotbugs:check` (if profile exists) | `./gradlew spotbugsMain`                        | (Bandit if configured)                          |
+| Tests           | `mvn test`                                          | `./gradlew test`                                | `pytest`                                        |
+| Coverage        | `mvn -Pjacoco verify` (if profile exists)           | `./gradlew jacocoTestReport`                    | `pytest --cov` (if configured)                  |
+| Package         | `mvn package` (`--full` only)                       | `./gradlew build -x test` (`--full` only)       | (none for libraries)                            |
+| Docs            | `mvn javadoc:javadoc` (`--full` only)               | `./gradlew javadoc` (`--full` only)             | (n/a)                                           |
+| Changelog       | CHANGELOG.md                                        | CHANGELOG.md                                    | CHANGELOG.md                                    |
 
 **Note:** This repo (`java-coding-standards`) is itself a Python + Markdown project — the formatter tooling at `tooling/scripts/format_java.py` is the primary artifact. Adopter projects are typically Java; some carry a small Python ancillary script tree.
 
@@ -80,17 +87,20 @@ Group D dominates wall time; A, B, C should complete while tests run. Sequential
 Run `git status --porcelain` and flag these patterns if staged:
 
 **Planning/Notes:**
+
 - `plan*.md`, `PLAN*.md`, `*_plan.md`
 - `TODO.md`, `NOTES.md`, `SCRATCH.md`
 - `commit_message*.txt`
 
 **Temporary/Backup:**
+
 - `*.tmp`, `*.temp`, `*.bak`, `*.backup`, `*.orig`
 - `*.swp`, `*.swo`, `*~`
 - `.DS_Store`
 - Files in `tmp/`, `temp/`, `.tmp/`, `target/`, `__pycache__/`
 
 **Debug/Scratch Code:**
+
 - `Debug*.java`, `Scratch*.java`, `*Test_scratch*.java`
 - `debug_*.py`, `test_scratch_*.py`
 
@@ -111,6 +121,7 @@ npx prettier --write "**/*.md" --ignore-path .prettierignore
 If prettier is not installed globally, use `brew install prettier` (macOS) or `npm install -g prettier`.
 
 Verify with:
+
 ```bash
 npx prettier --check "**/*.md" --ignore-path .prettierignore
 npx markdownlint-cli "**/*.md" --ignore node_modules
@@ -123,6 +134,7 @@ If the project has a FAQ MCP server (check for `docs/faqs/` at the root of the s
 **Detection:** Look for `docs/faqs/` directories (this submodule's shared FAQs) or `.claude/faqs/` (project-local FAQs). Both feed the same FAQ MCP server.
 
 **Review process:**
+
 1. Use `search_faqs(query)` to find FAQs potentially affected by this session's changes.
 2. Read the affected FAQ markdown files directly.
 3. Update or create FAQ entries for:
@@ -174,7 +186,7 @@ After /prep completes, the user may `/clear` and resume in a fresh session. The 
 
 The /prep agent MUST end its summary with one of two explicit verdicts. This is non-negotiable. The user will use this line to decide whether to `/clear` and resume in a fresh session.
 
-**The verdict is BINARY: SAFE TO /clear, or NOT SAFE.** No middle ground, no qualifications buried in prose. If any handoff item is missing or stale, the verdict is NOT SAFE and the agent must say *what is missing*.
+**The verdict is BINARY: SAFE TO /clear, or NOT SAFE.** No middle ground, no qualifications buried in prose. If any handoff item is missing or stale, the verdict is NOT SAFE and the agent must say _what is missing_.
 
 **The verdict is computed from this checklist** — every box must be checked for SAFE TO /clear:
 
@@ -207,13 +219,14 @@ Action required before /clear:
 
 **The agent does NOT fabricate "SAFE TO /clear" by surfacing missing items as "for user decision".** Surfacing-as-note means "I found a thing that should happen, you decide" — that is BLOCKING for the verdict, not a punt. If the agent identifies a FAQ-worthy learning, the agent writes the FAQ entry; if it identifies a stale STATUS section, the agent updates STATUS; etc. The verdict is SAFE only when nothing is left in the "user decides" bucket.
 
-**Why this section exists:** in practice, /prep agents have closed sessions saying "Ready for commit ✅" while leaving FAQ updates "for user decision", forgetting MEMORY.md, and writing STATUS without NEXT_STEPS. That makes the next session start half-blind. The handoff verdict forces the agent to be explicit about whether the *next* session can pick up cleanly, not just whether the *current* commit is shippable.
+**Why this section exists:** in practice, /prep agents have closed sessions saying "Ready for commit ✅" while leaving FAQ updates "for user decision", forgetting MEMORY.md, and writing STATUS without NEXT*STEPS. That makes the next session start half-blind. The handoff verdict forces the agent to be explicit about whether the \_next* session can pick up cleanly, not just whether the _current_ commit is shippable.
 
 ### 5. CHANGELOG.md
 
 Verify CHANGELOG.md exists and is updated with current changes.
 
 **If CHANGELOG.md doesn't exist:** Create one with the standard format:
+
 ```markdown
 # Changelog
 
@@ -222,15 +235,19 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+
 - New features
 
 ### Changed
+
 - Changes to existing functionality
 
 ### Removed
+
 - Removed features
 
 ### Fixed
+
 - Bug fixes
 ```
 
@@ -252,6 +269,7 @@ If the project has `.github/workflows/` files, verify all third-party actions us
 ```
 
 Check with:
+
 ```bash
 # Find workflow files
 find .github/workflows -name '*.yml' -o -name '*.yaml' 2>/dev/null
@@ -272,6 +290,7 @@ Every dependency that the toolchain will fetch from a network MUST be pinned to 
 **Mechanical (no LLM judgment), fail-on-violation:**
 
 **Java / Maven** — run when `pom.xml` exists:
+
 ```bash
 # (a) All <version> declarations MUST be a fixed version. Reject SNAPSHOT
 #     in release-track pom.xml and reject Maven version ranges like [1.0,2.0).
@@ -284,6 +303,7 @@ grep -nE '<version>[^<]*[\[\(][^<]*[\]\)]</version>' pom.xml \
 ```
 
 **Java / Gradle** — run when `build.gradle` exists:
+
 ```bash
 # Floating "latest.release" / "+" version specs are banned in release tracks.
 grep -nE "['\"][^'\"]+:[^'\"]+:(latest\.release|\+)['\"]" build.gradle build.gradle.kts 2>/dev/null \
@@ -291,6 +311,7 @@ grep -nE "['\"][^'\"]+:[^'\"]+:(latest\.release|\+)['\"]" build.gradle build.gra
 ```
 
 **Python** — run when `requirements*.txt` or `pyproject.toml` exists:
+
 ```bash
 # (a) requirements*.txt entries MUST be pinned to == versions (or use
 #     pip-compile / uv-generated lock files).
@@ -312,7 +333,7 @@ Best practice for supply-chain hardening: dependency updates must wait **≥21 d
 
 **Enforcement is declarative via Dependabot's built-in `cooldown` config.** Dependabot will not propose a dep update unless the new version meets the cooldown threshold; it filters at PR-generation time, on GitHub's servers, with no per-/prep network calls needed.
 
-**Cooldown applies to *version* updates ONLY.** Per GitHub's spec ([dependabot cooldown docs](https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#cooldown--)): "the `cooldown` option is only available for *version* updates, not *security* updates". A Dependabot security advisory PR (GHSA / OSV ingestion) bypasses cooldown entirely, so HIGH/CRITICAL CVEs land within hours regardless of the cooldown window. Cooldown is the routine-bump safety net, not the security gate.
+**Cooldown applies to _version_ updates ONLY.** Per GitHub's spec ([dependabot cooldown docs](https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#cooldown--)): "the `cooldown` option is only available for _version_ updates, not _security_ updates". A Dependabot security advisory PR (GHSA / OSV ingestion) bypasses cooldown entirely, so HIGH/CRITICAL CVEs land within hours regardless of the cooldown window. Cooldown is the routine-bump safety net, not the security gate.
 
 **The /prep check is one shell test:** verify `.github/dependabot.yml` exists and has `cooldown.default-days >= 21` for every package ecosystem the repo uses.
 
@@ -334,6 +355,7 @@ fi
 ```
 
 **Reference dependabot.yml**:
+
 ```yaml
 # .github/dependabot.yml
 version: 2
@@ -362,17 +384,17 @@ Run these in order. Stop on first failure.
 
 ### Java with Maven
 
-| # | Check | Command | Notes |
-|---|-------|---------|-------|
-| 1 | Format | `python3 .java-coding-standards/tooling/scripts/format_file.py` | Run, then `git status` — any modified files mean format drift |
-| 2 | Lint | `mvn -Pcheckstyle validate` | Must report BUILD SUCCESS; zero LineLength / style violations |
-| 3 | Compile | `mvn compile` | Including test sources via `mvn test-compile` |
-| 4 | Static Analysis | `mvn -Pspotbugs spotbugs:check` | Only if the `spotbugs` profile exists |
-| 5 | Tests | `mvn test` | 100% pass rate |
-| 6 | Coverage | `mvn -Pjacoco verify` then inspect `target/site/jacoco/index.html` | Only if `jacoco` profile exists; flag uncovered modified files |
-| 7 | Doc Review | Check README.md, CLAUDE.md, `docs/faqs/**` | Update if API/features changed |
-| 8 | Package (`--full`) | `mvn package` | Verify the JAR builds clean |
-| 9 | Javadoc (`--full`) | `mvn javadoc:javadoc` | Must build without warnings |
+| #   | Check              | Command                                                            | Notes                                                          |
+| --- | ------------------ | ------------------------------------------------------------------ | -------------------------------------------------------------- |
+| 1   | Format             | `python3 .java-coding-standards/tooling/scripts/format_file.py`    | Run, then `git status` — any modified files mean format drift  |
+| 2   | Lint               | `mvn -Pcheckstyle validate`                                        | Must report BUILD SUCCESS; zero LineLength / style violations  |
+| 3   | Compile            | `mvn compile`                                                      | Including test sources via `mvn test-compile`                  |
+| 4   | Static Analysis    | `mvn -Pspotbugs spotbugs:check`                                    | Only if the `spotbugs` profile exists                          |
+| 5   | Tests              | `mvn test`                                                         | 100% pass rate                                                 |
+| 6   | Coverage           | `mvn -Pjacoco verify` then inspect `target/site/jacoco/index.html` | Only if `jacoco` profile exists; flag uncovered modified files |
+| 7   | Doc Review         | Check README.md, CLAUDE.md, `docs/faqs/**`                         | Update if API/features changed                                 |
+| 8   | Package (`--full`) | `mvn package`                                                      | Verify the JAR builds clean                                    |
+| 9   | Javadoc (`--full`) | `mvn javadoc:javadoc`                                              | Must build without warnings                                    |
 
 **Senzing project conventions:**
 
@@ -382,17 +404,17 @@ Run these in order. Stop on first failure.
 
 ### Java with Gradle
 
-| # | Check | Command | Notes |
-|---|-------|---------|-------|
-| 1 | Format | `python3 .java-coding-standards/tooling/scripts/format_file.py` | Same as Maven — Senzing formatter is build-system-agnostic |
-| 2 | Lint | `./gradlew checkstyleMain checkstyleTest` | Or `./gradlew check` |
-| 3 | Compile | `./gradlew compileJava compileTestJava` | |
-| 4 | Static Analysis | `./gradlew spotbugsMain` | If the spotbugs plugin is wired |
-| 5 | Tests | `./gradlew test` | 100% pass rate |
-| 6 | Coverage | `./gradlew jacocoTestReport` | If jacoco plugin is wired |
-| 7 | Doc Review | Check README.md, CLAUDE.md | Update if API/features changed |
-| 8 | Build (`--full`) | `./gradlew build` | Full assembly |
-| 9 | Javadoc (`--full`) | `./gradlew javadoc` | Must build without warnings |
+| #   | Check              | Command                                                         | Notes                                                      |
+| --- | ------------------ | --------------------------------------------------------------- | ---------------------------------------------------------- |
+| 1   | Format             | `python3 .java-coding-standards/tooling/scripts/format_file.py` | Same as Maven — Senzing formatter is build-system-agnostic |
+| 2   | Lint               | `./gradlew checkstyleMain checkstyleTest`                       | Or `./gradlew check`                                       |
+| 3   | Compile            | `./gradlew compileJava compileTestJava`                         |                                                            |
+| 4   | Static Analysis    | `./gradlew spotbugsMain`                                        | If the spotbugs plugin is wired                            |
+| 5   | Tests              | `./gradlew test`                                                | 100% pass rate                                             |
+| 6   | Coverage           | `./gradlew jacocoTestReport`                                    | If jacoco plugin is wired                                  |
+| 7   | Doc Review         | Check README.md, CLAUDE.md                                      | Update if API/features changed                             |
+| 8   | Build (`--full`)   | `./gradlew build`                                               | Full assembly                                              |
+| 9   | Javadoc (`--full`) | `./gradlew javadoc`                                             | Must build without warnings                                |
 
 ### Java Patterns Required
 
@@ -408,14 +430,14 @@ Run these in order. Stop on first failure.
 
 The standards-repo itself is primarily Python (the formatter at `tooling/scripts/format_java.py` and its test suite). Adopter projects may also carry a small Python ancillary tree. Run these in order.
 
-| # | Check | Command | Notes |
-|---|-------|---------|-------|
-| 1 | Format | `ruff format --check tooling/scripts/` | Only if `pyproject.toml` configures ruff or black; otherwise skip with a note |
-| 2 | Lint | `ruff check tooling/scripts/` | Only if configured |
-| 3 | Type Check | `mypy tooling/scripts/` | Only if `mypy` config exists |
-| 4 | Tests | `pytest tests/ -q` from `tooling/scripts/` | All passing; report total count |
-| 5 | Coverage (`--full`) | `pytest --cov=tooling/scripts tests/` | If `pytest-cov` is installed |
-| 6 | Security (`--full`) | `pip-audit` or `safety check` | Only if a lock file exists |
+| #   | Check               | Command                                    | Notes                                                                         |
+| --- | ------------------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
+| 1   | Format              | `ruff format --check tooling/scripts/`     | Only if `pyproject.toml` configures ruff or black; otherwise skip with a note |
+| 2   | Lint                | `ruff check tooling/scripts/`              | Only if configured                                                            |
+| 3   | Type Check          | `mypy tooling/scripts/`                    | Only if `mypy` config exists                                                  |
+| 4   | Tests               | `pytest tests/ -q` from `tooling/scripts/` | All passing; report total count                                               |
+| 5   | Coverage (`--full`) | `pytest --cov=tooling/scripts tests/`      | If `pytest-cov` is installed                                                  |
+| 6   | Security (`--full`) | `pip-audit` or `safety check`              | Only if a lock file exists                                                    |
 
 **This standards-repo's Python conventions:**
 
@@ -448,10 +470,10 @@ Otherwise, fast mode is enough. The full check would take 10–30 min and re-val
 
 The agent should NOT spend more than these on any single run. Exceed → kill the offending check and report it as a timeout failure (treat as a ❌ that requires user attention, do NOT just skip):
 
-| Mode | Universal | Per-language fmt+lint | Tests | Total target |
-|---|---|---|---|---|
-| fast (default) | <30s | <90s each in parallel | <15min each, parallel | **2–5 min** |
-| full | <60s | <3min each | <20min each | <30min |
+| Mode           | Universal | Per-language fmt+lint | Tests                 | Total target |
+| -------------- | --------- | --------------------- | --------------------- | ------------ |
+| fast (default) | <30s      | <90s each in parallel | <15min each, parallel | **2–5 min**  |
+| full           | <60s      | <3min each            | <20min each           | <30min       |
 
 Concretely for **this standards-repo** (Python tooling + Markdown docs):
 
@@ -466,6 +488,7 @@ For **adopter projects** (Java + this submodule's Python tooling):
 ## Output Format
 
 ### Success (Java + Maven)
+
 ```
 ☕ Java project detected (Maven)
 
@@ -489,6 +512,7 @@ Ready for commit!
 ```
 
 ### Success (Python — this standards-repo)
+
 ```
 🐍 Python project detected (pytest)
 
@@ -508,6 +532,7 @@ Ready for commit!
 ```
 
 ### Success (Multi-language: Java + Python — typical adopter on this submodule)
+
 ```
 ☕ Java project detected (Maven)
 🐍 Python project detected (pytest — submodule tooling)
@@ -537,6 +562,7 @@ Ready for commit!
 ```
 
 ### Failure
+
 ```
 ✅ stale files
 ✅ markdown
@@ -547,6 +573,7 @@ Fix required before commit.
 ```
 
 ### Stale Files Warning
+
 ```
 ⚠️ stale files - Found:
    - PLAN.md
@@ -558,26 +585,26 @@ Fix required before commit.
 
 ## Critical Rules
 
-| Rule | Applies To |
-|------|------------|
-| 100% test pass rate | All |
-| Zero checkstyle / lint warnings | All |
-| Update CHANGELOG.md | All |
-| Update FAQ MCP for non-obvious learnings | All |
-| Update STATUS + NEXT_STEPS for /clear handoff | All |
-| **Final line MUST be a `HANDOFF VERDICT: SAFE TO /clear` or `NOT SAFE TO /clear` line** — see §4.1 | All |
-| FAQ MCP entries written directly (NOT "surfaced for user decision") when non-obvious learning identified | All |
-| MEMORY.md /clear handoff block written/updated, linked from MEMORY.md index | All |
-| All deps pinned (Maven `<version>` exact; Python `==` or compatible-release; GH Actions `@sha # vN`) | All |
-| `.github/dependabot.yml` enforces `cooldown.default-days >= 21` for every ecosystem | All |
-| Run independent checks in PARALLEL, not sequentially | All |
-| ALL language fmt/lint/compile/test ALWAYS run — no LLM judgment about what's "relevant to the diff" | All |
-| Fast-mode omissions are HARDCODED (doc/package/redundant-build) — not diff-dependent | All (fast mode) |
-| Cap each check with a timeout; kill + report on overrun | All |
-| Never push to GitHub without approval | All |
-| "Pre-existing failure" is NEVER valid | All |
-| Environment failures are NOT acceptable | All |
-| Cannot proceed without EXPLICIT approval | All |
+| Rule                                                                                                     | Applies To      |
+| -------------------------------------------------------------------------------------------------------- | --------------- |
+| 100% test pass rate                                                                                      | All             |
+| Zero checkstyle / lint warnings                                                                          | All             |
+| Update CHANGELOG.md                                                                                      | All             |
+| Update FAQ MCP for non-obvious learnings                                                                 | All             |
+| Update STATUS + NEXT_STEPS for /clear handoff                                                            | All             |
+| **Final line MUST be a `HANDOFF VERDICT: SAFE TO /clear` or `NOT SAFE TO /clear` line** — see §4.1       | All             |
+| FAQ MCP entries written directly (NOT "surfaced for user decision") when non-obvious learning identified | All             |
+| MEMORY.md /clear handoff block written/updated, linked from MEMORY.md index                              | All             |
+| All deps pinned (Maven `<version>` exact; Python `==` or compatible-release; GH Actions `@sha # vN`)     | All             |
+| `.github/dependabot.yml` enforces `cooldown.default-days >= 21` for every ecosystem                      | All             |
+| Run independent checks in PARALLEL, not sequentially                                                     | All             |
+| ALL language fmt/lint/compile/test ALWAYS run — no LLM judgment about what's "relevant to the diff"      | All             |
+| Fast-mode omissions are HARDCODED (doc/package/redundant-build) — not diff-dependent                     | All (fast mode) |
+| Cap each check with a timeout; kill + report on overrun                                                  | All             |
+| Never push to GitHub without approval                                                                    | All             |
+| "Pre-existing failure" is NEVER valid                                                                    | All             |
+| Environment failures are NOT acceptable                                                                  | All             |
+| Cannot proceed without EXPLICIT approval                                                                 | All             |
 
 ### Test Failure Policy
 

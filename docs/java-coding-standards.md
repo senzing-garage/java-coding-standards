@@ -242,19 +242,19 @@ public class Foo
 
 ## Whitespace and Operator Spacing
 
-| Where | Rule |
-|---|---|
-| Around binary operators (`+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&`, `\|`, `^`, `<<`, `>>`, `>>>`, `&&`, `\|\|`) | Single space on each side |
-| Around assignment operators (`=`, `+=`, `-=`, `*=`, `/=`, etc.) | Single space on each side |
-| Unary operators (`!`, `-`, `+`, `~`, `++`, `--`) | No space between operator and operand |
-| Type casts | Single space after closing cast paren: `(Type) value` |
-| After commas | Exactly one space |
-| After semicolons in `for` headers | Exactly one space |
-| Inside parentheses | No leading/trailing space |
-| Inside braces (non-empty array/collection initializers) | Single space after `{`, single space before `}`: `{ 1, 2, 3 }` |
-| Empty braces | `{}` (no space) |
-| Around generic type angle brackets `<>` | No space inside or around: `List<String>`, `Map<K, V>`, `<>` |
-| Wildcards | Space after `?` before `extends`/`super`: `? extends Foo`, `? super Bar` |
+| Where                                                                                                                                | Rule                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| Around binary operators (`+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&`, `\|`, `^`, `<<`, `>>`, `>>>`, `&&`, `\|\|`) | Single space on each side                                                |
+| Around assignment operators (`=`, `+=`, `-=`, `*=`, `/=`, etc.)                                                                      | Single space on each side                                                |
+| Unary operators (`!`, `-`, `+`, `~`, `++`, `--`)                                                                                     | No space between operator and operand                                    |
+| Type casts                                                                                                                           | Single space after closing cast paren: `(Type) value`                    |
+| After commas                                                                                                                         | Exactly one space                                                        |
+| After semicolons in `for` headers                                                                                                    | Exactly one space                                                        |
+| Inside parentheses                                                                                                                   | No leading/trailing space                                                |
+| Inside braces (non-empty array/collection initializers)                                                                              | Single space after `{`, single space before `}`: `{ 1, 2, 3 }`           |
+| Empty braces                                                                                                                         | `{}` (no space)                                                          |
+| Around generic type angle brackets `<>`                                                                                              | No space inside or around: `List<String>`, `Map<K, V>`, `<>`             |
+| Wildcards                                                                                                                            | Space after `?` before `extends`/`super`: `? extends Foo`, `? super Bar` |
 
 ---
 
@@ -968,7 +968,7 @@ listener / SAM-implementation patterns):
   with the `new Type(args)` expression, separated by a single
   space. This differs from class/method declarations (which use
   Allman) but matches the convention: the anonymous class is
-  structurally an *expression* (an instance-creation), not a
+  structurally an _expression_ (an instance-creation), not a
   top-level declaration.
 - The body inside the anonymous class follows standard rules for
   any class body — method declarations use Allman braces per the
@@ -1517,12 +1517,12 @@ result = service.executeWithFallback(
         + " " + describeInputs(input));
 ```
 
-| Wrap level | Content | Indent |
-|---|---|---|
-| 0 — statement base | `result = service.executeWithFallback(` | column 0 |
-| 1 — call arg list wraps to next-line | `"primary failed: "` | +4 |
-| 2 — string-concat operator breaks | `+ describe...(input)` | +8 |
-| 2 — same string-concat continues | `+ " " + describe...` | +8 (aligned with prior) |
+| Wrap level                           | Content                                 | Indent                  |
+| ------------------------------------ | --------------------------------------- | ----------------------- |
+| 0 — statement base                   | `result = service.executeWithFallback(` | column 0                |
+| 1 — call arg list wraps to next-line | `"primary failed: "`                    | +4                      |
+| 2 — string-concat operator breaks    | `+ describe...(input)`                  | +8                      |
+| 2 — same string-concat continues     | `+ " " + describe...`                   | +8 (aligned with prior) |
 
 Both `+` continuation lines are at +8 — they belong to the same
 wrap level (the string-concat inside the call arg). Only a NEW
@@ -1552,12 +1552,12 @@ compute(
             / (first - second) * thirdAndLongerName);
 ```
 
-| Level | Content | Indent |
-|---|---|---|
-| 0 | `compute(` | column 0 |
-| 1 | `(int first, ...` (lambda inside call) | +4 |
-| 2 | `-> ...` (arrow on own line within lambda) | +8 |
-| 3 | `/ (first - second) ...` (body operator continuation) | +12 |
+| Level | Content                                               | Indent   |
+| ----- | ----------------------------------------------------- | -------- |
+| 0     | `compute(`                                            | column 0 |
+| 1     | `(int first, ...` (lambda inside call)                | +4       |
+| 2     | `-> ...` (arrow on own line within lambda)            | +8       |
+| 3     | `/ (first - second) ...` (body operator continuation) | +12      |
 
 **Edge case — when cumulative indent itself exceeds 80**: the
 emit-and-warn rule from "Wrap Behavior — Cross-Cutting Rules"
@@ -1624,7 +1624,7 @@ cumulative +4 rule.
 The closing `}` of a preceding block is followed by a single space
 and the next keyword (`else`, `else if`, `catch`, `finally`,
 `while` in do-while). The keyword always shares a line with the
-closing `}`. This holds whether the *previous* block's condition
+closing `}`. This holds whether the _previous_ block's condition
 was single-line or multi-line:
 
 ```java
@@ -1749,19 +1749,19 @@ for (int i = 0; i < n; i++) {
 
 ### Member-level rules
 
-| Boundary | Rule |
-|---|---|
-| Right after class opening `{` (before first member) | No blank |
-| Right before class closing `}` (after last member) | No blank |
-| Between consecutive constructors | One blank line |
-| Between consecutive methods | One blank line |
-| Between method and inner class (either order) | One blank line |
-| Between consecutive inner classes / nested types | One blank line |
-| Around static initializer blocks | One blank line on each side |
-| Around instance initializer blocks | One blank line on each side |
-| Between last field and first non-field | One blank line |
-| Between last enum constant and the `;` separator | No blank — `;` directly after last constant |
-| Between the `;` (after enum constants) and the first method/field, if any | One blank line |
+| Boundary                                                                  | Rule                                        |
+| ------------------------------------------------------------------------- | ------------------------------------------- |
+| Right after class opening `{` (before first member)                       | No blank                                    |
+| Right before class closing `}` (after last member)                        | No blank                                    |
+| Between consecutive constructors                                          | One blank line                              |
+| Between consecutive methods                                               | One blank line                              |
+| Between method and inner class (either order)                             | One blank line                              |
+| Between consecutive inner classes / nested types                          | One blank line                              |
+| Around static initializer blocks                                          | One blank line on each side                 |
+| Around instance initializer blocks                                        | One blank line on each side                 |
+| Between last field and first non-field                                    | One blank line                              |
+| Between last enum constant and the `;` separator                          | No blank — `;` directly after last constant |
+| Between the `;` (after enum constants) and the first method/field, if any | One blank line                              |
 
 ### Javadoc-driven blank-line rule
 
@@ -1771,13 +1771,13 @@ it, separating it from the previous member. Fields and enum
 constants with no leading javadoc pack together with no blank line
 between them.
 
-| Member shape | Layout |
-|---|---|
-| Non-private field with javadoc | One blank line above the `/**` opening |
-| Private field with javadoc (allowed but not required) | One blank line above the `/**` opening |
-| Adjacent fields without javadoc (typically private) | No blank — packed |
-| Non-private enum constant (always javadoc'd by convention) | One blank line above the `/**` opening |
-| Private nested utility enum constants (no javadoc) | Single line if all constants fit within 80 chars (e.g. `private enum Mode { QUIET, NORMAL, VERBOSE; }`); otherwise one constant per line, no blanks between |
+| Member shape                                               | Layout                                                                                                                                                      |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Non-private field with javadoc                             | One blank line above the `/**` opening                                                                                                                      |
+| Private field with javadoc (allowed but not required)      | One blank line above the `/**` opening                                                                                                                      |
+| Adjacent fields without javadoc (typically private)        | No blank — packed                                                                                                                                           |
+| Non-private enum constant (always javadoc'd by convention) | One blank line above the `/**` opening                                                                                                                      |
+| Private nested utility enum constants (no javadoc)         | Single line if all constants fit within 80 chars (e.g. `private enum Mode { QUIET, NORMAL, VERBOSE; }`); otherwise one constant per line, no blanks between |
 
 **Convention note:** non-private fields and non-private enum
 constants should be individually javadoc'd describing their
@@ -1864,7 +1864,7 @@ comma-packed args across two lines). These are not partial-mix
 anti-patterns — they are intentional, fully-specified shapes
 defined for the case where the entire item list fits on exactly
 two lines. The all-or-nothing rule applies at the transition
-*from* those two-line packed forms to the one-per-line form
+_from_ those two-line packed forms to the one-per-line form
 (priority 3), and from priority 3 to next-line-indented (priority
 4). Within the two-line packed shape, the break point is the
 latest separator that keeps both lines under 80 — that's a fixed

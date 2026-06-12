@@ -472,9 +472,9 @@ class WrapContext:
             paren-aligned continuation column would itself
             overflow (typically `start_col + 8`).
 
-    Open question (per PLAN-0.4.0-wrap-context.md): a `parent`
-    pointer for nested speculation. Deferred until a Phase B
-    rule surfaces a concrete need.
+    Future enhancement: a `parent` pointer for nested
+    speculation, added the first time a wrap candidate needs
+    to know the outer construct's remaining budget.
     """
 
     start_col: int
@@ -526,7 +526,16 @@ def try_priorities(
 
     Callers do not need to call `snapshot()` themselves; this
     helper manages the speculative buffer entirely.
+
+    Callers MUST provide at least one candidate. An empty
+    `candidates` list is a programming error and raises
+    `ValueError` — the spec C1 emit-and-warn fallback only
+    makes sense when there's something to emit.
     """
+    if not candidates:
+        raise ValueError(
+            "try_priorities() requires at least one candidate"
+        )
     initial = emitter.snapshot()
     last_index = len(candidates) - 1
     effective_max = _MAX_LINE - emitter.tail_reserve
@@ -965,6 +974,57 @@ def _emit_class_declaration(
     emitter.write("}")
 
 
+def _emit_extends_implements_p2_p3(
+    emitter: Emitter,
+    source: bytes,
+    superclass_node: Node | None,
+    super_interfaces_node: Node | None,
+    cont_indent: str,
+) -> None:
+    """Emit `extends X` and `implements Y, Z` clauses on
+    continuation line(s) per the spec B1 P2/P3 cascade.
+
+    Speculatively emits the P2 form (both clauses on a single
+    continuation line after a newline at `cont_indent`); on
+    overflow, backtracks and emits P3 (each clause on its own
+    continuation line, each at `cont_indent`).
+
+    Caller has already positioned the emitter at the column
+    where the continuation should begin (typically right after
+    `class NAME` or after the closing `>` of a wrapped
+    type-parameter block). This helper writes the leading
+    newline(s); it does NOT write a trailing newline.
+    """
+    has_extends = superclass_node is not None
+    has_implements = super_interfaces_node is not None
+    if not has_extends and not has_implements:
+        return
+
+    # P2: both clauses on a single continuation line.
+    attempt = emitter.snapshot()
+    emitter.newline()
+    emitter.write(cont_indent)
+    if has_extends:
+        _emit_node(emitter, source, superclass_node)
+        if has_implements:
+            emitter.write(" ")
+    if has_implements:
+        _emit_node(emitter, source, super_interfaces_node)
+    if emitter.last_lines_max_width(attempt[0]) <= _MAX_LINE:
+        return
+
+    # P3: each clause on its own continuation line.
+    emitter.restore(attempt)
+    if has_extends:
+        emitter.newline()
+        emitter.write(cont_indent)
+        _emit_node(emitter, source, superclass_node)
+    if has_implements:
+        emitter.newline()
+        emitter.write(cont_indent)
+        _emit_node(emitter, source, super_interfaces_node)
+
+
 def _emit_class_header_wrapped(
     emitter: Emitter,
     source: bytes,
@@ -1001,47 +1061,26 @@ def _emit_class_header_wrapped(
             _emit_node(emitter, source, p)
         emitter.write(">")
 
-    # When type parameters are absent (or fit on the class
-    # declaration line), the wrap form moves the extends /
-    # implements clauses to their own continuation line per
-    # spec B1 P2. If the combined continuation still overflows,
-    # they split onto separate continuation lines (P3).
     has_extends = superclass_node is not None
     has_implements = super_interfaces_node is not None
-
     if not has_extends and not has_implements:
         return
 
     if type_parameters_node is None:
-        # P2 attempt: both clauses on a single continuation line.
-        attempt = emitter.snapshot()
-        emitter.newline()
-        emitter.write(cont_indent)
-        if has_extends:
-            _emit_node(emitter, source, superclass_node)
-            if has_implements:
-                emitter.write(" ")
-        if has_implements:
-            _emit_node(emitter, source, super_interfaces_node)
-        if emitter.last_lines_max_width(attempt[0]) <= _MAX_LINE:
-            return
-        # P3: each clause on its own continuation line.
-        emitter.restore(attempt)
-        if has_extends:
-            emitter.newline()
-            emitter.write(cont_indent)
-            _emit_node(emitter, source, superclass_node)
-        if has_implements:
-            emitter.newline()
-            emitter.write(cont_indent)
-            _emit_node(emitter, source, super_interfaces_node)
+        # No type-param block to attach to. The clauses move
+        # directly to continuation line(s) per the P2/P3 cascade.
+        _emit_extends_implements_p2_p3(
+            emitter,
+            source,
+            superclass_node,
+            super_interfaces_node,
+            cont_indent,
+        )
         return
 
-    # type_parameters_node was emitted multi-line. Try the
-    # inline form first (clauses appended to the closing-`>`
-    # line); if that line overflows, move extends / implements
-    # to their own continuation line(s) per the same P2/P3
-    # cascade as the no-type-params case.
+    # Type parameters were emitted multi-line. Try the inline
+    # form first (clauses appended to the closing-`>` line);
+    # if that line overflows, fall through to the P2/P3 cascade.
     attempt = emitter.snapshot()
     if has_extends:
         emitter.write(" ")
@@ -1052,31 +1091,14 @@ def _emit_class_header_wrapped(
     if emitter.last_lines_max_width(attempt[0]) <= _MAX_LINE:
         return
 
-    # P2: both clauses combined on a single continuation line
-    # after the closing `>`.
     emitter.restore(attempt)
-    p2 = emitter.snapshot()
-    emitter.newline()
-    emitter.write(cont_indent)
-    if has_extends:
-        _emit_node(emitter, source, superclass_node)
-        if has_implements:
-            emitter.write(" ")
-    if has_implements:
-        _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(p2[0]) <= _MAX_LINE:
-        return
-
-    # P3: each clause on its own continuation line.
-    emitter.restore(p2)
-    if has_extends:
-        emitter.newline()
-        emitter.write(cont_indent)
-        _emit_node(emitter, source, superclass_node)
-    if has_implements:
-        emitter.newline()
-        emitter.write(cont_indent)
-        _emit_node(emitter, source, super_interfaces_node)
+    _emit_extends_implements_p2_p3(
+        emitter,
+        source,
+        superclass_node,
+        super_interfaces_node,
+        cont_indent,
+    )
 
 
 def _emit_class_body_members(
