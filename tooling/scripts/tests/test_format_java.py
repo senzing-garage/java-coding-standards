@@ -2206,28 +2206,24 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_for_multi_init_not_yet_supported(self) -> None:
+    def test_for_multi_init(self) -> None:
         # Comma-separated init expressions
         # (`for (i = 0, j = 0; ...)`) — the grammar surfaces
         # them as multiple children sharing the `init` field
-        # name; the naive `child_by_field_name` lookup would
-        # silently drop all but the first. Refuse loudly.
-        with pytest.raises(
-            NotImplementedError, match="comma-separated init"
-        ):
-            format_java.format_source(
-                b"class A { void m() { "
-                b"for (i = 0, j = 0; i < n; i++) {} } }"
-            )
+        # name; the emitter collects all of them and emits
+        # comma-separated.
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"for (i = 0, j = 0; i < n; i++) {} } }"
+        )
+        assert b"for (i = 0, j = 0; i < n; i++) {" in out
 
-    def test_for_multi_update_not_yet_supported(self) -> None:
-        with pytest.raises(
-            NotImplementedError, match="comma-separated update"
-        ):
-            format_java.format_source(
-                b"class A { void m() { "
-                b"for (int i = 0; i < n; i++, j++) {} } }"
-            )
+    def test_for_multi_update(self) -> None:
+        out = format_java.format_source(
+            b"class A { void m() { "
+            b"for (int i = 0; i < n; i++, j++) {} } }"
+        )
+        assert b"for (int i = 0; i < n; i++, j++) {" in out
 
     # --- try/catch/finally (Phase 2k) ---
 
@@ -3078,20 +3074,22 @@ class TestFormatSourceSubset:
         assert b"     * preferred replacement for this " \
             b"deprecated class.\n" in out
 
-    def test_field_with_text_block_initializer_not_yet_supported(
+    def test_field_with_text_block_initializer(
         self,
     ) -> None:
-        # Text blocks inside an indented context need indent-aware
-        # emission per the "Text Blocks" spec section; the Phase
-        # 2c emitter refuses rather than produce content lines
-        # mis-aligned at column 0.
-        with pytest.raises(
-            NotImplementedError,
-            match="indented context",
-        ):
-            format_java.format_source(
-                b'class A { String s = """\nhello\n"""; }'
-            )
+        # Text blocks inside an indented context shift the
+        # closing `"""` to +4 from the introducing statement
+        # column. Content lines move by the same delta so the
+        # rendered string is byte-for-byte unchanged per spec
+        # B4 content-preservation.
+        out = format_java.format_source(
+            b'class A { String s = """\nhello\n"""; }'
+        )
+        # Closing `"""` lands at column 8 (= statement column 4
+        # + 4 indent), and the content line `hello` shifts by
+        # the same delta from its source column.
+        assert b'    String s = """\n' in out
+        assert b'        hello\n        """;\n' in out
 
 
 # ---------------------------------------------------------------------------
@@ -3266,6 +3264,203 @@ class TestEmitterFinish:
         assert e.finish() == b"incomplete\n"
 
 
+class TestEmitterTailReserve:
+    """Verify the tail-reserve push/restore mechanism.
+
+    Wrap candidates inside an `if` condition, an expression
+    statement, etc. consult `Emitter.tail_reserve` to budget for
+    trailing tokens (`) {`, `;`) they can't see during their
+    own emission. Callers set it via `set_tail_reserve(N)`,
+    which returns the previous value so they can restore it.
+    """
+
+    def test_default_zero(self) -> None:
+        e = format_java.Emitter()
+        assert e.tail_reserve == 0
+
+    def test_set_tail_reserve_returns_previous(self) -> None:
+        e = format_java.Emitter()
+        prev = e.set_tail_reserve(2)
+        assert prev == 0
+        assert e.tail_reserve == 2
+
+    def test_set_tail_reserve_restores(self) -> None:
+        e = format_java.Emitter()
+        e.set_tail_reserve(2)
+        prev = e.set_tail_reserve(5)
+        assert prev == 2
+        e.set_tail_reserve(prev)
+        assert e.tail_reserve == 2
+
+    def test_set_tail_reserve_nested_push_restore(
+        self,
+    ) -> None:
+        # Idiomatic usage: callers push a new value, do their
+        # work, restore the saved previous. Multiple levels of
+        # nesting should compose cleanly.
+        e = format_java.Emitter()
+        prev_a = e.set_tail_reserve(2)
+        prev_b = e.set_tail_reserve(e.tail_reserve + 3)
+        assert e.tail_reserve == 5
+        e.set_tail_reserve(prev_b)
+        assert e.tail_reserve == 2
+        e.set_tail_reserve(prev_a)
+        assert e.tail_reserve == 0
+
+
+# ---------------------------------------------------------------------------
+# Wrap-priority engine helpers
+# ---------------------------------------------------------------------------
+
+
+class TestWrapContext:
+    """Verify the WrapContext dataclass.
+
+    Threaded by the per-construct wrap helpers
+    (`_emit_method_header_wrapped`, `_emit_class_header_wrapped`,
+    etc.) to replace ad-hoc `start_col` arguments. The factory
+    `WrapContext.at(start_col)` produces the conventional `+4`
+    single-indent and `+8` double-indent continuation columns.
+    """
+
+    def test_at_uses_plus_four_and_plus_eight(self) -> None:
+        ctx = format_java.WrapContext.at(8)
+        assert ctx.start_col == 8
+        assert ctx.indent_col == 12
+        assert ctx.p3_indent_col == 16
+
+    def test_direct_construction_with_custom_columns(
+        self,
+    ) -> None:
+        # Callers can override the convention if a construct
+        # wants a non-standard continuation column.
+        ctx = format_java.WrapContext(
+            start_col=4, indent_col=20, p3_indent_col=24
+        )
+        assert ctx.start_col == 4
+        assert ctx.indent_col == 20
+        assert ctx.p3_indent_col == 24
+
+    def test_is_frozen(self) -> None:
+        # Frozen dataclass — mutations should fail. Pinning
+        # this invariant guards against accidental aliasing
+        # bugs in wrap helpers that pass the same ctx down
+        # multiple recursion levels.
+        ctx = format_java.WrapContext.at(0)
+        with pytest.raises(Exception):
+            ctx.start_col = 99  # type: ignore[misc]
+
+    def test_uses_slots_no_dict(self) -> None:
+        # `slots=True` keeps WrapContext small (used in deep
+        # recursion). Verify there's no `__dict__`.
+        ctx = format_java.WrapContext.at(0)
+        assert not hasattr(ctx, "__dict__")
+
+
+class TestTryPriorities:
+    """Verify the try_priorities wrap-priority engine.
+
+    Each candidate emits via the shared emitter; the engine
+    rolls back between candidates and commits the first one
+    whose output stays within `_MAX_LINE - tail_reserve`.
+    Falls back to the last candidate when all overflow (the
+    spec C1 "emit + warn" rule).
+    """
+
+    def test_commits_first_candidate_that_fits(self) -> None:
+        e = format_java.Emitter()
+
+        def p1() -> None:
+            e.write("short")
+
+        def p2() -> None:
+            e.write("x" * 100)
+
+        index = format_java.try_priorities(e, [p1, p2])
+        assert index == 0
+        assert e.finish() == b"short\n"
+
+    def test_falls_through_to_later_candidates(self) -> None:
+        e = format_java.Emitter()
+
+        def p1() -> None:
+            e.write("x" * 100)  # overflow
+
+        def p2() -> None:
+            e.write("ok")
+
+        index = format_java.try_priorities(e, [p1, p2])
+        assert index == 1
+        assert e.finish() == b"ok\n"
+
+    def test_commits_last_when_all_overflow(self) -> None:
+        # spec C1: emit + warn — when no candidate fits, the
+        # last one is left committed rather than refused.
+        e = format_java.Emitter()
+        long_a = "a" * 90
+        long_b = "b" * 100
+
+        def p1() -> None:
+            e.write(long_a)
+
+        def p2() -> None:
+            e.write(long_b)
+
+        index = format_java.try_priorities(e, [p1, p2])
+        assert index == 1
+        assert e.finish() == (long_b + "\n").encode("utf-8")
+
+    def test_buffer_rolled_back_between_candidates(
+        self,
+    ) -> None:
+        # Partial output from a failed candidate must not leak
+        # into the committed output.
+        e = format_java.Emitter()
+
+        def p1() -> None:
+            e.write("PARTIAL")
+            e.write("x" * 80)  # combined: overflow
+
+        def p2() -> None:
+            e.write("CLEAN")
+
+        format_java.try_priorities(e, [p1, p2])
+        out = e.finish()
+        assert b"PARTIAL" not in out
+        assert out == b"CLEAN\n"
+
+    def test_respects_tail_reserve(self) -> None:
+        # With tail_reserve = 5, the effective max is 75, so a
+        # 78-char emission should overflow and fall through.
+        e = format_java.Emitter()
+        e.set_tail_reserve(5)
+
+        def p1() -> None:
+            e.write("x" * 78)
+
+        def p2() -> None:
+            e.write("y" * 70)
+
+        index = format_java.try_priorities(e, [p1, p2])
+        assert index == 1
+
+    def test_preserves_prior_buffer_state(self) -> None:
+        # Content emitted BEFORE try_priorities is not touched
+        # by rollback — only the speculative emissions are
+        # rolled back.
+        e = format_java.Emitter()
+        e.write("PREFIX ")
+
+        def p1() -> None:
+            e.write("y" * 80)  # overflow
+
+        def p2() -> None:
+            e.write("ok")
+
+        format_java.try_priorities(e, [p1, p2])
+        assert e.finish() == b"PREFIX ok\n"
+
+
 # ---------------------------------------------------------------------------
 # Leaf-node dispatch
 # ---------------------------------------------------------------------------
@@ -3314,10 +3509,13 @@ def _find_first(node, type_name: str):
     (b"class A { String s; }",
      "type_identifier", "String"),
     # Triple-quoted text blocks (Java 15+) are still 'string_literal'
-    # in the tree-sitter-java grammar; verbatim preservation covers
-    # them since the B4 spec section forbids reflow of contents.
-    (b'class A { String s = """\nblock\n"""; }',
-     "string_literal", '"""\nblock\n"""'),
+    # in the tree-sitter-java grammar. The leaf emitter re-indents
+    # contents so the closing `"""` lands at +4 from the introducing
+    # column. For this raw-emitter test the indent_level is 0 and
+    # the source already has the closing `"""` at col 4, so the
+    # rendered output matches the source byte-for-byte (delta == 0).
+    (b'class A { String s = """\n    block\n    """; }',
+     "string_literal", '"""\n    block\n    """'),
 ])
 def test_leaf_emit_writes_verbatim(
     src_bytes: bytes, node_type: str, expected: str

@@ -1802,6 +1802,47 @@ clauses, implements/permits lists, multi-catch types, switch
 multi-label, lambda parameters, generic type parameters, array
 initializers, etc.).
 
+### Wrap Priority Engine
+
+Every wrappable construct in this document is emitted through a
+single priority-cascade engine. Each construct declares an ordered
+list of **candidate shapes** (single-line, paren-aligned, next-line
+single-indent, etc.). The engine commits the **first candidate
+whose rendered output fits** within the line-length budget; if all
+candidates overflow, the engine commits the last candidate anyway
+per the **emit-but-warn** rule (see "When wrap rules can't bring
+a line under 80").
+
+**How the budget is computed.** The budget for any wrap decision
+is `_MAX_LINE` (80) minus a **tail reserve** that accounts for
+trailing tokens the candidate cannot see — the `;` after an
+expression statement, the `)` closing an enclosing parenthesized
+expression, the `) {` after an `if` / `while` / `for` condition,
+the trailing `.method(args)` after a chain's receiver, and so on.
+Each enclosing construct bumps the reserve before emitting its
+inner expression and restores it afterwards. The composition is
+additive: an `if (binary && other) {` reserves `2 + 1 = 3` chars
+(`) {` from the `if`, `)` from the paren-expression that holds
+the condition), so the binary expression's wrap engine treats the
+effective max as 77 even though no character past column 77 has
+yet been written.
+
+**Speculative emission.** Candidates emit their full shape into
+the buffer; the engine measures the resulting line widths and,
+on overflow, rolls back the buffer and tries the next candidate.
+This means a wrap decision is a function of the **rendered**
+widths — including any nested wraps that fired during the
+candidate's emission — not of the source-text widths. Different
+input layouts that parse to the same AST produce the same output,
+which is what makes the formatter idempotent.
+
+**Cumulative continuation indent.** Each wrap level adds 4 spaces
+of continuation indent on top of the surrounding context. Multiple
+continuation lines at the same wrap level share the same indent;
+only entering a deeper wrap level adds another 4. The full rule
+and worked examples are in "Line Continuation / General
+Continuation Indentation" above.
+
 ### Wrap promotion is all-or-nothing
 
 When **any** item in a wrappable list would overflow at the
@@ -1923,6 +1964,63 @@ documentation hints): standard spacing — space before and after:
 ```java
 result = compute(/* timeoutMs= */ 5000, /* retry= */ true);
 ```
+
+### Line Comment Reflow
+
+A `//` line comment that starts at the current indent column
+and would render past 80 characters is **greedy-reflowed** into
+multiple `// `-prefixed lines at the same indent. Each
+reflowed line carries the `// ` prefix so the result re-parses
+as a sequence of individual `line_comment` nodes — that's
+what keeps the reflow idempotent across passes.
+
+**Greedy fill** — words are placed onto each line until the
+next word would exceed the budget; the next word starts a new
+line at the same column.
+
+```java
+// Before:
+                    // this comment is exceptionally long and exceeds the eighty character budget by a wide margin
+
+// After:
+                    // this comment is exceptionally long and exceeds the eighty
+                    // character budget by a wide margin
+```
+
+**Exemptions — these comments are NEVER reflowed:**
+
+- **Checkstyle / suppression directives** — the meaning of
+  these markers depends on a single-line shape that pairs with
+  a matching marker elsewhere in the file. Any comment whose
+  content begins with one of these tokens is preserved as-is:
+
+  - `CSOFF` (and its closing `CSON`)
+  - `CHECKSTYLE:OFF` (and its closing `CHECKSTYLE:ON`)
+  - `SUPPRESS` (e.g. `// SUPPRESS CHECKSTYLE …`)
+
+- **`@`-prefixed tags** — `// @snippet`, `// @param`,
+  `// @SuppressWarnings`-style markers, etc.
+
+- **URLs** — any comment containing `://` is preserved
+  verbatim. Splitting a URL on whitespace would mangle it; the
+  trade-off is that URL-bearing comments may exceed 80 chars.
+  Wrap the URL in a `<code>` block inside javadoc if the URL
+  is documentation rather than an inline note.
+
+**No paragraph merge.** Consecutive `//` comments are reflowed
+**independently**, never merged into a single paragraph. The
+developer might have authored adjacent comments that document
+distinct things, and merging them would conflate unrelated
+text. If a logical paragraph needs reflow as a unit, use a
+javadoc `/** */` block (which IS reflowed as a paragraph).
+
+**Side comments (end-of-line `// …`)** are NOT reflowed — they
+are tied positionally to the preceding code on the same line,
+and shifting them to additional lines below would break that
+association. A side comment that would push the line past 80
+characters is left as a LineLength violation for the developer
+to address (rephrase the comment, shorten the code, or hoist
+the comment to its own line above the statement).
 
 ### Array initializers
 

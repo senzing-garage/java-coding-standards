@@ -1,0 +1,3 @@
+public abstract class ASynthesizedSampleDefinition extends AnotherSampleBaseDefinition implements ThirdSampleInterface
+{
+}

@@ -10,6 +10,93 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-12
+
+The wrap-priority engine cutover. The formatter now drives every
+wrappable construct through a single `try_priorities` cascade
+that threads a `tail_reserve` budget through nested contexts —
+each enclosing construct (`if`, `while`, `for`,
+`expression_statement`, `parenthesized_expression`,
+`method_invocation` receiver, `return`/`throw` statements)
+reserves chars for the trailing tokens it knows about, so an
+inner wrap candidate's effective line budget reflects the FULL
+surrounding line, not just the local emission.
+
+This eliminates the long tail of "wrap engine fits locally but
+the trailing `) {` / `;` / `).method()` pushes the line past
+80" failures that the 0.3.0 wrap cascade left behind. The
+consumer adoption gate against `senzing-commons-java` drops
+from 51 LineLength violations to 0; sz-sdk-java verifies
+117/117 files clean and idempotent.
+
+Highlights:
+
+- **`WrapContext` + `try_priorities`** abstractions in
+  `format_java.py`. Replaces the ad-hoc `start_col` arguments
+  and snapshot/restore dances scattered through individual
+  emitters. Documented in
+  `docs/java-coding-standards.md` § "Wrap Priority Engine".
+- **`tail_reserve`** push/restore mechanism on the emitter.
+  Composes additively: `if (binary) {` reserves `2 + 1 = 3`
+  chars (`) {` from the `if`, `)` from the paren-expression)
+  so the binary expr's effective max is 77.
+- **Method-chain wrap** (P1 single / P2 vertical-aligned
+  dots / P3 single-indent fallback) in
+  `_emit_method_invocation`. Method-invocation's simple emit
+  also propagates `tail_reserve` to its receiver so chains
+  inside parenthesized casts wrap correctly.
+- **Ternary wrap** (T1 single / T2 break-before-`?` / T3
+  break-before-both) in `_emit_ternary_expression`.
+- **Binary-expression wrap** with full AST recursion (no
+  more raw-source-rest fallback). P1 / P2 break-leftmost /
+  P3 break-every-op via `try_priorities`.
+- **Condition wrap** for `if`/`while`/`for` — tail_reserve
+  bumped for the trailing `) {` / `) STMT` so nested binary
+  expressions wrap when needed; for-statement adds an Allman
+  brace fallback when `for (...) {` would overflow.
+- **Line comment reflow** (spec § "Line Comment Reflow") —
+  `//` comments that overflow are greedy-reflowed into
+  multiple `// `-prefixed lines at the same indent.
+  Directive exemptions (`CSOFF`, `CSON`, `CHECKSTYLE`,
+  `SUPPRESS`, `@`-tags) and URL-bearing lines are preserved
+  verbatim.
+- **Conditional source-preserve** in arg lists — when an
+  arg list spans multiple rows in source, preserve the
+  developer-authored layout IF the first line still fits at
+  the new emission column. When the surrounding indent has
+  shifted (e.g. JDT's 2-space → AST's 4-space) and the
+  source's first line would overflow, fall through to the
+  wrap engine. Comments inside the arg list always force
+  source-preserve (the wrap engine can't represent
+  comment-between-args). The spec's "Formatted Log and
+  Diagnostic Messages" `// CSOFF` / `// CSON` markers also
+  force source-preserve via `_is_inside_csoff_region`.
+- **Text blocks in indented contexts** (spec B4 full
+  enforcement) — triple-quoted text blocks now emit at any
+  indent level. The closing `"""` lands at +4 from the
+  introducing statement; content lines shift by the same
+  delta so the rendered string is byte-for-byte unchanged.
+- **Class-header wrap** — when type parameters wrap to
+  multiple lines AND the trailing `extends` / `implements`
+  is also long, the clauses move to their own continuation
+  line(s) instead of overhanging the closing `>` line.
+- **Annotation type declarations** (`@interface ...`) and
+  comma-separated `for_statement` init/update expressions
+  (`for (i = 0, j = 0; ...; i++, j++)`) now emit instead of
+  refusing — surfaced by sz-sdk-java adoption.
+- **`_PARSER` thread safety** — replaced the module-level
+  singleton with a `threading.local` lazy wrapper. Formatter
+  is now safe to use from `pytest-xdist`, parallel batch
+  formatters, and in-process services.
+- **Test infrastructure** — added `tests/test_fixtures.py`
+  to auto-discover and verify every `tests/fixtures/<cat>/
+  <case>/{input,expected}.java` pair as a live golden test
+  (the existing 70 fixture pairs were previously dead data).
+  Added 25+ new fixture cases covering all new wrap
+  behaviors. Added unit tests for `WrapContext`,
+  `try_priorities`, and `Emitter.tail_reserve`. Total
+  passing tests: 575 (up from 463 at 0.3.0).
+
 ## [0.3.0] - 2026-06-11
 
 The architectural cutover from the JDT + six-script pipeline
