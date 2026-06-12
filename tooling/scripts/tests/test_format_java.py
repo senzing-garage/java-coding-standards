@@ -3547,6 +3547,109 @@ def test_leaf_emit_writes_verbatim(
     assert emitter.finish() == (expected + "\n").encode("utf-8")
 
 
+class TestAnnotationTypeDeclaration:
+    """Cover `_emit_annotation_type_declaration` and
+    `_emit_annotation_type_element_declaration` end-to-end via
+    `format_source`. The fixture harness exercises golden-file
+    equality; these unit tests pin specific shape decisions
+    (Allman brace, no body padding for empty types, the
+    `default` clause, modifier preservation) without depending
+    on the full fixture infrastructure.
+    """
+
+    def test_empty_annotation_type_uses_allman_brace(self) -> None:
+        # Bare `@interface` with no members should emit the
+        # Allman brace shape with no body padding — the inside
+        # of `{` and `}` is empty, with `}` on its own line.
+        src = b"public @interface Empty {}\n"
+        out = format_java.format_source(src)
+        assert out == (
+            b"public @interface Empty\n"
+            b"{\n"
+            b"}\n"
+        )
+
+    def test_element_with_default_clause(self) -> None:
+        # Element-shape emitter must produce `TYPE NAME() default
+        # VALUE;` with single spaces around `default` and no space
+        # before the `()` parameter list.
+        src = (
+            b"public @interface Configured {\n"
+            b'    String value() default "";\n'
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"public @interface Configured\n"
+            b"{\n"
+            b'    String value() default "";\n'
+            b"}\n"
+        )
+
+    def test_element_without_default_clause(self) -> None:
+        # Required elements (no `default`) emit `TYPE NAME();`
+        # with no trailing `default` token.
+        src = (
+            b"public @interface Required {\n"
+            b"    String name();\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"public @interface Required\n"
+            b"{\n"
+            b"    String name();\n"
+            b"}\n"
+        )
+
+    def test_multiple_elements_mix_required_and_defaulted(
+        self,
+    ) -> None:
+        # Mixed element list with primitive default, string
+        # default, and a required (no-default) element — covers
+        # the dispatch through several value-expression shapes.
+        src = (
+            b"public @interface Config {\n"
+            b'    String value() default "";\n'
+            b"    int priority() default 0;\n"
+            b"    Class<?>[] types();\n"
+            b"}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"public @interface Config\n"
+            b"{\n"
+            b'    String value() default "";\n'
+            b"    int priority() default 0;\n"
+            b"    Class<?>[] types();\n"
+            b"}\n"
+        )
+
+    def test_modifiers_and_meta_annotations_preserved(self) -> None:
+        # Modifiers on an annotation type include both keyword
+        # modifiers (e.g. `public`) and meta-annotations applied
+        # to the annotation type itself (`@Retention(...)`). All
+        # of them must survive the format pass and stay one-
+        # annotation-per-line above the declaration.
+        src = (
+            b"import java.lang.annotation.Retention;\n"
+            b"import java.lang.annotation.RetentionPolicy;\n"
+            b"\n"
+            b"@Retention(RetentionPolicy.RUNTIME)\n"
+            b"public @interface Marker {}\n"
+        )
+        out = format_java.format_source(src)
+        assert out == (
+            b"import java.lang.annotation.Retention;\n"
+            b"import java.lang.annotation.RetentionPolicy;\n"
+            b"\n"
+            b"@Retention(RetentionPolicy.RUNTIME)\n"
+            b"public @interface Marker\n"
+            b"{\n"
+            b"}\n"
+        )
+
+
 class TestEmitNodeDispatch:
     """Verify the dispatch helper's error path."""
 

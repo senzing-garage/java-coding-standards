@@ -26,6 +26,7 @@ Conventions for new cases:
   doc. The current set:
 
       allman_braces/            — brace-placement rules
+      annotation_type/          — `@interface` declarations
       class_header_wrap/        — extends/implements wrap
       condition_wrap/           — if/while/for + tail_reserve
       javadoc_inline_tags/      — `{@code}`, `{@link}` etc.
