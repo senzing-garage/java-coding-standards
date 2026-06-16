@@ -102,6 +102,39 @@ explicitly that this is local-only — the consumer branch must not be
 pushed to a shared remote until the GitHub URL is rewritten in. The
 standards repo's README documents the URL-rewrite procedure.
 
+### First-time formatter dependency install
+
+The formatter at `.java-coding-standards/tooling/scripts/format_file.py`
+imports `tree-sitter` and `tree-sitter-java`; these are not part
+of the Python standard library, and the Claude Code `PostToolUse`
+hook and VSCode
+`emeraldwalk.runonsave` extension both invoke the formatter via the
+system `python3`. Without the deps installed against that interpreter
+every Java edit logs `ModuleNotFoundError: No module named
+'tree_sitter_java'` and the auto-format step is a no-op.
+
+Install once per machine (not per project) — pinned versions live in
+`.java-coding-standards/tooling/scripts/requirements.txt`:
+
+```bash
+# macOS Homebrew Python (PEP 668 — user-site, not system):
+python3 -m pip install --break-system-packages --user \
+  -r .java-coding-standards/tooling/scripts/requirements.txt
+
+# Linux / older macOS / any non-PEP-668 python3:
+pip install -r .java-coding-standards/tooling/scripts/requirements.txt
+```
+
+The `--break-system-packages --user` form is the PEP-668-respecting
+shape: lands the deps in `~/Library/Python/*/lib/python/site-packages`
+(or the platform equivalent) rather than the Homebrew-managed
+location. Re-run this after any submodule bump that changes the pinned
+`tree-sitter` or `tree-sitter-java` version in `requirements.txt`.
+
+If the user already has a working Senzing Java project on this machine
+that adopted these standards, the deps are already installed
+machine-wide and this step is a no-op.
+
 ## Step 3 — Wire up `pom.xml`
 
 Update or add three profiles using the templates at

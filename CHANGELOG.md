@@ -10,6 +10,92 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-16
+
+Two wrap-engine bug fixes surfaced by adopting 0.4.0 into
+`sz-sdk-java` — both produced 81-char overshoots that the
+formatter declined to wrap. Each was an off-by-one
+`tail_reserve` miss; the fix in each case is a one-line
+threshold adjustment plus (for one of them) propagating the
+reserve into a nested wrap engine.
+
+### Fixed
+
+- **try-with-resources `) {` reserve missing**
+  (`_emit_try_with_resources_statement`): for the
+  single-resource form, the parent did not bump
+  `tail_reserve` before dispatching to `_emit_resource`. The
+  resource emitter's inline-fit check already reserved 1 char
+  for the closing `)`, but the additional ` {` (2 chars) that
+  the parent appends for the same-line body brace was not
+  budgeted. A borderline-fit resource that ended at column 78
+  would pass the resource's inline check, then land at 81
+  chars on disk after the parent wrote `) {`. Fix: bump
+  `tail_reserve` by 2 around the single-resource dispatch.
+  Multi-resource form already uses Allman braces (body on its
+  own line) so no extra reserve is needed there.
+
+- **Abstract / interface / native method `;` reserve missing**
+  (`_emit_method_declaration` + `_emit_formal_parameters`):
+  the signature overflow check compared rendered width
+  against `_MAX_LINE` (80) without accounting for the
+  trailing `;` that gets appended for body-less methods. A
+  signature emitting to exactly 80 chars would pass the
+  check, then become 81 chars on disk after `;`. Fix: lower
+  the fit threshold by 1 when `body is None`, and propagate
+  the `tail_reserve` bump into the param-wrap path so the
+  inner P1/P2 fit checks also see the reserve. As part of
+  this, `_emit_formal_parameters` was generalized to honor
+  `tail_reserve` in both its P1 and P2 fit-check comparisons
+  — previously they compared against bare `_MAX_LINE` and
+  ignored any caller-set reserve.
+
+### Documentation
+
+- Adoption playbook (`adoption/adopt-standards-prompt.md`):
+  added a "first-time formatter dependency install" note in
+  Step 2 — adopters need
+  `python3 -m pip install --break-system-packages --user -r
+.java-coding-standards/tooling/scripts/requirements.txt`
+  on Homebrew Python (PEP 668), or the equivalent for their
+  platform, before the PostToolUse hook and VSCode
+  format-on-save will work. The playbook's Step 13
+  verification already invokes `python3 format_file.py` and
+  expected the deps to be available; without the install
+  step the verification fails on a fresh machine. Addresses
+  issue #27 (short-term fix only — the longer-term PEP 723
+  inline-deps shebang path remains open for a future
+  release).
+- `docs/faqs/building/java-formatting-standards.md`: matching
+  one-paragraph note on the same install step so the FAQ
+  search surface covers the question.
+
+### Tests
+
+- New golden fixtures:
+  - `method_decl_wrap/04_abstract_method_semicolon_reserve`
+    locks the `;` reserve for abstract / native / interface
+    methods. Input is the actual sz-sdk-java repro shape
+    (`public native int searchByAttributes(String jsonData,
+StringBuffer response);` at 81 chars); expected output
+    is the paren-aligned P2 wrap.
+  - `allman_braces/19_try_with_resources_brace_reserve`
+    locks the ` {` reserve for single-resource
+    try-with-resources. Input is the actual sz-sdk-java
+    repro shape; expected output uses the spec B8
+    break-at-`=` form.
+
+### Verification
+
+- 591 standards-repo tests pass (was 589, +2 new golden
+  fixtures — each runs through the harness's automatic
+  idempotency check too).
+- `senzing-commons-java`: 106 files processed, 0 modified
+  (clean on both passes — 0.4.0 baseline still steady-state).
+- `sz-sdk-java`: the two original 81-char overshoots now
+  wrap cleanly; formatter is idempotent at the new fixed
+  point.
+
 ## [0.4.0] - 2026-06-12
 
 The wrap-priority engine cutover. The formatter now drives every

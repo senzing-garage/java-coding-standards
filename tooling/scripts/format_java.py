@@ -103,7 +103,7 @@ import tree_sitter_java
 from tree_sitter import Language, Node, Parser, Tree
 
 
-__version__: Final[str] = "0.4.0"
+__version__: Final[str] = "0.4.1"
 
 # Tree-sitter Python binding + tree-sitter-java grammar versions
 # this formatter is calibrated against. Kept in sync with the pins
@@ -1561,6 +1561,14 @@ def _emit_method_declaration(
     # applies (`_emit_method_header_wrapped`). Without type
     # parameters, the parameter list itself is force-wrapped
     # via `_emit_formal_parameters(force_wrap=True)`.
+    #
+    # For abstract/interface/native methods (no body), the
+    # signature is followed by a trailing `;` appended after
+    # the fit check below — so a signature emitting to
+    # exactly 80 chars would land at 81 on disk. Reserve 1
+    # extra char in the fit threshold to catch that case.
+    semicolon_reserve = 1 if body is None else 0
+    fit_threshold = _MAX_LINE - semicolon_reserve
     saved = emitter.snapshot()
     if type_parameters_node is not None:
         # Per spec B11: `<T>` comes BEFORE the return type, with
@@ -1572,32 +1580,45 @@ def _emit_method_declaration(
     _emit_node(emitter, source, name_node)
     _emit_node(emitter, source, parameters_node)
 
-    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+    if emitter.last_lines_max_width(saved[0]) > fit_threshold:
         emitter.restore(saved)
-        if type_parameters_node is not None:
-            _emit_method_header_wrapped(
-                emitter,
-                source,
-                type_parameters_node,
-                type_node,
-                name_node,
-                parameters_node,
-                WrapContext.at(start_col),
-            )
-        else:
-            # No type parameters — wrap only the parameter
-            # list. Re-emit the return type + name and call
-            # _emit_formal_parameters with force_wrap so the
-            # P2 paren-aligned (or P3 next-line-indented) form
-            # engages instead of the default single-line.
-            _emit_node(emitter, source, type_node)
-            emitter.write(" ")
-            _emit_node(emitter, source, name_node)
-            _emit_formal_parameters(
-                emitter, source, parameters_node,
-                force_wrap=True,
-                p3_indent_col=start_col + 8,
-            )
+        # Bump `tail_reserve` by 1 for abstract/native/interface
+        # methods so the inner param wrap engine's P1
+        # single-line attempt also accounts for the trailing
+        # `;` — without this, P1 sees the params fit on one
+        # line and commits the same single-line shape that
+        # tripped the outer check.
+        prev_reserve = emitter.tail_reserve
+        if body is None:
+            emitter.set_tail_reserve(prev_reserve + 1)
+        try:
+            if type_parameters_node is not None:
+                _emit_method_header_wrapped(
+                    emitter,
+                    source,
+                    type_parameters_node,
+                    type_node,
+                    name_node,
+                    parameters_node,
+                    WrapContext.at(start_col),
+                )
+            else:
+                # No type parameters — wrap only the parameter
+                # list. Re-emit the return type + name and call
+                # _emit_formal_parameters with force_wrap so the
+                # P2 paren-aligned (or P3 next-line-indented)
+                # form engages instead of the default
+                # single-line.
+                _emit_node(emitter, source, type_node)
+                emitter.write(" ")
+                _emit_node(emitter, source, name_node)
+                _emit_formal_parameters(
+                    emitter, source, parameters_node,
+                    force_wrap=True,
+                    p3_indent_col=start_col + 8,
+                )
+        finally:
+            emitter.set_tail_reserve(prev_reserve)
 
     # Per "Method and Constructor Declarations / Throws
     # Clause", `throws` goes on its own line single-indented
@@ -3970,12 +3991,28 @@ def _emit_try_with_resources_statement(
     # Column right after the opening `(`; subsequent resource
     # lines align here.
     align_col = emitter.column
-    for index, resource in enumerate(resources):
-        if index > 0:
-            emitter.write(";")
-            emitter.newline()
-            emitter.write(" " * align_col)
-        _emit_node(emitter, source, resource)
+    # For a single-resource try with a same-line body brace
+    # (` {` after the closing `)`), bump `tail_reserve` by
+    # 2 so the resource's inline-fit check accounts for the
+    # two trailing chars the parent will append after the
+    # resource closes. The resource emitter already reserves
+    # 1 char for its own `)`; without this bump the ` {`
+    # falls outside the budget and a borderline-fit resource
+    # lands at 81 chars on disk. Multi-resource breaks Allman,
+    # so the body brace lands on its own line and no extra
+    # reserve is needed.
+    prev_reserve = emitter.tail_reserve
+    if len(resources) == 1:
+        emitter.set_tail_reserve(prev_reserve + 2)
+    try:
+        for index, resource in enumerate(resources):
+            if index > 0:
+                emitter.write(";")
+                emitter.newline()
+                emitter.write(" " * align_col)
+            _emit_node(emitter, source, resource)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     emitter.write(")")
 
     if len(resources) > 1:
@@ -5009,6 +5046,11 @@ def _emit_formal_parameters(
             _emit_node(emitter, source, param)
         emitter.write(")")
         return
+    # P1/P2 fit checks honor `tail_reserve` so callers that
+    # know about trailing tokens beyond `)` (e.g. the abstract-
+    # method `;` reserve set by `_emit_method_declaration`) can
+    # force the priority engine past a borderline P1.
+    effective_max = _MAX_LINE - emitter.tail_reserve
     # P1: try single-line.
     saved = emitter.snapshot()
     emitter.write("(")
@@ -5018,7 +5060,7 @@ def _emit_formal_parameters(
             emitter.write(", ")
         _emit_node(emitter, source, param)
     emitter.write(")")
-    if emitter.last_lines_max_width(saved[0]) <= _MAX_LINE:
+    if emitter.last_lines_max_width(saved[0]) <= effective_max:
         return
     # P2: paren-aligned, one per line at paren_col.
     emitter.restore(saved)
@@ -5032,7 +5074,7 @@ def _emit_formal_parameters(
             emitter.write(cont_p2)
         _emit_node(emitter, source, param)
     emitter.write(")")
-    if emitter.last_lines_max_width(saved2[0]) <= _MAX_LINE:
+    if emitter.last_lines_max_width(saved2[0]) <= effective_max:
         return
     # P3: next-line, one per line at p3_indent_col. Falls back
     # to paren_col when no p3_indent_col was supplied (the
