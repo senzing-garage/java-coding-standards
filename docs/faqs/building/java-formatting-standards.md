@@ -87,6 +87,26 @@ The grammar version (`tree-sitter-java==0.23.5`) and the Python binding (`tree-s
 
 ## Running the formatter
 
+### First-time dependency install
+
+The formatter imports `tree-sitter` and `tree-sitter-java` — these
+must be installed against the `python3` that the Claude Code
+`PostToolUse` hook and VSCode `emeraldwalk.runonsave` invoke (the
+system `python3`, not any project virtualenv). One-time per machine:
+
+```bash
+# macOS Homebrew Python (PEP 668):
+python3 -m pip install --break-system-packages --user \
+  -r .java-coding-standards/tooling/scripts/requirements.txt
+
+# Linux / any non-PEP-668 python3:
+pip install -r .java-coding-standards/tooling/scripts/requirements.txt
+```
+
+Symptoms of missing deps: `ModuleNotFoundError: No module named 'tree_sitter_java'` from the hook on every Java edit; VSCode format-on-save silently does nothing. Re-run the install after any submodule bump that touches `requirements.txt`.
+
+### Invocations
+
 End-to-end:
 
 ```bash
