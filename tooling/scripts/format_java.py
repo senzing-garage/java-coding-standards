@@ -1080,7 +1080,14 @@ def _emit_class_header_wrapped(
                 emitter.write(cont_indent)
             _emit_node(emitter, source, p)
         emitter.write(">")
-        if emitter.last_lines_max_width(attempt[0]) > _MAX_LINE:
+        # Honor `tail_reserve` for consistency with the other
+        # manual P1/P2/P3 sites (`_emit_binary_expression`,
+        # `_emit_method_chain_wrapped`, `_emit_resource`).
+        # No runtime impact today — class declarations are
+        # never inside a tail-reserved context — but the
+        # pattern stays uniform.
+        p2_effective_max = _MAX_LINE - emitter.tail_reserve
+        if emitter.last_lines_max_width(attempt[0]) > p2_effective_max:
             # P2 overflowed — emit P3 instead. Each param on
             # its own continuation line at `cont_indent`; the
             # `<` ends the class declaration line.
