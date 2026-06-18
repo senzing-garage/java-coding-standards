@@ -1507,6 +1507,17 @@ def _emit_binary_expression(
         # `_emit_parenthesized_expression` to re-set
         # `paren_align_col` if they themselves sit inside
         # grouping parens.
+        #
+        # try/finally restores `paren_align_col` only; the
+        # buffer rollback `emitter.restore(paren_saved)` is
+        # gated on the width check and runs only on the
+        # accept/reject decision below. This matches the
+        # p2_saved / p3_saved pattern used elsewhere in this
+        # function: exceptions in a candidate emit are not
+        # expected and would propagate up, leaving the
+        # speculative buffer as-is — acceptable because the
+        # outer wrap engine never resumes after such a
+        # programming error.
         prev_align = emitter.set_paren_align_col(None)
         try:
             emit_paren_aligned(align_col)
@@ -1571,6 +1582,18 @@ def _emit_update_expression(
             emitter.write(child.type)
 
 
+_PAREN_NOT_GROUPING_PARENT_TYPES: Final[frozenset[str]] = frozenset({
+    "if_statement",
+    "while_statement",
+    "do_statement",
+    "for_statement",
+    "enhanced_for_statement",
+    "switch_expression",
+    "synchronized_statement",
+    "catch_clause",
+})
+
+
 def _emit_parenthesized_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1624,18 +1647,6 @@ def _emit_parenthesized_expression(
         if is_grouping:
             emitter.set_paren_align_col(prev_paren_align)
     emitter.write(")")
-
-
-_PAREN_NOT_GROUPING_PARENT_TYPES: Final[frozenset[str]] = frozenset({
-    "if_statement",
-    "while_statement",
-    "do_statement",
-    "for_statement",
-    "enhanced_for_statement",
-    "switch_expression",
-    "synchronized_statement",
-    "catch_clause",
-})
 
 
 def _emit_method_header_wrapped(
@@ -3080,6 +3091,19 @@ def _emit_ternary_expression(
     # under the column immediately after the `(`. Same shape
     # as the binary-expression paren-aligned candidate
     # (`emit_paren_aligned` in `_emit_binary_expression`).
+    #
+    # Two paren-aligned candidates, tried in priority order
+    # before falling back to the standard +4-indent T2/T3:
+    #
+    #   - `emit_paren_t2` — break before `?` only, with the
+    #     `? consequence : alternative` continuation aligned
+    #     under the paren column. Used when both value
+    #     branches fit on one continuation line at that
+    #     column.
+    #   - `emit_paren_t3` — break before both `?` and `:`,
+    #     each on its own line at the paren column. Used
+    #     when the value branches are too long to share a
+    #     line.
     align_col = emitter.paren_align_col
     if align_col is not None:
         paren_indent = " " * align_col
@@ -3087,6 +3111,12 @@ def _emit_ternary_expression(
         # of value branches so a nested grouping paren inside
         # the consequence / alternative re-sets it
         # independently.
+        def emit_paren_t2() -> None:
+            prev_align = emitter.set_paren_align_col(None)
+            try:
+                emit_t2_at(paren_indent)
+            finally:
+                emitter.set_paren_align_col(prev_align)
         def emit_paren_t3() -> None:
             prev_align = emitter.set_paren_align_col(None)
             try:
@@ -3095,7 +3125,13 @@ def _emit_ternary_expression(
                 emitter.set_paren_align_col(prev_align)
         try_priorities(
             emitter,
-            [emit_t1, emit_paren_t3, emit_t2, emit_t3],
+            [
+                emit_t1,
+                emit_paren_t2,
+                emit_paren_t3,
+                emit_t2,
+                emit_t3,
+            ],
         )
         return
 
@@ -5741,7 +5777,7 @@ def _arg_list_single_line_estimate(
     the source-text whitespace is collapsed and comma-space
     is normalized (`,b` → `, b`) to match the canonical
     single-line shape. Inside those regions the source bytes
-    are echoed unchanged so an unspaced comma inside a string
+    are echoed unchanged so a comma-with-no-following-space inside a string
     literal (`foo("name=A,value=B")`) doesn't get a spurious
     `, ` inserted by the comma-normalize pass.
 
@@ -5767,11 +5803,11 @@ def _arg_list_single_line_estimate(
     src_text = _node_source_text(source, node)
     parts: list[str] = []
     pos = 0
-    for vstart, vend in verbatim:
-        if pos < vstart:
-            parts.append(_estimate_normalize(src_text[pos:vstart]))
-        parts.append(src_text[vstart:vend])
-        pos = vend
+    for verbatim_start, verbatim_end in verbatim:
+        if pos < verbatim_start:
+            parts.append(_estimate_normalize(src_text[pos:verbatim_start]))
+        parts.append(src_text[verbatim_start:verbatim_end])
+        pos = verbatim_end
     if pos < len(src_text):
         parts.append(_estimate_normalize(src_text[pos:]))
     return "".join(parts)
@@ -5891,7 +5927,7 @@ def _arg_list_takes_source_preserve_path(
     # normalizing comma-spacing (`,b` → `, b`) outside those
     # regions to match what the wrap engine's P1 will actually
     # emit. Preserving verbatim regions avoids the
-    # foot-gun where an unspaced comma inside a string literal
+    # foot-gun where a comma-with-no-following-space inside a string literal
     # (`foo("name=A,value=B")`) is mistakenly comma-normalized
     # by a naïve regex pass, over-estimating the width by one
     # char per such comma and incorrectly retaining

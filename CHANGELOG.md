@@ -87,8 +87,15 @@ fixture set continues to pass.
   paren-alignment fits, commit; otherwise fall through to
   P2 (`+4` single-line continuation) and P3 (`+4` one per
   line). `_emit_ternary_expression` gets the same treatment
-  — a paren-aligned T3 candidate is tried before standard
-  T2/T3 when the ternary sits inside grouping parens.
+  with TWO paren-aligned candidates tried before the
+  standard T2/T3: `emit_paren_t2` (break before `?` only,
+  with `? consequence : alternative` continuation aligned
+  under the outer `(`) followed by `emit_paren_t3` (break
+  before both `?` and `:`). Without the paren-T2 candidate,
+  a ternary nested in grouping parens whose value branches
+  fit together on a continuation line at the paren-aligned
+  column was falling through to the standard `+4`-indent T2
+  — losing the alignment spec C6 was supposed to produce.
 
 - **Argument list preserves gratuitous multi-row source
   layout when single-line would fit**
@@ -114,7 +121,7 @@ fixture set continues to pass.
   collapses whitespace and normalizes comma-spacing
   (`,b` → `, b`) outside those regions, and returns the
   result. The AST walk is what prevents the foot-gun where
-  an unspaced comma inside a string literal
+  a comma without a following space inside a string literal
   (`foo("name=A,value=B")`) is mistakenly comma-normalized
   and over-estimates the width by 1 per such comma — the
   string-literal contents have to be preserved exactly as
@@ -151,8 +158,10 @@ fixture set continues to pass.
 
 ### Tests
 
-Ten new golden fixtures, each runs through the harness's
-automatic idempotency check:
+Eleven new golden fixtures, each runs through the harness's
+automatic idempotency check, plus 18 new unit tests for the
+pure helpers (`_estimate_normalize` and
+`_arg_list_single_line_estimate`):
 
 - `method_chain_wrap/09_chain_collapses_when_call_fits_single_line`
   — locks the combined Bug 1 + Bug 4 behavior: input
@@ -192,7 +201,7 @@ automatic idempotency check:
 - `method_chain_wrap/13_arg_list_collapses_with_string_literal_comma`
   — locks the AST-aware width estimator
   (`_arg_list_single_line_estimate`): a call whose args
-  include string literals with unspaced commas
+  include string literals with commas that have no following space
   (`log("err=A,err=B", ..., "second,string", ...)`) lands
   exactly at column 80. The naïve regex-only estimator
   would over-estimate by 1 per such comma and incorrectly
@@ -215,6 +224,13 @@ automatic idempotency check:
   branches are too long for single-line aligns `?` and `:`
   under the column immediately after the outer `(`, not the
   standard `+4` continuation indent.
+- `ternary_wrap/06_paren_aligned_ternary_t2`
+  — locks the paren-aligned T2 candidate (break before `?`
+  only, with `? consequence : alternative` continuation
+  aligned under the outer `(`). Used when T1 and the
+  standard +4 T2/T3 overflow but a paren-aligned T2 fits;
+  without this candidate the engine would fall to standard
+  `cont_indent` T2 and lose the paren alignment.
 - `explicit_constructor_invocation/01_this_args_reserve_trailing_semicolon`
   — locks the tail_reserve fix surfaced by Bug 4. Input has
   source-preserved multi-row args whose single-line estimate
@@ -227,7 +243,8 @@ automatic idempotency check:
 
 ### Verification
 
-- 607 standards-repo tests pass (was 597, +10 new fixtures).
+- 626 standards-repo tests pass (was 597; +11 new fixtures
+  and +18 helper unit tests).
 - `senzing-commons-java`: formatter produces a one-time
   format diff (28 files modified — chain inline-recovery
   from Bug 1 fix + Allman brace from Bug 2 fix + paren-align
