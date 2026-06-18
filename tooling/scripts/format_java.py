@@ -93,6 +93,7 @@ validation and diagnostics.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -1634,7 +1635,6 @@ _PAREN_NOT_GROUPING_PARENT_TYPES: Final[frozenset[str]] = frozenset({
     "switch_expression",
     "synchronized_statement",
     "catch_clause",
-    "catch_formal_parameter",
 })
 
 
@@ -3040,8 +3040,7 @@ def _emit_ternary_expression(
             "unexpected."
         )
 
-    cont_col = (emitter.indent_level + 1) * 4
-    cont_indent = " " * cont_col
+    cont_indent = " " * ((emitter.indent_level + 1) * 4)
 
     def emit_t1() -> None:
         _emit_node(emitter, source, cond)
@@ -5722,51 +5721,141 @@ def _emit_cast_expression(
     _emit_node(emitter, source, value_node)
 
 
+_ESTIMATE_VERBATIM_NODE_TYPES: Final[frozenset[str]] = frozenset({
+    "string_literal",
+    "character_literal",
+    "line_comment",
+    "block_comment",
+})
+
+
+def _arg_list_single_line_estimate(
+    source: bytes, node: Node
+) -> str:
+    """Approximate `_emit_argument_list`'s P1 (single-line)
+    emit for `node` without actually running the emitter.
+
+    Walks the AST to identify byte ranges that the formatter
+    must preserve verbatim (string literals, character
+    literals, line / block comments). Outside those regions
+    the source-text whitespace is collapsed and comma-space
+    is normalized (`,b` → `, b`) to match the canonical
+    single-line shape. Inside those regions the source bytes
+    are echoed unchanged so an unspaced comma inside a string
+    literal (`foo("name=A,value=B")`) doesn't get a spurious
+    `, ` inserted by the comma-normalize pass.
+
+    Idempotency note: the estimate is what the AST emission
+    would produce on a clean single-line input, not what it
+    would produce after a multi-pass reformat. The whitespace
+    inside the source is irrelevant to the estimate's value;
+    only the verbatim regions' literal content matters.
+    """
+    base = node.start_byte
+    verbatim: list[tuple[int, int]] = []
+
+    def collect(n: Node) -> None:
+        if n.type in _ESTIMATE_VERBATIM_NODE_TYPES:
+            verbatim.append((n.start_byte - base, n.end_byte - base))
+            return
+        for c in n.children:
+            collect(c)
+
+    collect(node)
+    verbatim.sort()
+
+    src_text = _node_source_text(source, node)
+    parts: list[str] = []
+    pos = 0
+    for vstart, vend in verbatim:
+        if pos < vstart:
+            parts.append(_estimate_normalize(src_text[pos:vstart]))
+        parts.append(src_text[vstart:vend])
+        pos = vend
+    if pos < len(src_text):
+        parts.append(_estimate_normalize(src_text[pos:]))
+    return "".join(parts)
+
+
+def _estimate_normalize(section: str) -> str:
+    """Collapse whitespace runs to single spaces and normalize
+    comma-space inside a non-verbatim section. Preserves
+    whether the section starts/ends with whitespace so
+    surrounding verbatim segments don't lose required
+    inter-token spacing.
+    """
+    if not section:
+        return ""
+    if not section.strip():
+        # Pure whitespace between verbatim regions collapses
+        # to a single space — preserves token boundaries
+        # without inflating width.
+        return " "
+    starts_ws = section[0].isspace()
+    ends_ws = section[-1].isspace()
+    collapsed = " ".join(section.split())
+    collapsed = re.sub(r",\s*", ", ", collapsed)
+    if starts_ws and not collapsed.startswith(" "):
+        collapsed = " " + collapsed
+    if ends_ws and not collapsed.endswith(" "):
+        collapsed = collapsed + " "
+    return collapsed
+
+
 def _arg_list_takes_source_preserve_path(
-    emitter: Emitter, source: bytes, node: Node
+    emitter: Emitter,
+    source: bytes,
+    node: Node,
+    column: int | None = None,
 ) -> bool:
     """Return True when `_emit_argument_list` would emit `node`
-    verbatim from source (`write_raw_lines`) at the current
+    verbatim from source (`write_raw_lines`) at the supplied
     emission column, instead of falling through to the wrap
     engine.
+
+    Contract: when `column` is `None`, the predicate evaluates
+    against `emitter.column` (the current emit position — what
+    `_emit_argument_list` itself sees). When `column` is
+    supplied, the predicate evaluates against that future
+    column — used by `_emit_method_chain_wrapped`'s P1
+    newline-discriminator, which runs the prediction BEFORE
+    the segment's name + args emit (so `emitter.column` would
+    be stale by the time the predicate runs).
+
+    Sharing the predicate between the arg-list emitter and the
+    chain discriminator is what keeps them in agreement. Two
+    callers, one column-sensitive contract: if a discriminator
+    were to guess from row-count alone (or duplicate the gate
+    without the width opt-out), the wrap-engine fallout case
+    can re-introduce the Bug 1 chain-stranding shape.
 
     Source-preservation fires when the arg list spans multiple
     source rows AND one of:
 
       - The arg list contains interleaved `//` / `/* */`
         comments (the wrap engine has no concept of inter-arg
-        comments and would corrupt the output) — unconditional.
+        comments and would corrupt the output). The CSOFF
+        opt-out below shares the unconditional nature: width
+        is irrelevant for both.
       - The arg list sits inside a `// CSOFF` / `// CSON`
-        region (the spec's "Formatted Log and Diagnostic
-        Messages" rule explicitly opts out of reflow there) —
-        unconditional.
-      - The source-text's first line fits at the current
+        region — the spec's "Formatted Log and Diagnostic
+        Messages" rule explicitly opts out of reflow there.
+      - The source-text's first line fits at the supplied
         emission column (`column + first_line_length
         <= effective_max`) AND the full args would NOT fit
-        single-line at the current column. The full-args-fit
-        check overrides preservation when the author-authored
+        single-line at that column. The full-args-fit check
+        overrides preservation when the author-authored
         multi-row layout is gratuitous (e.g. a prior format
         pass split `foo(arg)` across two lines when single-
         line would have been canonical).
 
     The "full args fits single-line" override is skipped when
     any arg itself spans multiple rows (a text block, lambda
-    body, nested multi-row expression) — single-line is
-    impossible in that case, so source-preservation remains
-    the right path regardless.
-
-    Used by `_emit_argument_list` itself, and by
-    `_emit_method_chain_wrapped`'s P1 newline-discriminator
-    (so the chain knows whether a segment's args will go
-    through the source-preserve path — which leaves the
-    chain integrity intact — versus the wrap engine, which
-    can strand subsequent chain segments mid-call).
-
-    Factoring the gate out is what makes the two callers
-    agree; the chain discriminator must consult what the
-    arg-list emitter *will actually do*, not just whether
-    the source happens to be multi-row.
+    body, nested multi-row expression) — source-preservation
+    remains the safer path then since single-line emit is
+    unlikely to fit.
     """
+    col = emitter.column if column is None else column
     if not _node_spans_multiple_rows(node):
         return False
 
@@ -5786,22 +5875,29 @@ def _arg_list_takes_source_preserve_path(
     effective_max = _MAX_LINE - emitter.tail_reserve
 
     # Width-based opt-out: when the full args would render
-    # single-line at the current emission column (and no arg
+    # single-line at the supplied emission column (and no arg
     # is itself multi-row, which would make single-line
     # impossible), decline preservation so the wrap engine's
     # P1 candidate produces the canonical single-line form.
     # Catches `Modifier.isStatic(\n    modifiers)`-style
     # gratuitous wraps that would otherwise be echoed back
-    # because the source's first line (just `(`) trivially
-    # fits.
+    # because the source's first line (e.g. just `foo(`)
+    # trivially fits.
     #
-    # The single-line width is estimated by collapsing the
-    # source-text's whitespace runs to single spaces. Under-
-    # estimate-safe: if the actual rendered width exceeds the
-    # estimate (e.g. nested wrapping inside an arg), the wrap
-    # engine's actual P1 emit also overflows and falls
-    # through to P2/P3/P4 — never back to source-preserve, so
-    # the canonical wrap-engine layout still wins.
+    # The single-line width is estimated by walking the AST
+    # to identify `string_literal` / `character_literal` /
+    # `line_comment` / `block_comment` regions and preserving
+    # their text verbatim, while collapsing whitespace and
+    # normalizing comma-spacing (`,b` → `, b`) outside those
+    # regions to match what the wrap engine's P1 will actually
+    # emit. Preserving verbatim regions avoids the
+    # foot-gun where an unspaced comma inside a string literal
+    # (`foo("name=A,value=B")`) is mistakenly comma-normalized
+    # by a naïve regex pass, over-estimating the width by one
+    # char per such comma and incorrectly retaining
+    # source-preservation. With the AST walk both callers
+    # (`_emit_argument_list` and the chain discriminator)
+    # see the same estimate and decide the same way.
     arg_nodes = [
         c for c in node.children
         if c.is_named
@@ -5811,17 +5907,16 @@ def _arg_list_takes_source_preserve_path(
         _node_spans_multiple_rows(a) for a in arg_nodes
     )
     if not any_multiline_arg:
-        single_line_estimate = " ".join(src_text.split())
-        if (
-            emitter.column + len(single_line_estimate)
-            <= effective_max
-        ):
+        single_line_estimate = _arg_list_single_line_estimate(
+            source, node
+        )
+        if col + len(single_line_estimate) <= effective_max:
             return False
 
-    # Standard gate: source's first line fits at current
+    # Standard gate: source's first line fits at supplied
     # emission column.
     first_segment = src_text.split("\n", 1)[0]
-    return emitter.column + len(first_segment) <= effective_max
+    return col + len(first_segment) <= effective_max
 
 
 def _emit_argument_list(
@@ -6147,38 +6242,30 @@ def _emit_method_chain_wrapped(
 
         `args_emit_column` is the emitter column at the moment
         the segment's args open — captured BEFORE the segment
-        emits, since the source-preserve gate's `first_line_fits`
-        check is column-sensitive and the emitter's column is
-        already past the args by the time the post-emit
-        discriminator runs.
+        emits, since the source-preserve gate is column-
+        sensitive and the emitter's column is already past
+        the args by the time the post-emit discriminator
+        runs.
         """
         args = seg.child_by_field_name("arguments")
         if args is None:
             return False
-        # Predict whether the arg-list emitter will take the
-        # source-preserve path at THIS emission column.
-        # Sharing the predicate with `_emit_argument_list`
-        # itself guarantees the chain discriminator agrees
-        # with what the arg list will actually do (rather than
-        # guessing from source-row count alone, which
-        # over-relaxes the gate and re-introduces the Bug 1
-        # shape — see SHOULD-FIX 1 in the 0.4.3 review).
-        if _node_spans_multiple_rows(args):
-            src_text = _node_source_text(source, args)
-            first_segment = src_text.split("\n", 1)[0]
-            effective_max = _MAX_LINE - emitter.tail_reserve
-            first_line_fits = (
-                args_emit_column + len(first_segment)
-                <= effective_max
-            )
-            has_comment = any(
-                c.type in ("line_comment", "block_comment")
-                for c in args.children
-                if c.is_named
-            )
-            in_csoff = _is_inside_csoff_region(source, args)
-            if first_line_fits or has_comment or in_csoff:
-                return True
+        # Consult the same predicate `_emit_argument_list`
+        # itself uses, evaluated at the chain segment's
+        # arg-list emission column. Sharing the predicate is
+        # what keeps the discriminator and the arg-list
+        # emitter in agreement — without that agreement, an
+        # arg list whose source-preserve gate declines (e.g.
+        # because the Bug 4 width opt-out fires) but whose
+        # wrap-engine P1 then overflows ends up multi-line
+        # via P2/P3/P4, and a discriminator that didn't share
+        # the predicate would mistakenly call that "legit",
+        # stranding subsequent chain segments — the Bug 1
+        # shape.
+        if _arg_list_takes_source_preserve_path(
+            emitter, source, args, column=args_emit_column
+        ):
+            return True
         # Lambda body that spans multiple source rows — the
         # lambda emitter source-preserves the body block, so
         # those newlines are also the developer's authored

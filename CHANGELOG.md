@@ -106,11 +106,22 @@ fixture set continues to pass.
   column, so source-preserve fires even though
   `Modifier.isStatic(modifiers)` (27 chars) would
   comfortably collapse to single-line at the new column.
-  Fix: before the `first_line_fits` gate, check whether the
-  full args would fit single-line at the current column
-  (estimated by whitespace-collapsing the source text). If
-  yes, decline source-preservation so the wrap engine's P1
-  candidate produces the canonical single-line form.
+  Fix: before the `first_line_fits` gate, estimate whether
+  the full args would fit single-line at the current column.
+  The estimator (`_arg_list_single_line_estimate`) walks the
+  arg-list AST, marks `string_literal` / `character_literal`
+  / `line_comment` / `block_comment` regions as verbatim,
+  collapses whitespace and normalizes comma-spacing
+  (`,b` → `, b`) outside those regions, and returns the
+  result. The AST walk is what prevents the foot-gun where
+  an unspaced comma inside a string literal
+  (`foo("name=A,value=B")`) is mistakenly comma-normalized
+  and over-estimates the width by 1 per such comma — the
+  string-literal contents have to be preserved exactly as
+  the emitter would emit them. If the estimate fits at the
+  current column, decline source-preservation so the wrap
+  engine's P1 candidate produces the canonical single-line
+  form.
   Skipped when any arg itself spans multiple rows (a text
   block, a lambda body, a nested wrapping call) — single-
   line is impossible in that case, so source-preservation
@@ -119,9 +130,28 @@ fixture set continues to pass.
   fire first and the width-based opt-out applies only to
   the bare width-driven preservation path.
 
+### Changed
+
+- **`_PAREN_NOT_GROUPING_PARENT_TYPES` membership cleanup**
+  (`format_java.py`). Removed `catch_formal_parameter` — a
+  dead entry that could never match: the node represents the
+  `TYPE NAME` inside catch parens and never owns a
+  `parenthesized_expression` child (catch's required parens
+  are owned by `catch_clause`, which remains in the set).
+  The set is now exactly the tree-sitter-java node types
+  whose grammar specifies a required-parens
+  `parenthesized_expression` child. Note for future
+  maintainers: tree-sitter-java does NOT have a separate
+  `switch_statement` node — both `switch (x) { case ... }`
+  and the JEP-361 `int y = switch (x) { ... }` parse as
+  `switch_expression`. The set's `switch_expression` entry
+  therefore covers both forms (verified via
+  `Language.id_for_node_kind("switch_statement", True)`
+  returning `None`).
+
 ### Tests
 
-Seven new golden fixtures, each runs through the harness's
+Ten new golden fixtures, each runs through the harness's
 automatic idempotency check:
 
 - `method_chain_wrap/09_chain_collapses_when_call_fits_single_line`
@@ -154,11 +184,21 @@ automatic idempotency check:
   call `Modifier.isStatic(\n    modifiers)` that fits
   single-line at the current emission column collapses
   rather than echoing the source's multi-row layout.
-  Companion fixture covers a multi-line `if` condition
+  The same fixture also covers a multi-line `if` condition
   whose inner `Modifier.isStatic(modifiers)` calls each
   collapse while the outer `&&`-chained condition still
   wraps (proving the gate is per-arg-list, not per-
   expression).
+- `method_chain_wrap/13_arg_list_collapses_with_string_literal_comma`
+  — locks the AST-aware width estimator
+  (`_arg_list_single_line_estimate`): a call whose args
+  include string literals with unspaced commas
+  (`log("err=A,err=B", ..., "second,string", ...)`) lands
+  exactly at column 80. The naïve regex-only estimator
+  would over-estimate by 1 per such comma and incorrectly
+  retain source-preservation; the AST walk skips
+  string-literal contents and the gate correctly declines
+  preservation so the call collapses single-line.
 - `allman_braces/20_multiline_if_condition_uses_allman_brace`
   — locks Bug 2 fix: a single-source-row condition that the
   wrap engine breaks now triggers Allman brace.
@@ -169,10 +209,25 @@ automatic idempotency check:
   — locks Bug 3 fix with nested grouping parens
   (`(a || (b && (!c)))`). Both `||` and `&&` continuations
   paren-align under their respective `(`.
+- `ternary_wrap/05_paren_aligned_ternary`
+  — locks the spec C6 paren-alignment generalization to
+  ternaries: a `return (cond ? ... : ...)` whose value
+  branches are too long for single-line aligns `?` and `:`
+  under the column immediately after the outer `(`, not the
+  standard `+4` continuation indent.
+- `explicit_constructor_invocation/01_this_args_reserve_trailing_semicolon`
+  — locks the tail_reserve fix surfaced by Bug 4. Input has
+  source-preserved multi-row args whose single-line estimate
+  would render the call at exactly column 80; with the
+  trailing-`;` reserve in place, the wrap engine's P1
+  candidate correctly rejects (would push to 81) and the
+  output falls to paren-aligned one-per-line. Locks the
+  parallel-with-`throw`/`return`/`expression_statement`
+  convention.
 
 ### Verification
 
-- 604 standards-repo tests pass (was 597, +7 new fixtures).
+- 607 standards-repo tests pass (was 597, +10 new fixtures).
 - `senzing-commons-java`: formatter produces a one-time
   format diff (28 files modified — chain inline-recovery
   from Bug 1 fix + Allman brace from Bug 2 fix + paren-align
