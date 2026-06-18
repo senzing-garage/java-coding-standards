@@ -244,7 +244,13 @@ pure helpers (`_estimate_normalize` and
 ### Verification
 
 - 626 standards-repo tests pass (was 597; +11 new fixtures
-  and +18 helper unit tests).
+  and +18 helper unit tests). One existing fixture
+  (`condition_wrap/06_binary_precedence_keeps_atomic`) also
+  had its `expected.java` updated to reflect the Bug 2
+  Allman-brace correction — its multi-line condition now
+  triggers the same Allman placement covered by the new
+  `allman_braces/20_multiline_if_condition_uses_allman_brace`
+  fixture.
 - `senzing-commons-java`: formatter produces a one-time
   format diff (28 files modified — chain inline-recovery
   from Bug 1 fix + Allman brace from Bug 2 fix + paren-align

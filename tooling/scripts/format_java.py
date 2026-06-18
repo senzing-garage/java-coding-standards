@@ -354,8 +354,8 @@ class Emitter:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
-        tail_reserve)` suitable for `restore()`. The
-        wrap-priority engines use the pattern:
+        tail_reserve, paren_align_col)` suitable for
+        `restore()`. The wrap-priority engines use the pattern:
 
             saved = emitter.snapshot()
             <try emitting in some shape>
@@ -3117,6 +3117,7 @@ def _emit_ternary_expression(
                 emit_t2_at(paren_indent)
             finally:
                 emitter.set_paren_align_col(prev_align)
+
         def emit_paren_t3() -> None:
             prev_align = emitter.set_paren_align_col(None)
             try:
