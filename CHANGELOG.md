@@ -12,12 +12,13 @@ and this project adheres to
 
 ## [0.4.3] - 2026-06-18
 
-Three formatter bugs caught by a code-review pass over the
+Four formatter bugs caught by a code-review pass over the
 0.4.2 reformat in `senzing-commons-java`. One is a regression
-introduced by 0.4.2 itself (Bug 1); the other two are
+introduced by 0.4.2 itself (Bug 1); the other three are
 pre-existing bugs that 0.4.2's wrap-engine fixes made more
-visible (Bug 2) or more frequently encountered (Bug 3). All
-three are covered by new regression fixtures and the existing
+visible (Bug 2), more frequently encountered (Bug 3), or more
+visually conspicuous in the reformatted output (Bug 4). All
+four are covered by new regression fixtures and the existing
 fixture set continues to pass.
 
 ### Fixed
@@ -55,10 +56,15 @@ fixture set continues to pass.
   multi-line conditions; 0.4.2's precedence-aware spine
   walk increased the surface area where `&&` / `||`
   continuations land on their own lines, exposing the
-  missing Allman switch. Fix: mirror the
-  `_emit_while_statement` pattern — snapshot before
-  condition emit, switch to Allman if `emitter.line_count`
-  advances during the emit.
+  missing Allman switch. Fix: snapshot before condition
+  emit, switch to Allman if `emitter.line_count` advances
+  during the emit. Note: the if-emitter does NOT also adopt
+  `_emit_while_statement`'s source-preserve fast path (which
+  emits a developer-authored multi-row condition verbatim
+  via `write_raw_lines`) — the if-emitter continues to
+  re-render through `_emit_node`, matching its 0.4.1 and
+  earlier behavior. Reconciling the two is left as a future
+  spec/implementation decision.
 
 - **Paren-aligned operator continuation per spec C6**
   (`_emit_parenthesized_expression` + `_emit_binary_expression`,
@@ -80,24 +86,79 @@ fixture set continues to pass.
   (`emit_paren_aligned`) tried BEFORE the standard P2: if
   paren-alignment fits, commit; otherwise fall through to
   P2 (`+4` single-line continuation) and P3 (`+4` one per
-  line).
+  line). `_emit_ternary_expression` gets the same treatment
+  — a paren-aligned T3 candidate is tried before standard
+  T2/T3 when the ternary sits inside grouping parens.
+
+- **Argument list preserves gratuitous multi-row source
+  layout when single-line would fit**
+  (`_arg_list_takes_source_preserve_path`, Bug 4,
+  **pre-existing**). When the source arg list spans multiple
+  rows AND its first source line fits at the current
+  emission column, `_emit_argument_list` took the
+  source-preserve path (`write_raw_lines`) and echoed the
+  multi-row layout back verbatim. That logic is right when
+  the author's break-points carry meaning (long log messages,
+  semantically-grouped args), but produced `Modifier.isStatic(
+      modifiers)`-style gratuitous wraps when a prior format
+  pass had split a single-arg call across two lines: the
+  source's first line is just `(`, trivially fits any
+  column, so source-preserve fires even though
+  `Modifier.isStatic(modifiers)` (27 chars) would
+  comfortably collapse to single-line at the new column.
+  Fix: before the `first_line_fits` gate, check whether the
+  full args would fit single-line at the current column
+  (estimated by whitespace-collapsing the source text). If
+  yes, decline source-preservation so the wrap engine's P1
+  candidate produces the canonical single-line form.
+  Skipped when any arg itself spans multiple rows (a text
+  block, a lambda body, a nested wrapping call) — single-
+  line is impossible in that case, so source-preservation
+  remains the right path. Reordered the function so the
+  unconditional preservation triggers (comments, CSOFF)
+  fire first and the width-based opt-out applies only to
+  the bare width-driven preservation path.
 
 ### Tests
 
-Five new golden fixtures, each runs through the harness's
+Seven new golden fixtures, each runs through the harness's
 automatic idempotency check:
 
-- `method_chain_wrap/09_chain_with_source_preserved_args_inline`
-  — locks Bug 1 fix for chains whose intermediate call has
-  source-authored multi-row arguments
-  (`cls.getResource(\n    arg)`). Verifies the chain stays
-  single-line ending at `.toString();` rather than getting
-  pulled to dot-aligned P2 by the over-aggressive 0.4.2
-  gate.
+- `method_chain_wrap/09_chain_collapses_when_call_fits_single_line`
+  — locks the combined Bug 1 + Bug 4 behavior: input
+  `cls.getResource(\n    cls.getSimpleName() + ".class").toString()`
+  has source-preserved multi-row args inside the chain, the
+  whole chain fits single-line at 80 chars, and the
+  formatter collapses to a single line. The chain
+  discriminator's `_arg_list_takes_source_preserve_path`
+  agreement with the arg-list emitter is what makes the
+  collapse safe — both predict "single-line" together so
+  the chain doesn't get stranded mid-decision.
 - `method_chain_wrap/10_chain_with_multiline_lambda_body_inline`
-  — same shape, but with a lambda body as the multi-line
-  source (`forEach(flag -> { ... })`). Locks the
-  intrinsically-multi-line variant of the discriminator.
+  — chain-P1 over a segment whose args contain a multi-row
+  lambda body (`forEach(flag -> { ... })`). Locks the
+  intrinsically-multi-line variant of the discriminator
+  (`any_multiline_arg=True` path) — chain stays inline,
+  doesn't get pulled to dot-aligned P2.
+- `method_chain_wrap/11_chain_with_wrap_engine_rewrapped_args`
+  — locks the bug-1-shape regression-guard for the case the
+  initial Bug 1 fix attempt missed: when the source is
+  multi-row but its first line doesn't fit at the chain's
+  emission column, the arg-list emitter falls through to the
+  wrap engine (P4), which produces multi-line output that
+  strands subsequent chain segments. The discriminator must
+  reject in that case. Added in follow-up after the first
+  code-review pass flagged the gap.
+- `method_chain_wrap/12_arg_list_collapses_when_single_line_fits`
+  — locks Bug 4 fix in a non-chain context: a single-arg
+  call `Modifier.isStatic(\n    modifiers)` that fits
+  single-line at the current emission column collapses
+  rather than echoing the source's multi-row layout.
+  Companion fixture covers a multi-line `if` condition
+  whose inner `Modifier.isStatic(modifiers)` calls each
+  collapse while the outer `&&`-chained condition still
+  wraps (proving the gate is per-arg-list, not per-
+  expression).
 - `allman_braces/20_multiline_if_condition_uses_allman_brace`
   — locks Bug 2 fix: a single-source-row condition that the
   wrap engine breaks now triggers Allman brace.
@@ -111,11 +172,12 @@ automatic idempotency check:
 
 ### Verification
 
-- 602 standards-repo tests pass (was 597, +5 new fixtures).
+- 604 standards-repo tests pass (was 597, +7 new fixtures).
 - `senzing-commons-java`: formatter produces a one-time
   format diff (28 files modified — chain inline-recovery
   from Bug 1 fix + Allman brace from Bug 2 fix + paren-align
-  from Bug 3 fix); the second pass is idempotent and
+  from Bug 3 fix + arg-list single-line collapse from Bug 4
+  fix); the second pass is idempotent and
   `mvn -Pcheckstyle validate` remains BUILD SUCCESS.
 
 ## [0.4.2] - 2026-06-17

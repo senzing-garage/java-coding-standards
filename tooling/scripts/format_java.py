@@ -1613,11 +1613,9 @@ def _emit_parenthesized_expression(
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 1
     )
-    prev_paren_align = (
-        emitter.set_paren_align_col(emitter.column)
-        if is_grouping
-        else emitter.paren_align_col
-    )
+    prev_paren_align: int | None = None
+    if is_grouping:
+        prev_paren_align = emitter.set_paren_align_col(emitter.column)
     try:
         _emit_node(emitter, source, inner)
     finally:
@@ -2270,7 +2268,18 @@ def _emit_if_statement(
     # condition across multiple lines), the opening `{` goes
     # Allman (on its own line at the if's indent column).
     # Single-line rendered condition → same-line `{`.
-    # `_emit_while_statement` uses the same shape.
+    #
+    # Intentional asymmetry vs. `_emit_while_statement`: the
+    # while-emitter takes a source-preserve fast path that emits
+    # a developer-authored multi-row condition verbatim via
+    # `write_raw_lines`. The if-emitter does NOT — it always
+    # re-renders through `_emit_node`, which collapses a
+    # multi-row source condition to single-line when it fits.
+    # This matches the established 0.4.1 and earlier behavior
+    # for if-conditions; we only added the Allman switch here.
+    # A future release may reconcile by either teaching the
+    # if-emitter to source-preserve, or removing the
+    # while-emitter's source-preserve fast path.
     emitter.write("if ")
     cond_start = emitter.snapshot()
     prev_reserve = emitter.set_tail_reserve(
@@ -3041,25 +3050,55 @@ def _emit_ternary_expression(
         emitter.write(" : ")
         _emit_node(emitter, source, alternative)
 
-    def emit_t2() -> None:
+    def emit_t2_at(indent: str) -> None:
         _emit_node(emitter, source, cond)
         emitter.newline()
-        emitter.write(cont_indent)
+        emitter.write(indent)
         emitter.write("? ")
         _emit_node(emitter, source, consequence)
         emitter.write(" : ")
         _emit_node(emitter, source, alternative)
 
-    def emit_t3() -> None:
+    def emit_t3_at(indent: str) -> None:
         _emit_node(emitter, source, cond)
         emitter.newline()
-        emitter.write(cont_indent)
+        emitter.write(indent)
         emitter.write("? ")
         _emit_node(emitter, source, consequence)
         emitter.newline()
-        emitter.write(cont_indent)
+        emitter.write(indent)
         emitter.write(": ")
         _emit_node(emitter, source, alternative)
+
+    def emit_t2() -> None:
+        emit_t2_at(cont_indent)
+
+    def emit_t3() -> None:
+        emit_t3_at(cont_indent)
+
+    # Spec C6 paren-aligned ternary: when an enclosing
+    # grouping `(` is in scope, prefer aligning `?` / `:`
+    # under the column immediately after the `(`. Same shape
+    # as the binary-expression paren-aligned candidate
+    # (`emit_paren_aligned` in `_emit_binary_expression`).
+    align_col = emitter.paren_align_col
+    if align_col is not None:
+        paren_indent = " " * align_col
+        # Clear paren_align_col around the recursive emit
+        # of value branches so a nested grouping paren inside
+        # the consequence / alternative re-sets it
+        # independently.
+        def emit_paren_t3() -> None:
+            prev_align = emitter.set_paren_align_col(None)
+            try:
+                emit_t3_at(paren_indent)
+            finally:
+                emitter.set_paren_align_col(prev_align)
+        try_priorities(
+            emitter,
+            [emit_t1, emit_paren_t3, emit_t2, emit_t3],
+        )
+        return
 
     try_priorities(emitter, [emit_t1, emit_t2, emit_t3])
 
@@ -3583,7 +3622,18 @@ def _emit_explicit_constructor_invocation(
     if type_arguments is not None:
         _emit_node(emitter, source, type_arguments)
     emitter.write(keyword.type)
-    _emit_node(emitter, source, args)
+    # Reserve 1 char for the trailing `;` while the arg list
+    # wraps — without this, P1 could commit args ending at
+    # column 80 and the trailing `;` would push the line to
+    # 81. Mirrors the throw / return / expression_statement
+    # convention.
+    prev_reserve = emitter.set_tail_reserve(
+        emitter.tail_reserve + 1
+    )
+    try:
+        _emit_node(emitter, source, args)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     emitter.write(";")
 
 
@@ -5672,6 +5722,108 @@ def _emit_cast_expression(
     _emit_node(emitter, source, value_node)
 
 
+def _arg_list_takes_source_preserve_path(
+    emitter: Emitter, source: bytes, node: Node
+) -> bool:
+    """Return True when `_emit_argument_list` would emit `node`
+    verbatim from source (`write_raw_lines`) at the current
+    emission column, instead of falling through to the wrap
+    engine.
+
+    Source-preservation fires when the arg list spans multiple
+    source rows AND one of:
+
+      - The arg list contains interleaved `//` / `/* */`
+        comments (the wrap engine has no concept of inter-arg
+        comments and would corrupt the output) — unconditional.
+      - The arg list sits inside a `// CSOFF` / `// CSON`
+        region (the spec's "Formatted Log and Diagnostic
+        Messages" rule explicitly opts out of reflow there) —
+        unconditional.
+      - The source-text's first line fits at the current
+        emission column (`column + first_line_length
+        <= effective_max`) AND the full args would NOT fit
+        single-line at the current column. The full-args-fit
+        check overrides preservation when the author-authored
+        multi-row layout is gratuitous (e.g. a prior format
+        pass split `foo(arg)` across two lines when single-
+        line would have been canonical).
+
+    The "full args fits single-line" override is skipped when
+    any arg itself spans multiple rows (a text block, lambda
+    body, nested multi-row expression) — single-line is
+    impossible in that case, so source-preservation remains
+    the right path regardless.
+
+    Used by `_emit_argument_list` itself, and by
+    `_emit_method_chain_wrapped`'s P1 newline-discriminator
+    (so the chain knows whether a segment's args will go
+    through the source-preserve path — which leaves the
+    chain integrity intact — versus the wrap engine, which
+    can strand subsequent chain segments mid-call).
+
+    Factoring the gate out is what makes the two callers
+    agree; the chain discriminator must consult what the
+    arg-list emitter *will actually do*, not just whether
+    the source happens to be multi-row.
+    """
+    if not _node_spans_multiple_rows(node):
+        return False
+
+    # Unconditional preservation: comments and CSOFF regions
+    # cannot be safely reflowed.
+    has_comment = any(
+        c.type in ("line_comment", "block_comment")
+        for c in node.children
+        if c.is_named
+    )
+    if has_comment:
+        return True
+    if _is_inside_csoff_region(source, node):
+        return True
+
+    src_text = _node_source_text(source, node)
+    effective_max = _MAX_LINE - emitter.tail_reserve
+
+    # Width-based opt-out: when the full args would render
+    # single-line at the current emission column (and no arg
+    # is itself multi-row, which would make single-line
+    # impossible), decline preservation so the wrap engine's
+    # P1 candidate produces the canonical single-line form.
+    # Catches `Modifier.isStatic(\n    modifiers)`-style
+    # gratuitous wraps that would otherwise be echoed back
+    # because the source's first line (just `(`) trivially
+    # fits.
+    #
+    # The single-line width is estimated by collapsing the
+    # source-text's whitespace runs to single spaces. Under-
+    # estimate-safe: if the actual rendered width exceeds the
+    # estimate (e.g. nested wrapping inside an arg), the wrap
+    # engine's actual P1 emit also overflows and falls
+    # through to P2/P3/P4 — never back to source-preserve, so
+    # the canonical wrap-engine layout still wins.
+    arg_nodes = [
+        c for c in node.children
+        if c.is_named
+        and c.type not in ("line_comment", "block_comment")
+    ]
+    any_multiline_arg = any(
+        _node_spans_multiple_rows(a) for a in arg_nodes
+    )
+    if not any_multiline_arg:
+        single_line_estimate = " ".join(src_text.split())
+        if (
+            emitter.column + len(single_line_estimate)
+            <= effective_max
+        ):
+            return False
+
+    # Standard gate: source's first line fits at current
+    # emission column.
+    first_segment = src_text.split("\n", 1)[0]
+    return emitter.column + len(first_segment) <= effective_max
+
+
 def _emit_argument_list(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -5730,34 +5882,12 @@ def _emit_argument_list(
     # first line past 80 chars and there's no CSOFF marker),
     # fall through to the wrap engine, which picks fresh
     # break points appropriate to the new column.
-    if _node_spans_multiple_rows(node):
-        src_text = _node_source_text(source, node)
-        first_segment = src_text.split("\n", 1)[0]
-        effective_max = _MAX_LINE - emitter.tail_reserve
-        first_line_fits = (
-            emitter.column + len(first_segment) <= effective_max
-        )
-        # Interleaved `//` or `/* */` comments inside the arg
-        # list MUST source-preserve — the wrap engine has no
-        # concept of "comment between args" and would either
-        # drop the comment or treat it as a syntactic arg
-        # (producing output that fails to parse). The first-line-fit
-        # gate is bypassed in that case; the CSOFF gate is
-        # likewise unconditional.
-        has_comment = any(
-            a.type in ("line_comment", "block_comment")
-            for a in args
-        )
-        if (
-            first_line_fits
-            or has_comment
-            or _is_inside_csoff_region(source, node)
-        ):
-            emitter.write_raw_lines(src_text)
-            return
-        # Source-preserved first line wouldn't fit and there
-        # are no comments — fall through. The wrap engine
-        # below picks a layout that fits at the new column.
+    if _arg_list_takes_source_preserve_path(emitter, source, node):
+        emitter.write_raw_lines(_node_source_text(source, node))
+        return
+    # Source-preserved first line wouldn't fit and there
+    # are no comments — fall through. The wrap engine
+    # below picks a layout that fits at the new column.
 
     # A multi-line single arg (e.g. a text block) cannot fit
     # on the call line by definition; the P1 candidate is
@@ -6003,15 +6133,56 @@ def _emit_method_chain_wrapped(
     # head finished on.
     p1_segment_break_seen = [False]
 
-    def _segment_emit_is_legitimately_multi_line(seg: Node) -> bool:
+    def _segment_emit_is_legitimately_multi_line(
+        seg: Node, args_emit_column: int
+    ) -> bool:
+        """Predict at the segment's pre-emit position whether
+        any newlines its emit introduces will come from a
+        legitimate source-preservation path (developer's
+        authored multi-row arg list, or a lambda body
+        intrinsically multi-line in source) vs. from the
+        wrap engine breaking to fit. Only the wrap-engine
+        case actually strands subsequent chain segments
+        mid-call.
+
+        `args_emit_column` is the emitter column at the moment
+        the segment's args open — captured BEFORE the segment
+        emits, since the source-preserve gate's `first_line_fits`
+        check is column-sensitive and the emitter's column is
+        already past the args by the time the post-emit
+        discriminator runs.
+        """
         args = seg.child_by_field_name("arguments")
         if args is None:
             return False
+        # Predict whether the arg-list emitter will take the
+        # source-preserve path at THIS emission column.
+        # Sharing the predicate with `_emit_argument_list`
+        # itself guarantees the chain discriminator agrees
+        # with what the arg list will actually do (rather than
+        # guessing from source-row count alone, which
+        # over-relaxes the gate and re-introduces the Bug 1
+        # shape — see SHOULD-FIX 1 in the 0.4.3 review).
         if _node_spans_multiple_rows(args):
-            return True
-        # Lambda body that spans multiple source rows — emitted
-        # verbatim via source-preservation, so its newlines are
-        # the developer's authored layout, not wrap fallout.
+            src_text = _node_source_text(source, args)
+            first_segment = src_text.split("\n", 1)[0]
+            effective_max = _MAX_LINE - emitter.tail_reserve
+            first_line_fits = (
+                args_emit_column + len(first_segment)
+                <= effective_max
+            )
+            has_comment = any(
+                c.type in ("line_comment", "block_comment")
+                for c in args.children
+                if c.is_named
+            )
+            in_csoff = _is_inside_csoff_region(source, args)
+            if first_line_fits or has_comment or in_csoff:
+                return True
+        # Lambda body that spans multiple source rows — the
+        # lambda emitter source-preserves the body block, so
+        # those newlines are also the developer's authored
+        # layout rather than wrap fallout.
         for child in args.named_children:
             if child.type == "lambda_expression":
                 body = child.child_by_field_name("body")
@@ -6022,23 +6193,57 @@ def _emit_method_chain_wrapped(
     def emit_p1() -> None:
         p1_segment_break_seen[0] = False
 
-        def emit_seg_strict(seg: Node) -> None:
+        def emit_seg_strict(seg: Node, seg_index: int) -> None:
             before = emitter.line_count
+            # Capture the column AT the segment's args open
+            # (one past the `name` token). emit_segment writes
+            # name + args; the args open at `emitter.column +
+            # len(name)`. Source-preserve's first_line_fits
+            # check needs that column, not the post-emit
+            # column.
+            name_node = seg.child_by_field_name("name")
+            name_text = (
+                _node_source_text(source, name_node)
+                if name_node is not None
+                else ""
+            )
+            args_emit_column = emitter.column + len(name_text)
             emit_segment(seg)
             if emitter.line_count > before:
-                if not _segment_emit_is_legitimately_multi_line(seg):
+                # Newlines introduced. Acceptable only if BOTH:
+                #   (1) the discriminator says the source itself
+                #       drove the multi-line layout (multi-row
+                #       args that take the source-preserve path
+                #       at this column, or a lambda body that's
+                #       multi-row in source), AND
+                #   (2) at most ONE chain segment trails this
+                #       one. Without the trailing-count cap,
+                #       a long chain whose first segment has
+                #       multi-line args ends up with all the
+                #       subsequent `.method()` calls piled onto
+                #       one continuation line — the original
+                #       Bug 1 visual stranding shape. The cap
+                #       of one trailing matches the user's
+                #       preferred layout for short chains like
+                #       `cls.getResource(\n    arg).toString()`
+                #       while rejecting longer stranded chains.
+                trailing = len(segments) - 1 - seg_index
+                legit = _segment_emit_is_legitimately_multi_line(
+                    seg, args_emit_column
+                )
+                if (not legit) or trailing > 1:
                     p1_segment_break_seen[0] = True
 
         if head is not None:
             _emit_node(emitter, source, head)
-            for seg in segments:
+            for i, seg in enumerate(segments):
                 emitter.write(".")
-                emit_seg_strict(seg)
+                emit_seg_strict(seg, i)
         else:
-            emit_seg_strict(segments[0])
-            for seg in segments[1:]:
+            emit_seg_strict(segments[0], 0)
+            for i, seg in enumerate(segments[1:], start=1):
                 emitter.write(".")
-                emit_seg_strict(seg)
+                emit_seg_strict(seg, i)
 
     def emit_p2() -> None:
         if head is not None:
