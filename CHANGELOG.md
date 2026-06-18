@@ -10,6 +10,114 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-18
+
+Three formatter bugs caught by a code-review pass over the
+0.4.2 reformat in `senzing-commons-java`. One is a regression
+introduced by 0.4.2 itself (Bug 1); the other two are
+pre-existing bugs that 0.4.2's wrap-engine fixes made more
+visible (Bug 2) or more frequently encountered (Bug 3). All
+three are covered by new regression fixtures and the existing
+fixture set continues to pass.
+
+### Fixed
+
+- **Method-chain P1 over-rejects when an inner construct is
+  legitimately multi-line** (`_emit_method_chain_wrapped`,
+  Bug 1, **regression from 0.4.2**). The Bug 1 fix in 0.4.2
+  added per-segment newline detection so chain P1 would
+  reject when an inner argument-list wrap broke the chain
+  mid-call. That gate was too coarse: it also rejected when
+  the segment's args were multi-row because the source was
+  authored that way (the arg-list emitter takes the
+  source-preservation path) or because the args contain a
+  lambda whose body block is intrinsically multi-line. In
+  both cases the chain still ends cleanly at the closing
+  `)` and subsequent segments attach without breaking
+  integrity. Fix: discriminate via `_node_spans_multiple_rows`
+  on the segment's `arguments` node (and on any nested
+  `lambda_expression` body block); newlines from those
+  sources don't mark the chain as broken. Newlines from
+  the actual wrap engine still do — the original Bug 1 case
+  (long single-source-row chain that wrap-engine breaks via
+  arg-list P4) continues to fall through to chain P2 as
+  before.
+
+- **Multi-line `if` condition does not trigger Allman brace
+  placement** (`_emit_if_statement`, Bug 2, **pre-existing**).
+  When the wrap engine breaks an `if`'s condition across
+  multiple rendered lines (whether or not the source was
+  already multi-row), the opening `{` should go Allman per
+  the spec's "Brace Placement / Multi-Line Conditions" rule.
+  `_emit_while_statement` had this behavior since 0.4.0;
+  `_emit_if_statement` did not. The bug was masked in 0.4.1
+  and earlier because the wrap engine produced fewer
+  multi-line conditions; 0.4.2's precedence-aware spine
+  walk increased the surface area where `&&` / `||`
+  continuations land on their own lines, exposing the
+  missing Allman switch. Fix: mirror the
+  `_emit_while_statement` pattern — snapshot before
+  condition emit, switch to Allman if `emitter.line_count`
+  advances during the emit.
+
+- **Paren-aligned operator continuation per spec C6**
+  (`_emit_parenthesized_expression` + `_emit_binary_expression`,
+  Bug 3, **pre-existing**). When an expression is wrapped in
+  _grouping_ parens (developer-authored `(...)` to
+  disambiguate precedence), the spec calls for operator
+  continuations to align under the column immediately after
+  the opening `(`, not the standard cumulative `+4` indent.
+  Without this, nested grouping parens produce a "staircase"
+  shape where each level adds another `+4` of indent. Fix:
+  add a `_paren_align_col` field to `Emitter` that
+  `_emit_parenthesized_expression` sets to the column right
+  after `(` for grouping parens only (control-flow required
+  parens — `if (cond)`, `while (cond)`, `for (...)`,
+  `catch (...)`, etc. — are explicitly excluded via the
+  `_PAREN_NOT_GROUPING_PARENT_TYPES` set, since their
+  continuations follow the existing `+4`-indent rule).
+  `_emit_binary_expression` adds a new wrap candidate
+  (`emit_paren_aligned`) tried BEFORE the standard P2: if
+  paren-alignment fits, commit; otherwise fall through to
+  P2 (`+4` single-line continuation) and P3 (`+4` one per
+  line).
+
+### Tests
+
+Five new golden fixtures, each runs through the harness's
+automatic idempotency check:
+
+- `method_chain_wrap/09_chain_with_source_preserved_args_inline`
+  — locks Bug 1 fix for chains whose intermediate call has
+  source-authored multi-row arguments
+  (`cls.getResource(\n    arg)`). Verifies the chain stays
+  single-line ending at `.toString();` rather than getting
+  pulled to dot-aligned P2 by the over-aggressive 0.4.2
+  gate.
+- `method_chain_wrap/10_chain_with_multiline_lambda_body_inline`
+  — same shape, but with a lambda body as the multi-line
+  source (`forEach(flag -> { ... })`). Locks the
+  intrinsically-multi-line variant of the discriminator.
+- `allman_braces/20_multiline_if_condition_uses_allman_brace`
+  — locks Bug 2 fix: a single-source-row condition that the
+  wrap engine breaks now triggers Allman brace.
+- `allman_braces/21_multiline_if_condition_nested_uses_allman`
+  — same shape for an `else if` chain with both branches'
+  conditions wrapping.
+- `condition_wrap/08_paren_aligned_operator_continuation`
+  — locks Bug 3 fix with nested grouping parens
+  (`(a || (b && (!c)))`). Both `||` and `&&` continuations
+  paren-align under their respective `(`.
+
+### Verification
+
+- 602 standards-repo tests pass (was 597, +5 new fixtures).
+- `senzing-commons-java`: formatter produces a one-time
+  format diff (28 files modified — chain inline-recovery
+  from Bug 1 fix + Allman brace from Bug 2 fix + paren-align
+  from Bug 3 fix); the second pass is idempotent and
+  `mvn -Pcheckstyle validate` remains BUILD SUCCESS.
+
 ## [0.4.2] - 2026-06-17
 
 Five formatter bugs surfaced by adopting 0.4.1 in

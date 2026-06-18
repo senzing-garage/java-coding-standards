@@ -103,7 +103,7 @@ import tree_sitter_java
 from tree_sitter import Language, Node, Parser, Tree
 
 
-__version__: Final[str] = "0.4.2"
+__version__: Final[str] = "0.4.3"
 
 # Tree-sitter Python binding + tree-sitter-java grammar versions
 # this formatter is calibrated against. Kept in sync with the pins
@@ -224,7 +224,13 @@ class Emitter:
     block.
     """
 
-    __slots__ = ("_lines", "_current", "_indent", "_tail_reserve")
+    __slots__ = (
+        "_lines",
+        "_current",
+        "_indent",
+        "_tail_reserve",
+        "_paren_align_col",
+    )
 
     def __init__(self) -> None:
         self._lines: list[str] = []
@@ -239,6 +245,15 @@ class Emitter:
         # otherwise commit at exactly `_MAX_LINE` and let the
         # trailing tokens push the line past the limit.
         self._tail_reserve: int = 0
+        # When an expression is wrapped in grouping parentheses,
+        # this records the column immediately after the opening
+        # `(` so an inner binary / ternary / chain emitter can
+        # paren-align its operator continuations per spec C6
+        # ("Parenthesized-expression operator continuation").
+        # `None` means no enclosing grouping paren is in scope;
+        # wrap candidates use the standard cumulative `+4` indent
+        # in that case.
+        self._paren_align_col: int | None = None
 
     @property
     def column(self) -> int:
@@ -315,7 +330,26 @@ class Emitter:
         self._tail_reserve = value
         return previous
 
-    def snapshot(self) -> tuple[int, str, int, int]:
+    @property
+    def paren_align_col(self) -> int | None:
+        """The column immediately after an enclosing grouping
+        `(` if one is in scope, else `None`. Set by
+        `_emit_parenthesized_expression` around its inner emit;
+        consulted by `_emit_binary_expression` to enable the
+        spec C6 paren-aligned operator-continuation candidate.
+        """
+        return self._paren_align_col
+
+    def set_paren_align_col(self, value: int | None) -> int | None:
+        """Set `paren_align_col` and return the previous value
+        so the caller can restore it via the symmetric call.
+        Pair with a try/finally to handle exceptions.
+        """
+        previous = self._paren_align_col
+        self._paren_align_col = value
+        return previous
+
+    def snapshot(self) -> tuple[int, str, int, int, int | None]:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
@@ -339,22 +373,31 @@ class Emitter:
             self._current,
             self._indent,
             self._tail_reserve,
+            self._paren_align_col,
         )
 
     def restore(
-        self, snap: tuple[int, str, int, int]
+        self, snap: tuple[int, str, int, int, int | None]
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
 
         Truncates the lines list back to its captured length
-        and resets the current line, indent, and tail reserve.
-        Any text emitted after the snapshot is discarded.
+        and resets the current line, indent, tail reserve, and
+        paren-align column. Any text emitted after the snapshot
+        is discarded.
         """
-        lines_count, current, indent, tail_reserve = snap
+        (
+            lines_count,
+            current,
+            indent,
+            tail_reserve,
+            paren_align_col,
+        ) = snap
         del self._lines[lines_count:]
         self._current = current
         self._indent = indent
         self._tail_reserve = tail_reserve
+        self._paren_align_col = paren_align_col
 
     def last_lines_max_width(self, since: int) -> int:
         """Return the maximum width across all lines finalized
@@ -1389,6 +1432,21 @@ def _emit_binary_expression(
             _emit_node(emitter, source, operand)
         emitter.pop_indent()
 
+    def emit_paren_aligned(align_col: int) -> None:
+        # Spec C6: when an enclosing grouping `(` is in scope,
+        # paren-align each operator under the column immediately
+        # after that `(`. One operator per continuation line.
+        # Caller passes `align_col` directly (captured before
+        # clearing the emitter state so a nested grouping paren
+        # inside an operand resets cleanly).
+        _emit_node(emitter, source, leftmost_operand)
+        for op, operand in chain:
+            emitter.newline()
+            emitter.write(" " * align_col)
+            emitter.write(op.type)
+            emitter.write(" ")
+            _emit_node(emitter, source, operand)
+
     def emit_p3() -> None:
         # Each operand on its own continuation line at +4
         # indent column, prefixed with the operator.
@@ -1429,6 +1487,34 @@ def _emit_binary_expression(
     if p1_fits:
         return
     emitter.restore(saved)
+
+    # Spec C6 paren-aligned candidate, preferred over the
+    # standard +4-indent P2/P3 when an enclosing grouping `(`
+    # is in scope and paren-alignment doesn't itself overflow.
+    # Tried BEFORE standard P2 so a parenthesized expression
+    # like `(a || b || c)` wraps with `||` lined up under the
+    # column after `(`, rather than getting pulled to the
+    # cumulative `+4` column (which produces the "staircase"
+    # shape when grouping parens are nested).
+    align_col = emitter.paren_align_col
+    if align_col is not None:
+        paren_saved = emitter.snapshot()
+        # Clear paren_align_col while emitting this candidate's
+        # operands. The paren context applies to THIS binary
+        # chain's operator continuations only; nested binary
+        # expressions inside the operands have their own
+        # `_emit_parenthesized_expression` to re-set
+        # `paren_align_col` if they themselves sit inside
+        # grouping parens.
+        prev_align = emitter.set_paren_align_col(None)
+        try:
+            emit_paren_aligned(align_col)
+        finally:
+            emitter.set_paren_align_col(prev_align)
+        if emitter.last_lines_max_width(paren_saved[0]) <= effective_max:
+            return
+        emitter.restore(paren_saved)
+
     p2_saved = emitter.snapshot()
     emit_p2()
     if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
@@ -1510,14 +1596,48 @@ def _emit_parenthesized_expression(
     # commits, and the trailing `)` + further surrounding
     # tokens (e.g. an outer `;` or `) {`) push the line past
     # the budget.
+    #
+    # Spec C6 paren-alignment applies only to *grouping*
+    # parens — developer-authored `(...)` around an expression
+    # to disambiguate precedence. Parens that are
+    # syntactically required by an enclosing control-flow
+    # construct (`if (cond)`, `while (cond)`, `for (...)`,
+    # `catch (...)`, `synchronized (...)`, `switch (...)`)
+    # don't count as grouping; their wrap continuations use
+    # the standard cumulative `+4` indent.
+    is_grouping = (
+        node.parent is None
+        or node.parent.type
+        not in _PAREN_NOT_GROUPING_PARENT_TYPES
+    )
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 1
+    )
+    prev_paren_align = (
+        emitter.set_paren_align_col(emitter.column)
+        if is_grouping
+        else emitter.paren_align_col
     )
     try:
         _emit_node(emitter, source, inner)
     finally:
         emitter.set_tail_reserve(prev_reserve)
+        if is_grouping:
+            emitter.set_paren_align_col(prev_paren_align)
     emitter.write(")")
+
+
+_PAREN_NOT_GROUPING_PARENT_TYPES: Final[frozenset[str]] = frozenset({
+    "if_statement",
+    "while_statement",
+    "do_statement",
+    "for_statement",
+    "enhanced_for_statement",
+    "switch_expression",
+    "synchronized_statement",
+    "catch_clause",
+    "catch_formal_parameter",
+})
 
 
 def _emit_method_header_wrapped(
@@ -2142,7 +2262,17 @@ def _emit_if_statement(
     # `) {` / `) STMT` after the condition closes. Without this
     # an `if (cond)` that fits at exactly _MAX_LINE commits
     # inline and the brace pushes the line past the limit.
+    #
+    # Brace placement follows the spec's "Multi-line Conditions"
+    # rule: when the condition's RENDERED output spans more than
+    # one line (either because the source was multi-row, or
+    # because the wrap engine broke a single-row source
+    # condition across multiple lines), the opening `{` goes
+    # Allman (on its own line at the if's indent column).
+    # Single-line rendered condition → same-line `{`.
+    # `_emit_while_statement` uses the same shape.
     emitter.write("if ")
+    cond_start = emitter.snapshot()
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 2
     )
@@ -2150,7 +2280,11 @@ def _emit_if_statement(
         _emit_node(emitter, source, condition)
     finally:
         emitter.set_tail_reserve(prev_reserve)
-    emitter.write(" ")
+    if emitter.line_count > cond_start[0]:
+        emitter.newline()
+        emitter.write_indent()
+    else:
+        emitter.write(" ")
     _emit_branch_as_block(emitter, source, consequence)
 
     if alternative is not None:
@@ -5841,15 +5975,49 @@ def _emit_method_chain_wrapped(
         _emit_node(emitter, source, name)
         _emit_node(emitter, source, args)
 
-    # When emit_p1 runs, this list records the per-segment
-    # "line_count before this segment's emit" so the speculation
-    # below can detect a segment whose emit introduced newlines
-    # (typically because its argument list wrapped). The head
-    # itself is allowed to wrap — e.g. a head that is another
-    # chain — because chain P1 only claims to keep the
-    # *segments* on a single line starting wherever the head
-    # finished.
+    # When emit_p1 runs, this list records "did a segment's emit
+    # introduce newlines because the wrap engine had to break
+    # something to fit (vs. because the source itself was
+    # multi-row or the body is an intrinsically multi-line
+    # construct like a lambda block body)". Only the wrap-engine
+    # case actually breaks chain integrity; the
+    # source-preserved / intrinsically-multi-line cases leave
+    # the chain ending at its natural closing position with
+    # subsequent segments appended cleanly.
+    #
+    # Discriminator: if the segment's `arguments` node spans
+    # multiple source rows (so the arg-list emitter takes the
+    # source-preserve path) OR the arg list contains a lambda
+    # whose body block spans multiple source rows (the lambda
+    # is intrinsically multi-line in the developer's authored
+    # form), newlines introduced by the segment's emit are
+    # legitimate and do NOT mark the chain as broken. Newlines
+    # introduced by anything else mean the wrap engine had to
+    # break to fit, which DOES strand subsequent segments on
+    # continuation lines mid-call — that's the regression Bug 1
+    # in 0.4.2 was meant to catch.
+    #
+    # The head is always allowed to wrap (it can itself be
+    # another chain that legitimately wraps to P2/P3); chain P1
+    # only claims to keep the *segments* on whichever line the
+    # head finished on.
     p1_segment_break_seen = [False]
+
+    def _segment_emit_is_legitimately_multi_line(seg: Node) -> bool:
+        args = seg.child_by_field_name("arguments")
+        if args is None:
+            return False
+        if _node_spans_multiple_rows(args):
+            return True
+        # Lambda body that spans multiple source rows — emitted
+        # verbatim via source-preservation, so its newlines are
+        # the developer's authored layout, not wrap fallout.
+        for child in args.named_children:
+            if child.type == "lambda_expression":
+                body = child.child_by_field_name("body")
+                if body is not None and _node_spans_multiple_rows(body):
+                    return True
+        return False
 
     def emit_p1() -> None:
         p1_segment_break_seen[0] = False
@@ -5858,7 +6026,8 @@ def _emit_method_chain_wrapped(
             before = emitter.line_count
             emit_segment(seg)
             if emitter.line_count > before:
-                p1_segment_break_seen[0] = True
+                if not _segment_emit_is_legitimately_multi_line(seg):
+                    p1_segment_break_seen[0] = True
 
         if head is not None:
             _emit_node(emitter, source, head)
