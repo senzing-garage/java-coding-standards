@@ -3124,6 +3124,7 @@ def _emit_ternary_expression(
                 emit_t3_at(paren_indent)
             finally:
                 emitter.set_paren_align_col(prev_align)
+
         try_priorities(
             emitter,
             [
@@ -5766,6 +5767,31 @@ _ESTIMATE_VERBATIM_NODE_TYPES: Final[frozenset[str]] = frozenset({
 })
 
 
+def _estimate_normalize(section: str) -> str:
+    """Collapse whitespace runs to single spaces and normalize
+    comma-space inside a non-verbatim section. Preserves
+    whether the section starts/ends with whitespace so
+    surrounding verbatim segments don't lose required
+    inter-token spacing.
+    """
+    if not section:
+        return ""
+    if not section.strip():
+        # Pure whitespace between verbatim regions collapses
+        # to a single space — preserves token boundaries
+        # without inflating width.
+        return " "
+    starts_ws = section[0].isspace()
+    ends_ws = section[-1].isspace()
+    collapsed = " ".join(section.split())
+    collapsed = re.sub(r",\s*", ", ", collapsed)
+    if starts_ws and not collapsed.startswith(" "):
+        collapsed = " " + collapsed
+    if ends_ws and not collapsed.endswith(" "):
+        collapsed = collapsed + " "
+    return collapsed
+
+
 def _arg_list_single_line_estimate(
     source: bytes, node: Node
 ) -> str:
@@ -5812,31 +5838,6 @@ def _arg_list_single_line_estimate(
     if pos < len(src_text):
         parts.append(_estimate_normalize(src_text[pos:]))
     return "".join(parts)
-
-
-def _estimate_normalize(section: str) -> str:
-    """Collapse whitespace runs to single spaces and normalize
-    comma-space inside a non-verbatim section. Preserves
-    whether the section starts/ends with whitespace so
-    surrounding verbatim segments don't lose required
-    inter-token spacing.
-    """
-    if not section:
-        return ""
-    if not section.strip():
-        # Pure whitespace between verbatim regions collapses
-        # to a single space — preserves token boundaries
-        # without inflating width.
-        return " "
-    starts_ws = section[0].isspace()
-    ends_ws = section[-1].isspace()
-    collapsed = " ".join(section.split())
-    collapsed = re.sub(r",\s*", ", ", collapsed)
-    if starts_ws and not collapsed.startswith(" "):
-        collapsed = " " + collapsed
-    if ends_ws and not collapsed.endswith(" "):
-        collapsed = collapsed + " "
-    return collapsed
 
 
 def _arg_list_takes_source_preserve_path(
