@@ -1084,6 +1084,14 @@ def _emit_class_header_wrapped(
             # P2 overflowed — emit P3 instead. Each param on
             # its own continuation line at `cont_indent`; the
             # `<` ends the class declaration line.
+            #
+            # P3 is the terminal candidate per spec C1
+            # ("emit + warn"): there is no further fallback,
+            # so a single type parameter wider than 76 chars
+            # commits unconditionally and surfaces as a
+            # checkstyle `LineLength` violation rather than a
+            # formatter refusal. Same shape as the neighbor
+            # helper `_emit_extends_implements_p2_p3`.
             emitter.restore(attempt)
             emitter.write("<")
             for index, p in enumerate(params):
@@ -1386,6 +1394,16 @@ def _emit_binary_expression(
     # the "single line" semantic). P2 and P3 still use
     # straightforward width-based commit since their own
     # newlines are deliberate.
+    #
+    # Regression tests for this gate live at
+    # `condition_wrap/07_mixed_precedence_inner_parens_atomic`
+    # (outer P1 emit produces multi-line output via a nested
+    # parenthesized binary that wraps internally; all line
+    # widths still fit, so a width-only check would miss the
+    # break — the newline-rejection below is what catches it
+    # and triggers the fall-through to P2). Verified
+    # empirically: removing the `line_count == saved[0]`
+    # clause causes that fixture to fail.
     effective_max = _MAX_LINE - emitter.tail_reserve
     saved = emitter.snapshot()
     emit_p1()
@@ -1550,6 +1568,63 @@ def _emit_method_header_wrapped(
     )
 
 
+def _attach_trailing_side_comments(
+    emitter: Emitter,
+    source: bytes,
+    nodes: list[Node],
+    index: int,
+    anchor: Node,
+) -> tuple[int, Node]:
+    """Consume any `line_comment` / `block_comment` siblings of
+    `anchor` that originally sat on the same source row, emitting
+    them inline on the emitter's current line with two spaces of
+    separation per spec C6 ("End-of-line side comments").
+
+    Returns the new `index` (advanced past the consumed comments)
+    and the new `anchor` (the last comment consumed, or the
+    original `anchor` if none were). The new anchor is what the
+    caller uses for the next iteration's source-blank-line
+    tracking — using the comment's end row instead of the
+    original statement's end row is correct as long as the
+    comment ends on the same source row it started on, which is
+    always true for `line_comment` and true for single-line
+    `block_comment`. Multi-line `block_comment` would change
+    blank-line tracking semantics; the function guards against
+    that by refusing to consume a block comment that spans
+    multiple rows.
+
+    Used by `_emit_indented_member_list` (method / constructor /
+    static-initializer bodies, switch-block cases) and
+    `_emit_block` (control-flow blocks). Centralizing the
+    same-row attachment rule here keeps the two sites
+    consistent — the brace-row side-comment loop in
+    `_emit_block` (which writes `{  // comment`) accepts both
+    comment types, so the trailing-comment loops accept both
+    too.
+    """
+    while index + 1 < len(nodes):
+        nxt = nodes[index + 1]
+        if nxt.type not in ("line_comment", "block_comment"):
+            break
+        if nxt.start_point[0] != anchor.end_point[0]:
+            break
+        if (
+            nxt.type == "block_comment"
+            and nxt.end_point[0] != nxt.start_point[0]
+        ):
+            # Multi-line block comment — declining to attach
+            # would let it emit on its own line below, which
+            # is the safer behavior (an inline multi-row
+            # comment would change blank-line tracking and is
+            # rare in practice).
+            break
+        index += 1
+        emitter.write("  ")
+        _emit_node(emitter, source, nodes[index])
+        anchor = nodes[index]
+    return index, anchor
+
+
 def _emit_indented_member_list(
     emitter: Emitter, source: bytes, items: list[Node]
 ) -> None:
@@ -1579,24 +1654,11 @@ def _emit_indented_member_list(
                 emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, item)
-        # Per spec C6 "End-of-line side comments": a
-        # `line_comment` that originally sat on the same
-        # source row as the preceding member stays inline on
-        # the emitted line with two spaces of separation.
-        # Without this, a trailing `// note` ends up on its
-        # own line above the next member, visually
-        # re-attaching to the wrong code.
-        while (
-            index + 1 < len(items)
-            and items[index + 1].type == "line_comment"
-            and items[index + 1].start_point[0]
-            == item.end_point[0]
-        ):
-            index += 1
-            trailing = items[index]
-            emitter.write("  ")
-            _emit_node(emitter, source, trailing)
-            item = trailing
+        # Spec C6 same-row side-comment attachment — see
+        # `_attach_trailing_side_comments`.
+        index, item = _attach_trailing_side_comments(
+            emitter, source, items, index, item
+        )
         emitter.newline()
         prev = item
         index += 1
@@ -1843,26 +1905,11 @@ def _emit_block(
                 emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, stmt)
-        # Per spec C6 "End-of-line side comments", a
-        # `line_comment` whose source row equals the
-        # just-emitted statement's end row stays attached to
-        # that statement on the same emitted line, with
-        # exactly two spaces of separation. Without this, the
-        # comment is detached onto its own line above the
-        # NEXT statement and visually re-attaches to the wrong
-        # code — a low-severity-but-misleading drift.
-        while (
-            index + 1 < len(remaining)
-            and remaining[index + 1].type == "line_comment"
-            and remaining[index + 1].start_point[0]
-            == stmt.end_point[0]
-        ):
-            index += 1
-            trailing = remaining[index]
-            emitter.write("  ")
-            _emit_node(emitter, source, trailing)
-            stmt = trailing  # trailing comment becomes the
-            # new prev for blank-line tracking below
+        # Spec C6 same-row side-comment attachment — see
+        # `_attach_trailing_side_comments`.
+        index, stmt = _attach_trailing_side_comments(
+            emitter, source, remaining, index, stmt
+        )
         emitter.newline()
         prev_stmt = stmt
         index += 1

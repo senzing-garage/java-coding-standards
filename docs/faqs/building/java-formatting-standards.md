@@ -133,6 +133,16 @@ python3 .java-coding-standards/tooling/scripts/format_java.py --format path/to/F
 python3 .java-coding-standards/tooling/scripts/format_java.py --format path/to/File.java --check
 ```
 
+## Upgrading from 0.4.x
+
+The 0.4.2 release adds three generalizable patterns to the wrap engine; consumers don't need to know about them to use the formatter, but anyone maintaining `format_java.py` should:
+
+- **Binary-expression precedence-aware left-spine walk** — `_emit_binary_expression` flattens a multi-operator chain by descending the left spine, but only through children whose operator shares the root's precedence group. A new module-level `_BINARY_OP_PRECEDENCE` table encodes Java operator precedence (JLS § 15). Without the precedence guard, `a == null || b || c` would flatten into a 4-element chain and break at the leftmost `==`, stranding `== null` on a continuation line instead of breaking at the lowest-precedence operator (`||`).
+
+- **P1 newline-rejection gate** — for any wrap-priority site whose P1 candidate claims "all on one line", a width-only fit check is insufficient. A nested emit (an inner parenthesized binary that wraps, an arg list that wraps to P4, a chain whose head is itself another chain) can satisfy the width check by producing multi-line output that happens to fit ≤80 per line — leaving the outer construct's structure broken (operators stranded mid-line). The fix is to track `emitter.line_count` before and after the P1 emit and reject if any newlines were introduced. Used in `_emit_binary_expression` (rejects any newline) and `_emit_method_chain_wrapped` (rejects per-segment, because the head is allowed to wrap legitimately as another chain).
+
+- **`_attach_trailing_side_comments` shared helper** — spec C6 "End-of-line side comments" attaches a `line_comment` (or single-row `block_comment`) to the preceding statement's emitted line with two spaces of separation, instead of detaching it onto its own line. The helper centralizes the same-row attachment rule for `_emit_indented_member_list` (method / constructor / static-initializer bodies, switch-block cases) and `_emit_block` (control-flow blocks). Multi-row block comments are intentionally not attached (the attachment loop's blank-line tracking assumes the comment ends on its own start row).
+
 ## Upgrading from 0.3.x
 
 The 0.4.0 release added the wrap-priority engine with `tail_reserve` propagation. The CLI surface is unchanged — same `format_file.py` invocation, same exit codes. The only adopter-visible effect is that the formatter now produces spec-compliant output for cases the 0.3.x cascade left as LineLength violations: long method chains, long ternaries, long conditions, line comments past 80, text blocks in indented contexts, and a few more (see CHANGELOG `[0.4.0]`).
