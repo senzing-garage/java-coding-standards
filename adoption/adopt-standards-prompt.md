@@ -316,52 +316,47 @@ The template's `_comment` is documentation for adopters reading the
 snippet, not for consumers; if the user has their own commentary on
 their settings file, it stays.
 
-**Migration for projects with a pre-0.2.5 SessionStart hook:**
+**Migration for projects with a pre-0.4.2 SessionStart hook:**
 before merging the template, scan the existing
-`.claude/settings.json` for any SessionStart hook that uses the
+`.claude/settings.json` for any SessionStart hook that uses
 known-broken plumbing this release replaces, and offer to replace
-it. Three plumbing variants need detection — the 0.2.0–0.2.3
-(stdout-bare) and 0.2.4 (stderr) public variants, plus a
-draft-0.2.5 intermediate that may exist in test installs from
-the 0.2.5 development cycle. Detect pattern: a
+it. Detection condition: a
 `hooks.SessionStart[*].hooks[*].command` containing
 `.java-coding-standards` **AND** matching **any one** of the
-following git-plumbing substrings. The path anchor is required
-to avoid false positives on user-customized hooks for unrelated
+following git-plumbing substrings. The path anchor is required to
+avoid false positives on user-customized hooks for unrelated
 submodules that might happen to use the same git plumbing:
 
 1. Contains the substring `git fetch -q origin main` (the legacy
-   0.2.0–0.2.4 read-write upstream fetch — confirms it's the
-   pre-0.2.5 plumbing regardless of which output channel the
-   echo used).
+   0.2.0–0.2.4 read-write upstream fetch).
 2. Contains the substring `git rev-list --count HEAD..origin/main`
-   (the legacy 0.2.0–0.2.4 upstream-comparison plumbing — same
-   purpose as above, catches any variant that shaped the fetch
-   differently while keeping the rev-list).
-3. Contains the substring `git tag --points-at HEAD` (the
-   draft-0.2.5 intermediate's local-tag-based `current` lookup —
-   replaced in 0.2.5-final by an `ls-remote`-output SHA match,
-   because submodule clones don't fetch tag refs by default and
-   the local-tag lookup returns empty in the common case,
-   producing a bogus "current pin is untagged" nudge). The
-   final 0.2.5 hook does **not** use this string.
+   (the legacy 0.2.0–0.2.4 upstream-comparison plumbing).
+3. Contains the substring `git tag --points-at HEAD` (a
+   draft-0.2.5 intermediate's local-tag-based `current` lookup,
+   replaced in 0.2.5-final by an `ls-remote`-output SHA match).
+4. Contains the substring `cd \"${CLAUDE_PROJECT_DIR}/.java-coding-standards\"`
+   **AND** does NOT also contain `*java-coding-standards*` (the
+   0.2.5–0.4.1 finalized hook missing the 0.4.2 origin-URL
+   verification — false-positives when the `cd` lands in the
+   parent repo because the submodule `.git` resolves there;
+   `git ls-remote --tags origin` then returns the parent's tags
+   and the hook nudges to the wrong release).
 
-Both conditions (the `.java-coding-standards` path anchor AND any
-one of the three git-plumbing substrings) must hold to flag the
-hook for replacement. When detected, ask the user via
-`AskUserQuestion`:
+When the condition holds, ask the user via `AskUserQuestion`:
 
 > Your `.claude/settings.json` contains a SessionStart hook from
-> a pre-0.2.5 version of these standards that does not produce
-> reliable user-visible nudges (0.2.0–0.2.3 wrote to stdout
-> which became model-only context; 0.2.4 wrote to stderr which
-> was dropped; an intermediate draft-0.2.5 used a local-tag
-> lookup that returns empty on fresh submodule clones). The
-> finalized 0.2.5 hook fixes all three failure modes. Replace?
+> a pre-0.4.2 version of these standards. Earlier variants either
+> never produced user-visible nudges (0.2.0–0.2.4) or
+> false-positive in CI / detached-submodule contexts where the
+> `cd` resolves into the parent repository and the hook compares
+> against the parent's tags (0.2.5–0.4.1). The 0.4.2 hook fixes
+> both failure modes — it confirms `origin` points at
+> `java-coding-standards` before comparing tags, and exits
+> silently otherwise. Replace?
 >
 > Options: **Yes — replace** (recommended) / **No — keep current**
 
-If yes, replace just the `command` string in place with the 0.2.5
+If yes, replace just the `command` string in place with the 0.4.2
 template value (preserve any other entries the user has in
 `SessionStart`).
 

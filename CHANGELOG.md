@@ -10,6 +10,126 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-17
+
+Five formatter bugs surfaced by adopting 0.4.1 in
+`sz-sdk-java-auto`, plus a SessionStart-hook robustness fix.
+Adopters with consumers that already passed `mvn -Pcheckstyle
+validate` under 0.4.1 should expect a one-time format diff
+under 0.4.2 (the new wrap shapes correct previously-malformed
+output for the affected patterns); the second formatter run
+is idempotent at the new fixed point.
+
+### Fixed
+
+- **Method chains with arguments now chain-wrap instead of
+  argument-list-wrapping** (`_emit_method_chain_wrapped`).
+  When a fluent chain like
+  `obj.alpha().beta(arg).gamma(arg).build()` overflowed, the
+  formatter would try chain-P1 (single line), discover that
+  one segment's argument list internally wrapped to keep
+  widths under 80, and commit the result — leaving `.` and
+  `)` mid-line and stranding args. Fix: chain-P1 tracks per-
+  segment newlines and rejects when any segment's emit
+  introduced one; the engine then falls through to chain-P2
+  (dot-aligned per segment). The same pattern with no-arg
+  chains was unaffected and continues to wrap correctly.
+- **Binary-expression wrap now respects operator precedence**
+  (`_emit_binary_expression`). Previously the left-spine walk
+  descended through every `binary_expression` left child
+  regardless of operator, so a chain like
+  `a == null || b || c` was flattened to a single 4-element
+  chain and broken before the leftmost `==` (stranding
+  `== null`). Fix: the walk only descends through children
+  whose operator shares the root's **precedence group**, so
+  higher-precedence sub-expressions (`a == b` under `||`,
+  `c * d` under `+`, etc.) stay atomic and the wrap engine
+  breaks only at the lowest-precedence operator boundaries.
+  A new module-level `_BINARY_OP_PRECEDENCE` table encodes
+  the Java operator precedence used for the comparison.
+- **Multi-operator expressions with inner parenthesized
+  sub-expressions now break at the top-level operator**
+  rather than inside the inner parens. Same root cause as
+  the chain-args fix: the binary P1 attempt accepted nested
+  newlines from a parenthesized sub-expression that wrapped
+  internally to fit. Fix: binary P1 now rejects when nested
+  emits introduce newlines.
+- **Generic class headers with a long first type parameter
+  now wrap by breaking after `<`** (`_emit_class_header_wrapped`).
+  The previous shape always kept the first type parameter on
+  the class declaration line; when that first parameter was
+  the long one the line couldn't be brought under 80 chars
+  by the formatter — the adopter was forced to a manual
+  `// CSOFF` / `// CSON` pair, which the spec explicitly
+  forbids as a general escape hatch. Fix: a new P3 shape —
+  break right after `<`, each type parameter on its own
+  continuation line — engages when the P2 shape (first
+  parameter on the declaration line) would overflow.
+- **Trailing `// side comments` now stay attached to the
+  statement they follow** (`_emit_indented_member_list` and
+  `_emit_block`). Per spec C6 ("End-of-line side comments"),
+  a `line_comment` that originally sat on the same source
+  row as the preceding statement / member is emitted on the
+  same emitted line with two spaces of separation. The
+  previous behavior put the comment on its own line above
+  the next statement, visually re-attaching it to the wrong
+  code.
+- **SessionStart hook now verifies `origin` points at
+  `java-coding-standards` before comparing tags**
+  (`adoption/claude-md-templates/claude-hooks-snippet.json`).
+  In CI / detached-submodule contexts the hook's
+  `cd "${CLAUDE_PROJECT_DIR}/.java-coding-standards"` could
+  resolve git operations against the parent repository (the
+  submodule `.git` resolving to the parent's gitdir), so
+  `git ls-remote --tags origin` returned the parent's tags
+  and the hook nudged with the wrong release identifier.
+  Fix: an explicit `git remote get-url origin` substring
+  check; exits silently when the URL doesn't reference
+  `java-coding-standards`. Adopters with existing
+  `.claude/settings.json` files carrying the 0.2.5–0.4.1
+  hook should re-run `/init-java` — the playbook's
+  migration-detection now recognizes the older shape and
+  offers to replace it.
+
+### Tests
+
+New golden fixtures (each runs through the harness's
+automatic idempotency check):
+
+- `method_chain_wrap/08_chain_with_args_dot_aligned` — locks
+  the chain-wrap-over-arg-wrap precedence with a
+  builder-style chain whose intermediate calls carry args.
+- `condition_wrap/06_binary_precedence_keeps_atomic` — locks
+  `a == null || b.isZero() || c.isDestroyed()` wrapping at
+  `||` only, with `== null` kept atomic.
+- `condition_wrap/07_mixed_precedence_inner_parens_atomic` —
+  locks `a * b + (c / d)` breaking at the top-level `+` with
+  the inner parenthesized sub-expression staying together.
+- `class_header_wrap/06_type_params_break_after_open_angle` —
+  locks the new break-after-`<` shape for generic class
+  headers whose first type parameter would otherwise force a
+  CSOFF.
+- `line_comment_reflow/08_trailing_inline_comment_stays_attached`
+  — locks side-comment attachment across multiple statements
+  in a method body.
+
+Fixtures use synthetic class names (`Demo`, `Outer`,
+`MyConfigurableEnvironment`, `BaseEnvironment`,
+`Initializer`) rather than copying identifiers from any
+single consumer project.
+
+### Verification
+
+- 596 standards-repo tests pass (was 591, +5 new fixtures).
+- `senzing-commons-java`: formatter produces a one-time
+  format diff (26 files modified — chain wraps and
+  precedence-aware operator breaks engaging where 0.4.1's
+  malformed output had previously committed); the second
+  pass is idempotent and `mvn -Pcheckstyle validate`
+  remains BUILD SUCCESS.
+- `sz-sdk-java`: same shape — 21 files reformat once,
+  idempotent on the second pass.
+
 ## [0.4.1] - 2026-06-16
 
 Two wrap-engine bug fixes surfaced by adopting 0.4.0 into
