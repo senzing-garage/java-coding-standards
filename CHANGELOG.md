@@ -110,8 +110,14 @@ automatic idempotency check):
   headers whose first type parameter would otherwise force a
   CSOFF.
 - `line_comment_reflow/08_trailing_inline_comment_stays_attached`
-  — locks side-comment attachment across multiple statements
-  in a method body.
+  — locks `// side comment` attachment across multiple
+  statements in a method body.
+- `line_comment_reflow/09_trailing_block_comment_stays_attached`
+  — locks `/* side comment */` attachment for the
+  single-row block-comment variant of the same C6 rule
+  (added in follow-up to the initial commit while
+  extracting `_attach_trailing_side_comments` to handle
+  both comment types consistently).
 
 Fixtures use synthetic class names (`Demo`, `Outer`,
 `MyConfigurableEnvironment`, `BaseEnvironment`,
@@ -120,7 +126,7 @@ single consumer project.
 
 ### Verification
 
-- 596 standards-repo tests pass (was 591, +5 new fixtures).
+- 597 standards-repo tests pass (was 591, +6 new fixtures).
 - `senzing-commons-java`: formatter produces a one-time
   format diff (26 files modified — chain wraps and
   precedence-aware operator breaks engaging where 0.4.1's
