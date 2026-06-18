@@ -1328,6 +1328,15 @@ def _emit_binary_expression(
             break
         child_op = left_child.children[1]
         child_precedence = _BINARY_OP_PRECEDENCE.get(child_op.type)
+        # Defensive: an operator missing from
+        # `_BINARY_OP_PRECEDENCE` (future grammar additions
+        # the table hasn't been taught yet) stops the descent.
+        # Without this clause, `None != None` evaluates to
+        # `False` and two unknown-precedence operators would
+        # silently be treated as same-precedence, flattening
+        # them into the chain.
+        if child_precedence is None or root_precedence is None:
+            break
         if child_precedence != root_precedence:
             break
         leftmost = left_child
