@@ -1279,8 +1279,7 @@ def _emit_binary_expression(
           Rejected (regardless of width) if any nested emit
           introduced newlines — a parenthesized sub-expression
           that wrapped internally is not a true "single line"
-          even when the resulting widths all fit. See Bug 1 in
-          the 0.4.2 release notes.
+          even when the resulting widths all fit.
         - **P2**: break before the leftmost operator; the
           remainder of the chain stays on a single
           continuation line at +4 indent.
