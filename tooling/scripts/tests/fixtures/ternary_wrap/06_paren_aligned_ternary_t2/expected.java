@@ -2,7 +2,7 @@ public class Demo
 {
     public String pick(boolean condition)
     {
-        return (someConditionExpressionThatIsTooLongForOneLineAtThisIndentLeve
+        return (theConditionExpressionThatIsTooLongForOneLineAtThisIndentLevel
                 ? "yes" : "no");
     }
 }

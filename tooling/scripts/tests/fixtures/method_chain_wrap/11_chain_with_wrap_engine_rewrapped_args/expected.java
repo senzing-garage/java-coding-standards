@@ -4,7 +4,7 @@ public class Demo
     {
         String result = thisIsAReallyLongVariableName.method(
             longArgumentNameOne,
-            longArgumentNameTwoo,
+            longArgumentNameTwo,
             longArgumentNameThree)
                                                      .chainMethodB()
                                                      .chainMethodC()
