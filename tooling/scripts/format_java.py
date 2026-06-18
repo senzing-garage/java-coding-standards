@@ -103,7 +103,7 @@ import tree_sitter_java
 from tree_sitter import Language, Node, Parser, Tree
 
 
-__version__: Final[str] = "0.4.1"
+__version__: Final[str] = "0.4.2"
 
 # Tree-sitter Python binding + tree-sitter-java grammar versions
 # this formatter is calibrated against. Kept in sync with the pins
@@ -1056,6 +1056,22 @@ def _emit_class_header_wrapped(
             c for c in type_parameters_node.named_children
             if c.type == "type_parameter"
         ]
+        # Type-parameter shape selection:
+        #
+        #   - P2 (first param on the class declaration line,
+        #     subsequent params on continuation lines): tried
+        #     first. Compact for short first params.
+        #   - P3 (break right after `<`, every param on its own
+        #     continuation line): used when P2's first line would
+        #     overflow because the first type parameter is itself
+        #     too long.
+        #
+        # Without P3, a class whose FIRST type parameter is the
+        # long one cannot be brought under 80 chars by the
+        # formatter — the adopter is forced to a manual CSOFF
+        # suppression, which the spec forbids as a general
+        # escape hatch.
+        attempt = emitter.snapshot()
         emitter.write("<")
         for index, p in enumerate(params):
             if index > 0:
@@ -1064,6 +1080,34 @@ def _emit_class_header_wrapped(
                 emitter.write(cont_indent)
             _emit_node(emitter, source, p)
         emitter.write(">")
+        # Honor `tail_reserve` for consistency with the other
+        # manual P1/P2/P3 sites (`_emit_binary_expression`,
+        # `_emit_method_chain_wrapped`, `_emit_resource`).
+        # No runtime impact today — class declarations are
+        # never inside a tail-reserved context — but the
+        # pattern stays uniform.
+        p2_effective_max = _MAX_LINE - emitter.tail_reserve
+        if emitter.last_lines_max_width(attempt[0]) > p2_effective_max:
+            # P2 overflowed — emit P3 instead. Each param on
+            # its own continuation line at `cont_indent`; the
+            # `<` ends the class declaration line.
+            #
+            # P3 is the terminal candidate per spec C1
+            # ("emit + warn"): there is no further fallback,
+            # so a single type parameter wider than 76 chars
+            # commits unconditionally and surfaces as a
+            # checkstyle `LineLength` violation rather than a
+            # formatter refusal. Same shape as the neighbor
+            # helper `_emit_extends_implements_p2_p3`.
+            emitter.restore(attempt)
+            emitter.write("<")
+            for index, p in enumerate(params):
+                emitter.newline()
+                emitter.write(cont_indent)
+                _emit_node(emitter, source, p)
+                if index < len(params) - 1:
+                    emitter.write(",")
+            emitter.write(">")
 
     has_extends = superclass_node is not None
     has_implements = super_interfaces_node is not None
@@ -1198,6 +1242,27 @@ def _emit_field_declaration(
     emitter.write(";")
 
 
+# Precedence groups for Java binary operators, used by
+# `_emit_binary_expression` to flatten only same-precedence
+# sub-chains. Higher-precedence sub-expressions are kept atomic
+# rather than being absorbed into the wrap chain, so a wrap of
+# `a + b + (c * d)` (precedence: `*` > `+`) breaks at `+` only,
+# never at `*` — matching Java associativity and the spec's
+# "break at the lowest-precedence operator" intent.
+_BINARY_OP_PRECEDENCE: Final[dict[str, int]] = {
+    "||": 1,
+    "&&": 2,
+    "|": 3,
+    "^": 4,
+    "&": 5,
+    "==": 6, "!=": 6,
+    "<": 7, ">": 7, "<=": 7, ">=": 7,
+    "<<": 8, ">>": 8, ">>>": 8,
+    "+": 9, "-": 9,
+    "*": 10, "/": 10, "%": 10,
+}
+
+
 def _emit_binary_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1218,6 +1283,10 @@ def _emit_binary_expression(
     continuation indent):
 
         - **P1**: single line `a OP1 b OP2 c ... OPn z`.
+          Rejected (regardless of width) if any nested emit
+          introduced newlines — a parenthesized sub-expression
+          that wrapped internally is not a true "single line"
+          even when the resulting widths all fit.
         - **P2**: break before the leftmost operator; the
           remainder of the chain stays on a single
           continuation line at +4 indent.
@@ -1225,11 +1294,18 @@ def _emit_binary_expression(
           each operand-after-the-first on its own continuation
           line at the +4 indent column.
 
-    All three candidates use `try_priorities` + `tail_reserve`,
-    so the wrap engine accounts for trailing context the
-    binary expression can't see (`;` from an expression
-    statement, `)` from an enclosing call, `) {` from an `if`
-    condition, etc.).
+    Operator chain flattening is **precedence-aware**: only
+    same-precedence-group binary expressions on the left
+    spine are absorbed into the wrap chain. A higher-precedence
+    sub-expression (`a == b` under `||`, `c * d` under `+`,
+    etc.) stays atomic — emitted in full as a single chain
+    operand. Without this, an `if (a == null || b)` would
+    break before `==` instead of before `||`.
+
+    All width checks honor `tail_reserve` so the wrap engine
+    accounts for trailing context the binary expression can't
+    see (`;` from an expression statement, `)` from an
+    enclosing call, `) {` from an `if` condition, etc.).
     """
     children = node.children
     if len(children) != 3:
@@ -1238,12 +1314,32 @@ def _emit_binary_expression(
             "expected exactly 3 (left, operator, right)."
         )
 
-    # Walk down the left chain to find the leftmost
-    # binary_expression. Its left child is the chain's
-    # leftmost operand.
+    # Walk down the left spine, descending only through
+    # binary_expression children whose operator shares the
+    # root's precedence group. Higher-precedence
+    # sub-expressions become atomic operands at the root's
+    # level, never broken across continuation lines.
+    root_op = node.children[1]
+    root_precedence = _BINARY_OP_PRECEDENCE.get(root_op.type)
     leftmost = node
-    while leftmost.children[0].type == "binary_expression":
-        leftmost = leftmost.children[0]
+    while True:
+        left_child = leftmost.children[0]
+        if left_child.type != "binary_expression":
+            break
+        child_op = left_child.children[1]
+        child_precedence = _BINARY_OP_PRECEDENCE.get(child_op.type)
+        # Defensive: an operator missing from
+        # `_BINARY_OP_PRECEDENCE` (future grammar additions
+        # the table hasn't been taught yet) stops the descent.
+        # Without this clause, `None != None` evaluates to
+        # `False` and two unknown-precedence operators would
+        # silently be treated as same-precedence, flattening
+        # them into the chain.
+        if child_precedence is None or root_precedence is None:
+            break
+        if child_precedence != root_precedence:
+            break
+        leftmost = left_child
     leftmost_operand = leftmost.children[0]
 
     # Collect `[(op_token, right_operand), ...]` left-to-right.
@@ -1306,7 +1402,39 @@ def _emit_binary_expression(
             _emit_node(emitter, source, operand)
         emitter.pop_indent()
 
-    try_priorities(emitter, [emit_p1, emit_p2, emit_p3])
+    # Manual P1 speculation with newline-detection (replaces
+    # try_priorities for this site because try_priorities
+    # only inspects widths — a nested emit that wraps
+    # internally can satisfy the width check while breaking
+    # the "single line" semantic). P2 and P3 still use
+    # straightforward width-based commit since their own
+    # newlines are deliberate.
+    #
+    # Regression tests for this gate live at
+    # `condition_wrap/07_mixed_precedence_inner_parens_atomic`
+    # (outer P1 emit produces multi-line output via a nested
+    # parenthesized binary that wraps internally; all line
+    # widths still fit, so a width-only check would miss the
+    # break — the newline-rejection below is what catches it
+    # and triggers the fall-through to P2). Verified
+    # empirically: removing the `line_count == saved[0]`
+    # clause causes that fixture to fail.
+    effective_max = _MAX_LINE - emitter.tail_reserve
+    saved = emitter.snapshot()
+    emit_p1()
+    p1_fits = (
+        emitter.last_lines_max_width(saved[0]) <= effective_max
+        and emitter.line_count == saved[0]
+    )
+    if p1_fits:
+        return
+    emitter.restore(saved)
+    p2_saved = emitter.snapshot()
+    emit_p2()
+    if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
+        return
+    emitter.restore(p2_saved)
+    emit_p3()
 
 
 def _emit_unary_expression(
@@ -1455,6 +1583,63 @@ def _emit_method_header_wrapped(
     )
 
 
+def _attach_trailing_side_comments(
+    emitter: Emitter,
+    source: bytes,
+    nodes: list[Node],
+    index: int,
+    anchor: Node,
+) -> tuple[int, Node]:
+    """Consume any `line_comment` / `block_comment` siblings of
+    `anchor` that originally sat on the same source row, emitting
+    them inline on the emitter's current line with two spaces of
+    separation per spec C6 ("End-of-line side comments").
+
+    Returns the new `index` (advanced past the consumed comments)
+    and the new `anchor` (the last comment consumed, or the
+    original `anchor` if none were). The new anchor is what the
+    caller uses for the next iteration's source-blank-line
+    tracking — using the comment's end row instead of the
+    original statement's end row is correct as long as the
+    comment ends on the same source row it started on, which is
+    always true for `line_comment` and true for single-line
+    `block_comment`. Multi-line `block_comment` would change
+    blank-line tracking semantics; the function guards against
+    that by refusing to consume a block comment that spans
+    multiple rows.
+
+    Used by `_emit_indented_member_list` (method / constructor /
+    static-initializer bodies, switch-block cases) and
+    `_emit_block` (control-flow blocks). Centralizing the
+    same-row attachment rule here keeps the two sites
+    consistent — the brace-row side-comment loop in
+    `_emit_block` (which writes `{  // comment`) accepts both
+    comment types, so the trailing-comment loops accept both
+    too.
+    """
+    while index + 1 < len(nodes):
+        nxt = nodes[index + 1]
+        if nxt.type not in ("line_comment", "block_comment"):
+            break
+        if nxt.start_point[0] != anchor.end_point[0]:
+            break
+        if (
+            nxt.type == "block_comment"
+            and nxt.end_point[0] != nxt.start_point[0]
+        ):
+            # Multi-line block comment — declining to attach
+            # would let it emit on its own line below, which
+            # is the safer behavior (an inline multi-row
+            # comment would change blank-line tracking and is
+            # rare in practice).
+            break
+        index += 1
+        emitter.write("  ")
+        _emit_node(emitter, source, nodes[index])
+        anchor = nodes[index]
+    return index, anchor
+
+
 def _emit_indented_member_list(
     emitter: Emitter, source: bytes, items: list[Node]
 ) -> None:
@@ -1476,14 +1661,22 @@ def _emit_indented_member_list(
         return
     emitter.push_indent()
     prev: Node | None = None
-    for item in items:
+    index = 0
+    while index < len(items):
+        item = items[index]
         if prev is not None:
             if item.start_point[0] - prev.end_point[0] > 1:
                 emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, item)
+        # Spec C6 same-row side-comment attachment — see
+        # `_attach_trailing_side_comments`.
+        index, item = _attach_trailing_side_comments(
+            emitter, source, items, index, item
+        )
         emitter.newline()
         prev = item
+        index += 1
     emitter.pop_indent()
 
 
@@ -1719,14 +1912,22 @@ def _emit_block(
     if remaining and remaining[0].start_point[0] - brace_row > 1:
         emitter.newline()
     prev_stmt: Node | None = None
-    for stmt in remaining:
+    index = 0
+    while index < len(remaining):
+        stmt = remaining[index]
         if prev_stmt is not None:
             if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
                 emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, stmt)
+        # Spec C6 same-row side-comment attachment — see
+        # `_attach_trailing_side_comments`.
+        index, stmt = _attach_trailing_side_comments(
+            emitter, source, remaining, index, stmt
+        )
         emitter.newline()
         prev_stmt = stmt
+        index += 1
     emitter.pop_indent()
     emitter.write_indent()
     emitter.write("}")
@@ -5640,17 +5841,35 @@ def _emit_method_chain_wrapped(
         _emit_node(emitter, source, name)
         _emit_node(emitter, source, args)
 
+    # When emit_p1 runs, this list records the per-segment
+    # "line_count before this segment's emit" so the speculation
+    # below can detect a segment whose emit introduced newlines
+    # (typically because its argument list wrapped). The head
+    # itself is allowed to wrap — e.g. a head that is another
+    # chain — because chain P1 only claims to keep the
+    # *segments* on a single line starting wherever the head
+    # finished.
+    p1_segment_break_seen = [False]
+
     def emit_p1() -> None:
+        p1_segment_break_seen[0] = False
+
+        def emit_seg_strict(seg: Node) -> None:
+            before = emitter.line_count
+            emit_segment(seg)
+            if emitter.line_count > before:
+                p1_segment_break_seen[0] = True
+
         if head is not None:
             _emit_node(emitter, source, head)
             for seg in segments:
                 emitter.write(".")
-                emit_segment(seg)
+                emit_seg_strict(seg)
         else:
-            emit_segment(segments[0])
+            emit_seg_strict(segments[0])
             for seg in segments[1:]:
                 emitter.write(".")
-                emit_segment(seg)
+                emit_seg_strict(seg)
 
     def emit_p2() -> None:
         if head is not None:
@@ -5684,7 +5903,33 @@ def _emit_method_chain_wrapped(
             emitter.write(".")
             emit_segment(seg)
 
-    try_priorities(emitter, [emit_p1, emit_p2, emit_p3])
+    # Manual P1 speculation with per-segment newline detection.
+    # P1 is "all segments stay on whichever line the head
+    # finished on"; if a nested arg-list emit wraps mid-segment
+    # (e.g. `.method(arg)` wraps to put the arg on its own
+    # line), the chain has effectively broken even though the
+    # surrounding widths may still satisfy a simple width
+    # check. The `p1_segment_break_seen` flag rejects exactly
+    # that case while still letting the head itself wrap when
+    # it's legitimately multi-line (e.g. a head that is itself
+    # another chain). P2 / P3 commit by width — their newlines
+    # are deliberate.
+    effective_max = _MAX_LINE - emitter.tail_reserve
+    saved = emitter.snapshot()
+    emit_p1()
+    p1_fits = (
+        emitter.last_lines_max_width(saved[0]) <= effective_max
+        and not p1_segment_break_seen[0]
+    )
+    if p1_fits:
+        return
+    emitter.restore(saved)
+    p2_saved = emitter.snapshot()
+    emit_p2()
+    if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
+        return
+    emitter.restore(p2_saved)
+    emit_p3()
 
 
 def _emit_method_invocation(
