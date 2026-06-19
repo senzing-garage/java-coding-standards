@@ -10,6 +10,58 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Planned
+
+- **Label/value-aware string concatenation wrap candidate**
+  (new `emit_p2_pair_aligned` candidate in
+  `_emit_binary_expression`). Spec extension: when a binary
+  `+` chain alternates between `string_literal` operands and
+  non-string operands AND each label literal begins with a
+  delimiter character (` `, `,`, `;`, `]`, `)`, `}`, `|`, `:`),
+  break before each label so each line carries one label/value
+  pair aligned at the chain's continuation column. Example
+  motivating case from `senzing-commons-java`:
+
+  ```java
+  // current 0.4.3 output (P3 — break before every `+`):
+  return ("{ option=[ "
+          + this.getOption()
+          + " ], processedValue=[ "
+          + this.getProcessedValue()
+          + " ], source=[ "
+          + this.getSource()
+          + " ] }");
+
+  // proposed 0.4.4 output (pair-aligned):
+  return ("{ option=[ " + this.getOption()
+          + " ], processedValue=[ " + this.getProcessedValue()
+          + " ], source=[ " + this.getSource()
+          + " ] }");
+  ```
+
+  Detection is purely structural (operand types from AST) plus
+  a lexical delimiter-prefix check on the string literals.
+  Falls back to break-at-every-operator (P3) when the
+  alternation breaks (two consecutive strings or two
+  consecutive values) or when any pair would overflow 80
+  chars. Won't fire on arithmetic chains like `a + b + c + d`
+  because the operand types don't alternate.
+
+  Requires: spec section in `docs/java-coding-standards.md`
+  ("Label/value-aware string concatenation"), wrap candidate
+  implementation, ≥2 fixtures (engagement case +
+  alternation-broken fall-back), consumer re-verification.
+
+- **Greedy-P2 wrap candidate for binary expressions** (also
+  in `_emit_binary_expression`). Generic fallback for binary
+  chains that don't match the label/value pattern but where
+  P3's one-per-operator break is wider than necessary. Tries
+  to fit as many operands as possible on each continuation
+  line before breaking. Complements the label/value-aware
+  candidate above by handling the non-alternating cases.
+  Lower priority — only worth implementing if real cases
+  surface in consumer adoption that P3 handles poorly.
+
 ## [0.4.3] - 2026-06-18
 
 Four formatter bugs caught by a code-review pass over the

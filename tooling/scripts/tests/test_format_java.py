@@ -3806,7 +3806,7 @@ class TestFormatterWarnings:
         warnings: list[format_java.FormatterWarning] = []
         format_java.format_source(src, warnings_out=warnings)
         # Exactly one source-preserve site in this input
-        # triggers the advisory; the dedup step ensures we
+        # triggers the advisory; the uniqueness filter ensures we
         # see it once even if the wrap-engine speculates
         # over the same node at multiple indent levels.
         assert len(warnings) == 1
