@@ -6458,7 +6458,7 @@ def _emit_method_chain_wrapped(
     def emit_p1() -> None:
         p1_segment_break_seen[0] = False
 
-        def emit_seg_strict(seg: Node, seg_index: int) -> None:
+        def emit_seg_strict(seg: Node) -> None:
             before = emitter.line_count
             # Capture the column AT the segment's args open
             # (one past the `name` token). emit_segment writes
@@ -6506,14 +6506,14 @@ def _emit_method_chain_wrapped(
 
         if head is not None:
             _emit_node(emitter, source, head)
-            for i, seg in enumerate(segments):
+            for seg in segments:
                 emitter.write(".")
-                emit_seg_strict(seg, i)
+                emit_seg_strict(seg)
         else:
-            emit_seg_strict(segments[0], 0)
-            for i, seg in enumerate(segments[1:], start=1):
+            emit_seg_strict(segments[0])
+            for seg in segments[1:]:
                 emitter.write(".")
-                emit_seg_strict(seg, i)
+                emit_seg_strict(seg)
 
     def emit_p2() -> None:
         if head is not None:
