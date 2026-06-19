@@ -207,8 +207,9 @@ fixture set continues to pass.
     semantics), so the developer is the only party who can
     resolve the visual quirk by splitting the literal into
     smaller concatenated chunks.
-  - Advisories are deduped by `(line, column)` to avoid
-    duplicates from speculative wrap-engine re-emission.
+  - Advisories are filtered to be unique by `(line, column)`
+    so speculative wrap-engine re-emission doesn't produce
+    duplicates.
   - `warnings_out=None` (the default) silently discards the
     advisory list, preserving the original `format_source`
     API for callers that don't care.

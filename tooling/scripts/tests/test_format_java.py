@@ -3813,10 +3813,10 @@ class TestFormatterWarnings:
             assert "source-preserved" in warning.message
             assert "continuation at column" in warning.message
 
-    def test_warnings_deduped_by_source_position(self) -> None:
+    def test_warnings_unique_by_source_position(self) -> None:
         # Speculative wrap-engine emits can revisit the same
         # arg-list at different indent_level values; the
-        # advisory must be deduped by (line, column) so the
+        # advisory must be made unique by (line, column) so the
         # developer doesn't see duplicate hits.
         src = (
             b"public class A {\n"

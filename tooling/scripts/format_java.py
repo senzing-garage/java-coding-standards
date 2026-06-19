@@ -7033,7 +7033,7 @@ def format_source(
     emitter = Emitter()
     _emit_node(emitter, source, tree.root_node)
     if warnings_out is not None:
-        # Dedup by source position — speculative emit cascades
+        # Deduplicate by source position — speculative emit cascades
         # can revisit the same arg list under different
         # `indent_level` values, emitting the same advisory
         # multiple times for one node. The developer only needs
