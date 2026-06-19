@@ -3837,6 +3837,12 @@ class TestFormatterWarnings:
         )
         warnings: list[format_java.FormatterWarning] = []
         format_java.format_source(src, warnings_out=warnings)
+        # Sanity: the input intentionally triggers the
+        # advisory, so we expect at least one warning — an
+        # empty list would make the uniqueness assertion
+        # vacuously true and mask a regression where the
+        # advisory stops firing entirely.
+        assert len(warnings) >= 1
         positions = [(w.line, w.column) for w in warnings]
         assert len(positions) == len(set(positions))
 

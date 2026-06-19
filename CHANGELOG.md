@@ -492,6 +492,10 @@ pure helpers `_estimate_normalize` and
   standard `+4` cumulative continuation so the inner
   source-preserved bytes nest correctly inside the outer
   operator chain rather than being visually outdented.
+  Input == expected is intentional here — like
+  fixture 01 above, the regression lock is on
+  "formatter does NOT change this layout", not on a
+  reformat-shape transformation.
 - `ternary_wrap/05_paren_aligned_ternary`
   — locks the spec C6 paren-alignment generalization to
   ternaries: a `return (cond ? ... : ...)` whose value
