@@ -381,12 +381,13 @@ class Emitter:
         self._paren_align_col = value
         return previous
 
-    def snapshot(self) -> tuple[int, str, int, int, int | None]:
+    def snapshot(self) -> tuple[int, str, int, int, int | None, int]:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
-        tail_reserve, paren_align_col)` suitable for
-        `restore()`. The wrap-priority engines use the pattern:
+        tail_reserve, paren_align_col, warnings_count)` suitable
+        for `restore()`. The wrap-priority engines use the
+        pattern:
 
             saved = emitter.snapshot()
             <try emitting in some shape>
@@ -394,11 +395,17 @@ class Emitter:
                 emitter.restore(saved)
                 <emit in the next-priority shape>
 
-        Cheap because the lines list is immutable from the
-        perspective of restore (we capture its length, not its
-        contents). `tail_reserve` is included so a candidate
-        that adjusts it via `set_tail_reserve()` without using
-        try/finally still restores cleanly on backtrack.
+        Cheap because the lines / warnings lists are immutable
+        from the perspective of restore (we capture their
+        lengths, not their contents). `tail_reserve` is
+        included so a candidate that adjusts it via
+        `set_tail_reserve()` without using try/finally still
+        restores cleanly on backtrack. `warnings_count` is
+        included so any `FormatterWarning` appended during a
+        speculative emit that subsequently rolls back is
+        removed — otherwise a rejected P1 candidate's warnings
+        would linger and produce spurious advisories even when
+        the committed P2/P3 layout doesn't trigger them.
         """
         return (
             len(self._lines),
@@ -406,17 +413,20 @@ class Emitter:
             self._indent,
             self._tail_reserve,
             self._paren_align_col,
+            len(self.warnings),
         )
 
     def restore(
-        self, snap: tuple[int, str, int, int, int | None]
+        self,
+        snap: tuple[int, str, int, int, int | None, int],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
 
-        Truncates the lines list back to its captured length
-        and resets the current line, indent, tail reserve, and
-        paren-align column. Any text emitted after the snapshot
-        is discarded.
+        Truncates the lines and warnings lists back to their
+        captured lengths and resets the current line, indent,
+        tail reserve, and paren-align column. Any text emitted
+        — and any warnings appended — after the snapshot are
+        discarded.
         """
         (
             lines_count,
@@ -424,12 +434,14 @@ class Emitter:
             indent,
             tail_reserve,
             paren_align_col,
+            warnings_count,
         ) = snap
         del self._lines[lines_count:]
         self._current = current
         self._indent = indent
         self._tail_reserve = tail_reserve
         self._paren_align_col = paren_align_col
+        del self.warnings[warnings_count:]
 
     def last_lines_max_width(self, since: int) -> int:
         """Return the maximum width across all lines finalized

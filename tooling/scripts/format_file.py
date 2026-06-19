@@ -41,6 +41,17 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Import the warning type lazily for type-checkers only.
+    # The runtime `from format_java import format_source` happens
+    # inside `_main()` after sys.path is set up, so we cannot
+    # eagerly import format_java at module top — but the type
+    # annotation only needs to resolve under static analysis,
+    # which `from __future__ import annotations` lets us
+    # express here without a runtime import.
+    from format_java import FormatterWarning
 
 
 def _sha256(path: Path) -> str:
@@ -120,7 +131,7 @@ def _format_one(
             file=sys.stderr,
         )
         return "error"
-    warnings: list = []
+    warnings: list[FormatterWarning] = []
     try:
         formatted = format_source(source, warnings_out=warnings)
     except NotImplementedError as exc:
