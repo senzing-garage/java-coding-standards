@@ -268,7 +268,7 @@ fixture set continues to pass.
 
 ### Tests
 
-Twelve new golden fixtures, each runs through the harness's
+Thirteen new golden fixtures, each runs through the harness's
 automatic idempotency check, plus 22 new unit tests (18 for the
 pure helpers `_estimate_normalize` and
 `_arg_list_single_line_estimate`, plus 4 for the new
@@ -319,6 +319,16 @@ pure helpers `_estimate_normalize` and
   retain source-preservation; the AST walk skips
   string-literal contents and the gate correctly declines
   preservation so the call collapses single-line.
+- `method_chain_wrap/14_long_chain_falls_to_dot_aligned_over_mid_arg_break`
+  — locks the chain-P1 segment cap at 2: a 4-segment chain
+  whose middle segment has source-preserved multi-row args
+  (`Builder.builder().setReader(r).setFormat(\n  fmt).get()`)
+  now wraps at the dots (chain P2, dot-aligned, one segment
+  per line with collapsed args), NOT chain P1 with the
+  trailing `.get()` piled on the continuation line of the
+  closing `)`. Matches the design preference "break on
+  method chaining (greedily) before breaking on parameter
+  names for a method in the chain".
 - `allman_braces/20_multiline_if_condition_uses_allman_brace`
   — locks Bug 2 fix: a single-source-row condition that the
   wrap engine breaks now triggers Allman brace.
@@ -369,7 +379,7 @@ pure helpers `_estimate_normalize` and
 
 ### Verification
 
-- 631 standards-repo tests pass (was 597; +12 new fixtures,
+- 632 standards-repo tests pass (was 597; +13 new fixtures,
   +18 helper unit tests, +4 advisory-channel unit tests).
   One existing fixture
   (`condition_wrap/06_binary_precedence_keeps_atomic`) also

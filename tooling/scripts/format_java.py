@@ -6481,22 +6481,27 @@ def _emit_method_chain_wrapped(
                 #       args that take the source-preserve path
                 #       at this column, or a lambda body that's
                 #       multi-row in source), AND
-                #   (2) at most ONE chain segment trails this
-                #       one. Without the trailing-count cap,
-                #       a long chain whose first segment has
-                #       multi-line args ends up with all the
-                #       subsequent `.method()` calls piled onto
-                #       one continuation line — the original
-                #       Bug 1 visual stranding shape. The cap
-                #       of one trailing matches the user's
-                #       preferred layout for short chains like
-                #       `cls.getResource(\n    arg).toString()`
-                #       while rejecting longer stranded chains.
-                trailing = len(segments) - 1 - seg_index
+                #   (2) the total chain has at most TWO segments.
+                #
+                # The 2-segment cap reflects the design
+                # preference "break on method chaining (greedily)
+                # before breaking on parameter names for a method
+                # in the chain": a 3+ segment chain whose
+                # middle segment has multi-line args should
+                # wrap at the dots (chain P2), not pile the
+                # trailing segments onto the continuation line
+                # that starts with the closing `)` of the
+                # multi-line args. The cap of TWO matches the
+                # user's preferred layout for short chains like
+                # `cls.getResource(\n    arg).toString()` (2
+                # segments) while rejecting longer chains like
+                # `obj.builder().setReader(r).setFormat(\n  fmt)
+                # .get()` (4 segments) which read better as a
+                # dot-aligned wrap.
                 legit = _segment_emit_is_legitimately_multi_line(
                     seg, args_emit_column
                 )
-                if (not legit) or trailing > 1:
+                if (not legit) or len(segments) > 2:
                     p1_segment_break_seen[0] = True
 
         if head is not None:
