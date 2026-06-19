@@ -62,6 +62,56 @@ and this project adheres to
   Lower priority — only worth implementing if real cases
   surface in consumer adoption that P3 handles poorly.
 
+- **Partial source-preservation for arg lists containing lambda
+  expressions** (`_emit_argument_list` source-preserve path).
+  Currently when an arg list contains a lambda with a
+  multi-row body (e.g. `coll.forEach(item -> { … })`), the
+  source-preserve path emits the WHOLE arg list verbatim via
+  `write_raw_lines` — including the lambda body. That bypasses
+  `_emit_block`, so the body bytes land at whatever column the
+  source originally placed them, even when the surrounding
+  context has shifted to a deeper indent. Example from
+  `senzing-commons-java/io/RecordReader.java`:
+
+  ```java
+  // current 0.4.3 output — body at col 10:
+                  dataSourceMap.entrySet().forEach(entry -> {
+            String key = entry.getKey();
+            if (key != null) {
+              key = key.trim().toUpperCase();
+            }
+            …
+          });
+
+  // proposed 0.4.4 output — body re-indented at col 20:
+                  dataSourceMap.entrySet().forEach(entry -> {
+                      String key = entry.getKey();
+                      if (key != null) {
+                          key = key.trim().toUpperCase();
+                      }
+                      …
+                  });
+  ```
+
+  The 0.4.3 `FormatterWarning` advisory channel surfaces this
+  as a stderr message ("source-preserved arg list has
+  continuation at column N below the surrounding indent"), so
+  developers see the issue in CI logs and can manually
+  reformat the lambda body in their editor. The 0.4.4 fix
+  would close the loop: detect that the source-preserved arg
+  list's only multi-row arg is a lambda with a block body, and
+  switch to semantic emission for that arg — emit the lambda's
+  preamble (`entry -> `) verbatim from source, then call
+  `_emit_block` for the body (which re-indents based on
+  current indent_level), then close the arg list.
+
+  Requires: refactoring `_emit_argument_list`'s source-preserve
+  path to support partial (mixed verbatim + semantic) emission,
+  fixture coverage for both single-arg-lambda and mixed-args
+  cases, and consumer re-verification (the
+  `senzing-commons-java/io/RecordReader.java` lambdas are the
+  motivating cases).
+
 ## [0.4.3] - 2026-06-18
 
 Four formatter bugs caught by a code-review pass over the
