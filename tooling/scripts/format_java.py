@@ -1719,9 +1719,8 @@ def _inner_would_invert_paren_align(
                 leading = len(line) - len(stripped)
                 if leading < proposed_col:
                     return True
-        for child in current.children:
-            if child.is_named:
-                stack.append(child)
+        for child in current.named_children:
+            stack.append(child)
     return False
 
 

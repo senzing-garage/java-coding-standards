@@ -277,7 +277,10 @@ pure helpers (`_estimate_normalize` and
   candidate correctly rejects (would push to 81) and the
   output falls to paren-aligned one-per-line. Locks the
   parallel-with-`throw`/`return`/`expression_statement`
-  convention.
+  convention. Input == expected is intentional here — the
+  fixture is a regression lock for "formatter does NOT
+  collapse this multi-row call when the `;` would push the
+  line to 81", not a reformat-shape test.
 
 ### Verification
 
