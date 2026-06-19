@@ -1637,16 +1637,92 @@ def _emit_parenthesized_expression(
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 1
     )
+    # Paren-align yields to source-preservation when they
+    # conflict. Walk the inner expression looking for nested
+    # `argument_list` nodes that would actually source-preserve
+    # at their emission column; if any such arg list has a
+    # continuation line whose leading-whitespace count is LESS
+    # than the proposed paren-align column (`emitter.column`
+    # right after `(`), then engaging paren-alignment would
+    # visually invert the output — the outer operator chain
+    # (paren-aligned at `emitter.column`) would appear MORE
+    # indented than the source-preserved inner content. Spec C6
+    # paren-alignment is meant to avoid the +4-staircase shape;
+    # preserving the developer's source-authored break points
+    # wins when those two goals conflict.
+    #
+    # Using `_arg_list_takes_source_preserve_path` here (rather
+    # than scanning the source text directly) avoids the false
+    # positive where a low-col continuation in the source comes
+    # from an arg list that Bug 4's width opt-out will collapse
+    # to single-line. Those don't actually source-preserve, so
+    # their source columns are irrelevant to the inversion
+    # check.
+    apply_paren_align = is_grouping
+    if apply_paren_align and _inner_would_invert_paren_align(
+        emitter, source, inner, emitter.column
+    ):
+        apply_paren_align = False
     prev_paren_align: int | None = None
-    if is_grouping:
+    if apply_paren_align:
         prev_paren_align = emitter.set_paren_align_col(emitter.column)
     try:
         _emit_node(emitter, source, inner)
     finally:
         emitter.set_tail_reserve(prev_reserve)
-        if is_grouping:
+        if apply_paren_align:
             emitter.set_paren_align_col(prev_paren_align)
     emitter.write(")")
+
+
+def _inner_would_invert_paren_align(
+    emitter: Emitter,
+    source: bytes,
+    inner: Node,
+    proposed_col: int,
+) -> bool:
+    """Return True when paren-aligning `inner` at `proposed_col`
+    would produce visually inverted output — i.e., the inner
+    expression contains an `argument_list` node that would
+    source-preserve via `_emit_argument_list`'s `write_raw_lines`
+    path AND that arg list's source has a continuation line at
+    a column less than `proposed_col`.
+
+    Walks the inner tree top-down. For each `argument_list`
+    node visited, consults
+    `_arg_list_takes_source_preserve_path` to determine whether
+    the arg list will actually take the verbatim-emit path. The
+    column passed to the predicate is `proposed_col` — a lower
+    bound on the arg list's eventual emit column (since the arg
+    list will be nested deeper than the paren whose alignment
+    we're considering). Using a lower bound makes the predicate's
+    width opt-out fire more aggressively (more arg lists treated
+    as "Bug 4 collapses"), which gives a safe under-detection
+    bias: we may miss declining paren-align in cases where the
+    actual inner emit column is larger and source-preservation
+    kicks in — at worst this leaves the inversion in place,
+    same as pre-0.4.3 behavior for those nested cases.
+    """
+    stack = [inner]
+    while stack:
+        current = stack.pop()
+        if current.type == "argument_list" and (
+            _arg_list_takes_source_preserve_path(
+                emitter, source, current, column=proposed_col
+            )
+        ):
+            src = _node_source_text(source, current)
+            for line in src.split("\n")[1:]:
+                stripped = line.lstrip()
+                if not stripped:
+                    continue
+                leading = len(line) - len(stripped)
+                if leading < proposed_col:
+                    return True
+        for child in current.children:
+            if child.is_named:
+                stack.append(child)
+    return False
 
 
 def _emit_method_header_wrapped(

@@ -156,9 +156,35 @@ fixture set continues to pass.
   `Language.id_for_node_kind("switch_statement", True)`
   returning `None`).
 
+- **Paren-alignment yields to source-preservation on
+  inversion** (`_emit_parenthesized_expression`). Spec C6
+  paren-aligned operator continuation (introduced as Bug 3
+  in this release) and the arg-list source-preserve path
+  could conflict when nested: an outer `(EXPR)` whose
+  `EXPR` contains a deeply-nested arg list that
+  source-preserves with continuation lines at a column LESS
+  than the outer's paren-align column would render visually
+  inverted — the outer operator chain (paren-aligned at
+  `emitter.column`) appearing MORE indented than the inner
+  source-preserved bytes. Fix: before setting
+  `paren_align_col`, walk the inner expression tree for
+  `argument_list` nodes that `_arg_list_takes_source_preserve_path`
+  confirms WILL source-preserve at the proposed column. If
+  any such arg list has a continuation line below the
+  proposed column, decline paren-alignment for this level
+  and fall back to the cumulative `+4` continuation (the
+  pre-Bug-3 behavior). Result: paren-alignment fires
+  wherever it's safe; source-preservation wins where it
+  would otherwise be visually clobbered. The AST-based
+  detection (rather than a pure source-text scan) is what
+  avoids over-triggering on continuation columns that
+  belong to arg lists Bug 4 will collapse — those don't
+  actually source-preserve, so their source columns don't
+  matter to the inversion check.
+
 ### Tests
 
-Eleven new golden fixtures, each runs through the harness's
+Twelve new golden fixtures, each runs through the harness's
 automatic idempotency check, plus 18 new unit tests for the
 pure helpers (`_estimate_normalize` and
 `_arg_list_single_line_estimate`):
@@ -218,6 +244,18 @@ pure helpers (`_estimate_normalize` and
   — locks Bug 3 fix with nested grouping parens
   (`(a || (b && (!c)))`). Both `||` and `&&` continuations
   paren-align under their respective `(`.
+- `condition_wrap/09_paren_align_yields_to_source_preserve_inversion`
+  — locks the paren-align-yields-to-source-preserve
+  behavior: a `flag = (flag || (... && (!Boolean.FALSE.equals(
+  result.get(K).toString()))))` assignment whose outer `(`
+  lands at column 32 has a deeply-nested arg list whose
+  source-preserved continuation lines sit at columns 28 and
+  34. The AST-walk inversion check detects the col-28
+  continuation < proposed 32 and declines paren-alignment
+  for the outer grouping; `||` and `&&` fall back to the
+  standard `+4` cumulative continuation so the inner
+  source-preserved bytes nest correctly inside the outer
+  operator chain rather than being visually outdented.
 - `ternary_wrap/05_paren_aligned_ternary`
   — locks the spec C6 paren-alignment generalization to
   ternaries: a `return (cond ? ... : ...)` whose value
@@ -243,7 +281,7 @@ pure helpers (`_estimate_normalize` and
 
 ### Verification
 
-- 626 standards-repo tests pass (was 597; +11 new fixtures
+- 627 standards-repo tests pass (was 597; +12 new fixtures
   and +18 helper unit tests). One existing fixture
   (`condition_wrap/06_binary_precedence_keeps_atomic`) also
   had its `expected.java` updated to reflect the Bug 2
