@@ -19,8 +19,8 @@ and this project adheres to
   non-string operands AND each label literal begins with a
   delimiter character (` `, `,`, `;`, `]`, `)`, `}`, `|`, `:`),
   break before each label so each line carries one label/value
-  pair aligned at the chain's continuation column. Example
-  motivating case from `senzing-commons-java`:
+  pair aligned at the chain's continuation column. Generic
+  example (the classic `toString()` builder pattern):
 
   ```java
   // current 0.4.3 output (P3 — break before every `+`):
@@ -70,12 +70,11 @@ and this project adheres to
   `write_raw_lines` — including the lambda body. That bypasses
   `_emit_block`, so the body bytes land at whatever column the
   source originally placed them, even when the surrounding
-  context has shifted to a deeper indent. Example from
-  `senzing-commons-java/io/RecordReader.java`:
+  context has shifted to a deeper indent. Generic example:
 
   ```java
-  // current 0.4.3 output — body at col 10:
-                  dataSourceMap.entrySet().forEach(entry -> {
+  // current 0.4.3 output — body at the source's original col:
+                  collection.entrySet().forEach(entry -> {
             String key = entry.getKey();
             if (key != null) {
               key = key.trim().toUpperCase();
@@ -83,8 +82,8 @@ and this project adheres to
             …
           });
 
-  // proposed 0.4.4 output — body re-indented at col 20:
-                  dataSourceMap.entrySet().forEach(entry -> {
+  // proposed 0.4.4 output — body re-indented per indent_level:
+                  collection.entrySet().forEach(entry -> {
                       String key = entry.getKey();
                       if (key != null) {
                           key = key.trim().toUpperCase();
@@ -108,9 +107,7 @@ and this project adheres to
   Requires: refactoring `_emit_argument_list`'s source-preserve
   path to support partial (mixed verbatim + semantic) emission,
   fixture coverage for both single-arg-lambda and mixed-args
-  cases, and consumer re-verification (the
-  `senzing-commons-java/io/RecordReader.java` lambdas are the
-  motivating cases).
+  cases, and consumer re-verification across adopters.
 
 ## [0.4.3] - 2026-06-18
 
