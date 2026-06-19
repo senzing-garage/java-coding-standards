@@ -109,6 +109,53 @@ and this project adheres to
   fixture coverage for both single-arg-lambda and mixed-args
   cases, and consumer re-verification across adopters.
 
+- **Extend spec C6 paren-alignment to control-flow required
+  parens** (`_emit_parenthesized_expression` +
+  `_PAREN_NOT_GROUPING_PARENT_TYPES`). 0.4.3's paren-alignment
+  applies only to grouping parens (developer-authored `(...)`
+  around an expression for emphasis); the control-flow
+  required parens — `if (cond)`, `while (cond)`, `for (...)`,
+  `catch (...)`, `synchronized (...)`, `switch (...)` — use
+  the standard cumulative `+4` continuation indent for their
+  binary-operator wraps. Generic example:
+
+  ```java
+  // current 0.4.3 (cumulative +4 continuation):
+  } else if (owner.fileParts.size()
+      > this.currentFileIndex)
+  {
+      …
+  }
+
+  // proposed (paren-aligned under `(`):
+  } else if (owner.fileParts.size()
+             > this.currentFileIndex)
+  {
+      …
+  }
+  ```
+
+  The visual case for extending: the continuation operator
+  lines up directly under the column the condition opens at,
+  making the wrap point unambiguous at a glance. The case
+  against: deeper indents per level (more horizontal space
+  consumed in nested control flow), and it breaks a
+  convention many adopters already rely on.
+
+  Fallback behavior: when paren-alignment would overflow on
+  the second line (long condition relative to deep indent),
+  the wrap engine should fall back to the standard `+4`
+  cumulative continuation. The existing `try_priorities`
+  cascade handles this naturally — paren-aligned candidate
+  emits speculatively, engine checks width, accepts or rolls
+  back and tries the +4 candidate.
+
+  Tagged as a candidate for **0.4.4 or 0.5.0** depending on
+  how invasive the consumer-side reformat ends up being.
+  Worth a trial run on `senzing-commons-java` + a second
+  adopter to gauge the visual impact before committing to a
+  semantic-version bump.
+
 ## [0.4.3] - 2026-06-18
 
 Four formatter bugs caught by a code-review pass over the
