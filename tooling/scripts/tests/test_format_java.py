@@ -3759,6 +3759,104 @@ class TestArgListSingleLineEstimate:
         assert est == '(g("a,b"), c)'
 
 
+class TestFormatterWarnings:
+    """Cover the formatter's non-blocking advisory channel.
+
+    `format_source(source, warnings_out=...)` populates the
+    supplied list with `FormatterWarning` records for layout
+    corner cases the formatter cannot fully canonicalize
+    (currently: source-preserved arg lists whose continuation
+    columns fall below the surrounding indent level — the
+    string-literal-with-low-author-chosen-break shape).
+
+    The advisory is informational only; the formatter still
+    emits an 80-char-compliant layout. The warning surfaces to
+    stderr via `format_file.py` / `format_java.py --format` so
+    adopters know which spots warrant manual literal splitting.
+    """
+
+    def test_no_warning_for_canonical_code(self) -> None:
+        src = (
+            b"public class A {\n"
+            b"    void m() { f(x); }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        assert warnings == []
+
+    def test_warning_for_low_indented_continuation(self) -> None:
+        # Mimic the `throw new IOException(\n  "long string"\n
+        # + sb.toString())` pattern: source-preserved arg list
+        # whose continuation columns sit BELOW the enclosing
+        # statement's indent. Triggers the advisory.
+        src = (
+            b"public class A {\n"
+            b"    void m(StringBuilder sb) {\n"
+            b"        if (true) {\n"
+            b"            if (true) {\n"
+            b"                throw new RuntimeException(\n"
+            b'      "some long error message that the developer "\n'
+            b'          + sb.toString());\n'
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        assert len(warnings) >= 1
+        # Each warning carries a line / column / message.
+        for warning in warnings:
+            assert warning.line > 0
+            assert warning.column > 0
+            assert "source-preserved" in warning.message
+            assert "continuation at column" in warning.message
+
+    def test_warnings_deduped_by_source_position(self) -> None:
+        # Speculative wrap-engine emits can revisit the same
+        # arg-list at different indent_level values; the
+        # advisory must be deduped by (line, column) so the
+        # developer doesn't see duplicate hits.
+        src = (
+            b"public class A {\n"
+            b"    void m(StringBuilder sb) {\n"
+            b"        if (true) {\n"
+            b"            if (true) {\n"
+            b"                throw new RuntimeException(\n"
+            b'      "some long error message that the developer "\n'
+            b'          + sb.toString());\n'
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        positions = [(w.line, w.column) for w in warnings]
+        assert len(positions) == len(set(positions))
+
+    def test_warning_omits_when_warnings_out_is_none(self) -> None:
+        # API contract: when caller doesn't supply
+        # `warnings_out`, format_source still emits formatted
+        # output normally; the warnings are simply discarded.
+        src = (
+            b"public class A {\n"
+            b"    void m(StringBuilder sb) {\n"
+            b"        if (true) {\n"
+            b"            if (true) {\n"
+            b"                throw new RuntimeException(\n"
+            b'      "some long error message that the developer "\n'
+            b'          + sb.toString());\n'
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        # No exception, just discards the warnings.
+        format_java.format_source(src)
+
+
 class TestAnnotationTypeDeclaration:
     """Cover `_emit_annotation_type_declaration` and
     `_emit_annotation_type_element_declaration` end-to-end via

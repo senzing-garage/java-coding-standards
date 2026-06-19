@@ -182,12 +182,44 @@ fixture set continues to pass.
   actually source-preserve, so their source columns don't
   matter to the inversion check.
 
+### Added
+
+- **Formatter advisory channel** (`FormatterWarning` dataclass +
+  `Emitter.warnings` list + `format_source(source, warnings_out=...)`
+  parameter). The formatter now collects non-blocking advisories
+  during emission and exposes them via an optional `warnings_out`
+  list. The CLIs (`format_file.py` and `format_java.py --format`)
+  print each advisory to stderr in `file:line:column: WARNING: ...`
+  format consistent with editor / `grep` output.
+  - Currently emits one advisory shape: "source-preserved arg
+    list has continuation at column N below the surrounding
+    indent (M); consider splitting the contained literal or
+    expression into smaller chunks so the wrap engine can
+    re-indent consistently." Fires when `_emit_argument_list`
+    takes the source-preserve path AND the source has a
+    continuation line landing at a column less than
+    `emitter.indent_level * 4`. The classic trigger is a long
+    `throw new IOException("…long error message…" + variable)`
+    where the developer manually placed the string at a low
+    column to fit 80 chars; the string literal can't be
+    automatically split (Java syntax doesn't allow a literal
+    to span lines, and converting to a text block changes
+    semantics), so the developer is the only party who can
+    resolve the visual quirk by splitting the literal into
+    smaller concatenated chunks.
+  - Advisories are deduped by `(line, column)` to avoid
+    duplicates from speculative wrap-engine re-emission.
+  - `warnings_out=None` (the default) silently discards the
+    advisory list, preserving the original `format_source`
+    API for callers that don't care.
+
 ### Tests
 
 Twelve new golden fixtures, each runs through the harness's
-automatic idempotency check, plus 18 new unit tests for the
-pure helpers (`_estimate_normalize` and
-`_arg_list_single_line_estimate`):
+automatic idempotency check, plus 22 new unit tests (18 for the
+pure helpers `_estimate_normalize` and
+`_arg_list_single_line_estimate`, plus 4 for the new
+`FormatterWarning` advisory channel):
 
 - `method_chain_wrap/09_chain_collapses_when_call_fits_single_line`
   — locks the combined Bug 1 + Bug 4 behavior: input
@@ -284,8 +316,9 @@ pure helpers (`_estimate_normalize` and
 
 ### Verification
 
-- 627 standards-repo tests pass (was 597; +12 new fixtures
-  and +18 helper unit tests). One existing fixture
+- 631 standards-repo tests pass (was 597; +12 new fixtures,
+  +18 helper unit tests, +4 advisory-channel unit tests).
+  One existing fixture
   (`condition_wrap/06_binary_precedence_keeps_atomic`) also
   had its `expected.java` updated to reflect the Bug 2
   Allman-brace correction — its multi-line condition now

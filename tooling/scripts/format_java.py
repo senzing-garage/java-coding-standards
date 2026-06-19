@@ -197,6 +197,27 @@ def has_parse_errors(tree: Tree) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class FormatterWarning:
+    """A non-blocking advisory emitted during formatting.
+
+    Reported when the formatter detects a layout corner case
+    it cannot fully canonicalize and the developer is the only
+    party who can resolve it — e.g. a source-preserved arg
+    list whose continuation columns sit below the current
+    indent because the contained string literal would need to
+    be split into smaller concatenated chunks (a code change,
+    not a formatting choice).
+
+    Line / column are 1-indexed for direct comparison with
+    editor / `grep` output.
+    """
+
+    line: int
+    column: int
+    message: str
+
+
 class Emitter:
     """Append-only output buffer with column tracking.
 
@@ -231,12 +252,22 @@ class Emitter:
         "_indent",
         "_tail_reserve",
         "_paren_align_col",
+        "warnings",
     )
 
     def __init__(self) -> None:
         self._lines: list[str] = []
         self._current: str = ""
         self._indent: int = 0
+        # Collected formatter warnings — non-blocking advisories
+        # about layout corner cases the formatter can't fully
+        # canonicalize (e.g. a source-preserved arg list whose
+        # continuation columns are below the current indent
+        # because the contained string literal can't be split
+        # without a code change). The CLI prints these to stderr
+        # after each file so adopters know which spots warrant
+        # manual cleanup.
+        self.warnings: list[FormatterWarning] = []
         # Chars to reserve at the end of the current line for
         # trailing context the wrap candidates can't see — e.g.
         # `) {` after an `if` condition, `);` after a call inside
@@ -6091,7 +6122,41 @@ def _emit_argument_list(
     # fall through to the wrap engine, which picks fresh
     # break points appropriate to the new column.
     if _arg_list_takes_source_preserve_path(emitter, source, node):
-        emitter.write_raw_lines(_node_source_text(source, node))
+        src_text = _node_source_text(source, node)
+        # Inverted-indent advisory: if any source continuation
+        # line lands at a column LESS than the current indent
+        # level, the verbatim emit will look visually inverted
+        # against the surrounding context. The formatter can't
+        # fix this on its own — the typical cause is a long
+        # string literal whose author placed it at a low column
+        # to fit 80 chars; rewriting requires splitting the
+        # literal into concatenated chunks. Surface a warning so
+        # the developer knows to consider manual cleanup.
+        current_indent_col = emitter.indent_level * 4
+        for advisory_line in src_text.split("\n")[1:]:
+            advisory_stripped = advisory_line.lstrip()
+            if not advisory_stripped:
+                continue
+            advisory_leading = (
+                len(advisory_line) - len(advisory_stripped)
+            )
+            if advisory_leading < current_indent_col:
+                emitter.warnings.append(FormatterWarning(
+                    line=node.start_point[0] + 1,
+                    column=node.start_point[1] + 1,
+                    message=(
+                        "source-preserved arg list has "
+                        f"continuation at column "
+                        f"{advisory_leading + 1} below the "
+                        f"surrounding indent "
+                        f"({current_indent_col + 1}); consider "
+                        "splitting the contained literal or "
+                        "expression into smaller chunks so the "
+                        "wrap engine can re-indent consistently."
+                    ),
+                ))
+                break
+        emitter.write_raw_lines(src_text)
         return
     # Source-preserved first line wouldn't fit and there
     # are no comments — fall through. The wrap engine
@@ -6929,7 +6994,10 @@ def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     handler(emitter, source, node)
 
 
-def format_source(source: bytes) -> bytes:
+def format_source(
+    source: bytes,
+    warnings_out: list[FormatterWarning] | None = None,
+) -> bytes:
     """Format a Java source byte string per the project standards.
 
     Handles every Java construct exercised by the 83 fixture
@@ -6964,6 +7032,19 @@ def format_source(source: bytes) -> bytes:
         )
     emitter = Emitter()
     _emit_node(emitter, source, tree.root_node)
+    if warnings_out is not None:
+        # Dedup by source position — speculative emit cascades
+        # can revisit the same arg list under different
+        # `indent_level` values, emitting the same advisory
+        # multiple times for one node. The developer only needs
+        # to see each source location once.
+        seen: set[tuple[int, int]] = set()
+        for warning in emitter.warnings:
+            key = (warning.line, warning.column)
+            if key in seen:
+                continue
+            seen.add(key)
+            warnings_out.append(warning)
     return emitter.finish()
 
 
@@ -7087,8 +7168,9 @@ def _main(argv: list[str] | None = None) -> int:
             )
             return 2
         source = path.read_bytes()
+        warnings: list[FormatterWarning] = []
         try:
-            formatted = format_source(source)
+            formatted = format_source(source, warnings_out=warnings)
         except NotImplementedError as e:
             print(
                 f"format_java.py: REFUSED: {path}: {e}",
@@ -7101,6 +7183,12 @@ def _main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        for warning in warnings:
+            print(
+                f"{path}:{warning.line}:{warning.column}: "
+                f"WARNING: {warning.message}",
+                file=sys.stderr,
+            )
         if args.check:
             if formatted == source:
                 return 0

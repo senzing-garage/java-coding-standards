@@ -120,8 +120,9 @@ def _format_one(
             file=sys.stderr,
         )
         return "error"
+    warnings: list = []
     try:
-        formatted = format_source(source)
+        formatted = format_source(source, warnings_out=warnings)
     except NotImplementedError as exc:
         print(
             f"REFUSED: {path}: {exc}",
@@ -141,6 +142,12 @@ def _format_one(
             file=sys.stderr,
         )
         return "error"
+    for warning in warnings:
+        print(
+            f"{path}:{warning.line}:{warning.column}: "
+            f"WARNING: {warning.message}",
+            file=sys.stderr,
+        )
     if formatted == source:
         # Bit-identical; restore mtime for IDE / build-cache
         # hygiene.
