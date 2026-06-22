@@ -104,6 +104,7 @@ def _restore_mtime(
 def _format_one(
     path: Path,
     format_source,
+    print_warnings,
 ) -> str:
     """Format `path` in place. Returns one of:
 
@@ -153,12 +154,7 @@ def _format_one(
             file=sys.stderr,
         )
         return "error"
-    for warning in warnings:
-        print(
-            f"{path}:{warning.line}:{warning.column}: "
-            f"WARNING: {warning.message}",
-            file=sys.stderr,
-        )
+    print_warnings(path, warnings)
     if formatted == source:
         # Bit-identical; restore mtime for IDE / build-cache
         # hygiene.
@@ -204,7 +200,10 @@ def main() -> int:
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
     try:
-        from format_java import format_source  # type: ignore[import-not-found]
+        from format_java import (  # type: ignore[import-not-found]
+            format_source,
+            print_warnings,
+        )
     except ImportError as exc:
         print(
             f"ERROR: could not import format_java: {exc}\n"
@@ -238,7 +237,7 @@ def main() -> int:
         "error": 0,
     }
     for path in target_paths:
-        outcome = _format_one(path, format_source)
+        outcome = _format_one(path, format_source, print_warnings)
         counts[outcome] += 1
 
     total = sum(counts.values())

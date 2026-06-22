@@ -6452,6 +6452,26 @@ def _emit_method_chain_wrapped(
         # the predicate would mistakenly call that "legit",
         # stranding subsequent chain segments — the Bug 1
         # shape.
+        # Note: `_arg_list_takes_source_preserve_path` reads
+        # `emitter.tail_reserve` to compute `effective_max`.
+        # At the chain-discriminator call site that reserve
+        # belongs to the OUTER emit context (post-segment), not
+        # what it will be when the inner arg list actually
+        # emits. In practice this is acceptable as an
+        # approximation: tail_reserve is small (single-digit
+        # chars) and the source-preserve gate's width check is
+        # already an under-estimate-safe bound (the actual emit
+        # either matches the gate's decision, in which case it
+        # fits, or overflows to the wrap engine, in which case
+        # the chain's P1-newline-rejection picks it up). If a
+        # future change introduces a case where the
+        # discriminator and the arg-list emitter disagree on
+        # the source-preserve decision due to tail_reserve
+        # drift, the right fix is to thread the expected
+        # tail_reserve through the predicate's signature, not
+        # to defer the prediction until inside the arg list's
+        # own emit (which is when the chain has already
+        # committed to P1).
         if _arg_list_takes_source_preserve_path(
             emitter, source, args, column=args_emit_column
         ):
@@ -7065,6 +7085,30 @@ def format_source(
     return emitter.finish()
 
 
+def print_warnings(
+    path: str | Path,
+    warnings: list[FormatterWarning],
+    *,
+    stream=None,
+) -> None:
+    """Print `FormatterWarning` records to `stream` (default
+    `sys.stderr`) in `path:line:col: WARNING: message` format.
+
+    Shared helper used by both `format_java.py --format` and
+    `format_file.py` so the two CLIs render advisories
+    identically. Keeping the print contract in one place
+    means a future change (e.g. machine-parseable JSON output
+    behind a flag) lands in one site, not two.
+    """
+    out = sys.stderr if stream is None else stream
+    for warning in warnings:
+        print(
+            f"{path}:{warning.line}:{warning.column}: "
+            f"WARNING: {warning.message}",
+            file=out,
+        )
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="format_java.py",
@@ -7200,12 +7244,7 @@ def _main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        for warning in warnings:
-            print(
-                f"{path}:{warning.line}:{warning.column}: "
-                f"WARNING: {warning.message}",
-                file=sys.stderr,
-            )
+        print_warnings(path, warnings)
         if args.check:
             if formatted == source:
                 return 0
