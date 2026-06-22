@@ -98,7 +98,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Final
+from typing import Callable, Final, TextIO
 
 import tree_sitter_java
 from tree_sitter import Language, Node, Parser, Tree
@@ -2410,7 +2410,7 @@ def _emit_if_statement(
     # if-emitter to source-preserve, or removing the
     # while-emitter's source-preserve fast path.
     emitter.write("if ")
-    cond_start = emitter.snapshot()
+    cond_start_line_count = emitter.line_count
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 2
     )
@@ -2418,7 +2418,7 @@ def _emit_if_statement(
         _emit_node(emitter, source, condition)
     finally:
         emitter.set_tail_reserve(prev_reserve)
-    if emitter.line_count > cond_start[0]:
+    if emitter.line_count > cond_start_line_count:
         emitter.newline()
         emitter.write_indent()
     else:
@@ -4333,7 +4333,7 @@ def _emit_while_statement(
         # Bump tail_reserve so the condition's wrap engine
         # accounts for the upcoming `) {` (3 chars: `)`, ` `,
         # `{`) when deciding to wrap.
-        cond_start = emitter.snapshot()
+        cond_start_line_count = emitter.line_count
         prev_reserve = emitter.set_tail_reserve(
             emitter.tail_reserve + 2
         )
@@ -4341,7 +4341,7 @@ def _emit_while_statement(
             _emit_node(emitter, source, condition)
         finally:
             emitter.set_tail_reserve(prev_reserve)
-        if emitter.line_count > cond_start[0]:
+        if emitter.line_count > cond_start_line_count:
             emitter.newline()
             emitter.write_indent()
             _emit_node(emitter, source, body)
@@ -7089,7 +7089,7 @@ def print_warnings(
     path: str | Path,
     warnings: list[FormatterWarning],
     *,
-    stream=None,
+    stream: TextIO | None = None,
 ) -> None:
     """Print `FormatterWarning` records to `stream` (default
     `sys.stderr`) in `path:line:col: WARNING: message` format.
