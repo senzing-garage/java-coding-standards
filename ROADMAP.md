@@ -6,17 +6,115 @@ here are PLANNED but not yet committed — distinct from
 committed-but-unreleased changes per the Keep a Changelog
 convention.
 
-## 0.4.4 / 0.5.0 — gaps and ambiguous cases
+## 0.5.0 — wrap-engine extensions and source-preserve refactor
 
-The items below are a coordinated **gaps / ambiguous-cases
-list** to address together when planning 0.4.4 (or 0.5.0 if
-the consumer-side reformat impact warrants a major bump).
-They surfaced during 0.4.3 consumer-review of
-`senzing-commons-java` and each on its own is small, but the
-underlying questions overlap (wrap-engine candidate set, spec
-C6 scope, source-preserve column policy). Worth evaluating
-together — choices in one area constrain the others — rather
-than landing piecemeal across mini-releases.
+**Status:** scoped during a planning session after 0.4.3
+shipped. Five items targeted for 0.5.0; coordinated batch
+because the underlying questions overlap (wrap-engine
+candidate set, spec C6 scope, source-preserve column policy).
+
+### Items in 0.5.0
+
+| # | Item | Risk | Spec change? |
+|---|---|---|---|
+| 1 | Control-flow paren-alignment (extend spec C6) | Low | Yes |
+| 2a | Label/value-aware binary `+` chain wrap | Low | Yes |
+| 2b | Same-method greedy method-chain wrap | Medium | Yes |
+| 3 | Greedy-P2 binary expression wrap | Low | Minor (new candidate, no rule change) |
+| 4 | Context-aware source-preservation for multi-row arg bodies | High | Yes |
+
+### Phasing
+
+**Phase 1 — Item 4 spike (throwaway).** Empirical
+comparison of the two candidate implementation paths for
+item 4 (column-remapping vs partial semantic emission).
+Run each on `senzing-commons-java`, measure reformat
+surface and LineLength regressions. Don't commit — the
+result picks the option for Phase 5.
+
+**Phase 2 — Item 1 (control-flow paren-align).** Lowest
+risk, additive. Trial-run on consumer to gauge visual
+density before tagging.
+
+**Phase 3 — Items 2a + 3.** Same wrap engine
+(`_emit_binary_expression`), shared cascade positioning.
+Implement together.
+
+**Phase 4 — Item 2b spike + implementation.** Greedy
+method-chain has medium reformat surface. Spike on a
+throwaway branch first to gauge impact (same pattern as
+Phase 1); commit if the diff looks acceptable.
+
+**Phase 5 — Item 4 actual implementation.** Uses the
+spike-winner option from Phase 1. Last because dependence
+on items 2a/2b/3 is now clear and the IOException
+long-literal back-off needs careful fixture coverage.
+
+**Phase 6 — Bulk adoption + tag.** Reformat
+`senzing-commons-java` (and ideally `sz-sdk-java` as a
+second adopter), verify `mvn -Pcheckstyle validate` BUILD
+SUCCESS, idempotency holds. Tag 0.5.0.
+
+### Why phase 1 (item 4 spike) comes first
+
+Item 4's option 2 (partial semantic emission) would cause
+`_emit_binary_expression`, `_emit_method_chain_wrapped`,
+and `_emit_block` to fire on inputs they don't see in
+0.4.3 (inside source-preserved arg lists). Items 2a, 2b,
+and 3 would behave differently in those new contexts. If
+we land 2a/2b/3 first under today's assumptions and then
+land option 2, the interaction surprises are hard to
+unwind. If option 1 (column-remapping) wins the spike,
+this concern evaporates and items can land in any order.
+
+### Why phase 4 has a spike too
+
+Item 2b touches every `.method().method()` chain with the
+same method name in adopter code. That's potentially
+hundreds of files. A throwaway preview before committing
+the implementation lets us see the diff quality and adjust
+the gating heuristic (currently "all segments call the
+same method name") if it over- or under-triggers.
+
+### Spec text
+
+Each implementation PR carries its own spec-text update to
+`docs/java-coding-standards.md` (no separate spec-first
+PR). The user is the primary adopter during 0.5.0
+development; pre-circulating spec for external review
+isn't necessary.
+
+### Cascade ordering reference
+
+The combined `_emit_binary_expression` cascade after
+0.5.0:
+
+1. P1 (single line)
+2. **2a** `emit_pair_aligned` (label/value pattern matches;
+   uses `paren_align_col` if set, else +4 indent)
+3. `emit_paren_aligned` (0.4.3, only when grouping paren in
+   scope and 2a didn't apply)
+4. P2 (break-at-leftmost-only, rest on one continuation line)
+5. **3** `emit_greedy` (pack as many operands per line as fit)
+6. P3 (every operand on its own line)
+
+The `_emit_method_chain_wrapped` cascade after 0.5.0:
+
+1. P1 (single line)
+2. **2b** `emit_p2_greedy` (only when all segments call the
+   same method name; pack as many segments per line as fit)
+3. P2 (dot-aligned, one segment per line)
+4. P3 (continuation-indent, one segment per line)
+
+---
+
+## Original 0.5.0 backlog notes (preserved for reference)
+
+The items below are the original coordinated **gaps /
+ambiguous-cases list** captured at the end of 0.4.3
+review. The scoping decisions above (item 2 splitting
+into 2a/2b, retention of item 3, etc.) refine these into
+the final 0.5.0 plan.
 
 ### Label/value-aware string concatenation wrap candidate
 
