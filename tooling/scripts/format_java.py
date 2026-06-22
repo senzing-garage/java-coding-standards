@@ -1625,18 +1625,6 @@ def _emit_update_expression(
             emitter.write(child.type)
 
 
-_PAREN_NOT_GROUPING_PARENT_TYPES: Final[frozenset[str]] = frozenset({
-    "if_statement",
-    "while_statement",
-    "do_statement",
-    "for_statement",
-    "enhanced_for_statement",
-    "switch_expression",
-    "synchronized_statement",
-    "catch_clause",
-})
-
-
 def _emit_parenthesized_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1664,19 +1652,23 @@ def _emit_parenthesized_expression(
     # tokens (e.g. an outer `;` or `) {`) push the line past
     # the budget.
     #
-    # Spec C6 paren-alignment applies only to *grouping*
-    # parens — developer-authored `(...)` around an expression
-    # to disambiguate precedence. Parens that are
-    # syntactically required by an enclosing control-flow
-    # construct (`if (cond)`, `while (cond)`, `for (...)`,
-    # `catch (...)`, `synchronized (...)`, `switch (...)`)
-    # don't count as grouping; their wrap continuations use
-    # the standard cumulative `+4` indent.
-    is_grouping = (
-        node.parent is None
-        or node.parent.type
-        not in _PAREN_NOT_GROUPING_PARENT_TYPES
-    )
+    # Spec C6 paren-alignment applies to every
+    # `parenthesized_expression` node (0.5.0+) — both
+    # developer-authored grouping parens AND the
+    # syntactically-required parens of control-flow
+    # constructs (`if (cond)`, `while (cond)`, `for (...)`,
+    # `catch (...)`, `synchronized (...)`, `switch (...)`).
+    # Earlier releases (0.4.3) restricted paren-alignment to
+    # grouping parens only; 0.5.0 extends the rule to
+    # control-flow parens so an operator continuation inside
+    # an `if (long binary)` aligns under the column after the
+    # `(`, matching what the formatter already did inside
+    # `return (long binary)`. The yields-to-source-preserve
+    # inversion check below still applies — when an inner
+    # source-preserved arg list has continuation columns
+    # below the proposed paren-align column, paren-alignment
+    # is declined and the wrap engine falls back to the
+    # cumulative `+4` continuation.
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 1
     )
@@ -1701,11 +1693,9 @@ def _emit_parenthesized_expression(
     # to single-line. Those don't actually source-preserve, so
     # their source columns are irrelevant to the inversion
     # check.
-    apply_paren_align = is_grouping
-    if apply_paren_align and _inner_would_invert_paren_align(
+    apply_paren_align = not _inner_would_invert_paren_align(
         emitter, source, inner, emitter.column
-    ):
-        apply_paren_align = False
+    )
     prev_paren_align: int | None = None
     if apply_paren_align:
         prev_paren_align = emitter.set_paren_align_col(emitter.column)

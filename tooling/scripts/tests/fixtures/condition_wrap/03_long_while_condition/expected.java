@@ -5,7 +5,8 @@ public class Demo
                     boolean thirdConditionWithLongerName)
     {
         while (firstCondition
-            && secondCondition && thirdConditionWithLongerName)
+               && secondCondition
+               && thirdConditionWithLongerName)
         {
             firstCondition = false;
         }

@@ -10,8 +10,35 @@ and this project adheres to
 
 ## [Unreleased]
 
-No committed-but-unreleased changes at this time. Forward-looking
-work items are tracked in [ROADMAP.md](ROADMAP.md).
+Toward 0.5.0 — see [ROADMAP.md](ROADMAP.md) for the full
+phased plan.
+
+### Changed
+
+- **Spec C6 paren-alignment extended to control-flow required
+  parens** (`_emit_parenthesized_expression`, item 1 from the
+  0.5.0 roadmap). 0.4.3 restricted paren-aligned operator
+  continuation to grouping parens (developer-authored `(...)`
+  around an expression). 0.5.0 extends the rule to the
+  syntactically-required parens of control-flow constructs:
+  `if (cond)`, `while (cond)`, `for (...)`, `catch (...)`,
+  `synchronized (...)`, `switch (...)`. Operator continuations
+  inside a multi-line control-flow condition now align under
+  the column immediately after the `(` instead of using the
+  cumulative `+4` indent. The yields-to-source-preserve
+  inversion check (added in 0.4.3) continues to apply — when an
+  inner source-preserved arg list has continuation columns
+  below the proposed paren-align column, paren-alignment is
+  declined and the wrap engine falls back to the cumulative
+  `+4` continuation. Implementation: removed
+  `_PAREN_NOT_GROUPING_PARENT_TYPES` (the denylist that
+  excluded control-flow parents) and simplified the
+  `apply_paren_align` computation to always engage modulo the
+  inversion check. Three existing fixtures had their expected
+  output regenerated to reflect the new continuation columns;
+  one new fixture
+  (`condition_wrap/10_if_condition_paren_aligned`) locks the
+  4-operand `if (a && b && c && d)` paren-align case.
 
 ## [0.4.3] - 2026-06-18
 
