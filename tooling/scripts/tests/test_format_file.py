@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 import format_file
-from format_java import format_source
+from format_java import format_source, print_warnings
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
@@ -179,7 +179,7 @@ def test_format_one_changed(tmp_path: Path) -> None:
         "}\n",
         encoding="utf-8",
     )
-    outcome = format_file._format_one(java, format_source)
+    outcome = format_file._format_one(java, format_source, print_warnings)
     assert outcome == "changed"
     after = java.read_text(encoding="utf-8")
     assert "public class Foo\n{\n" in after
@@ -200,7 +200,7 @@ def test_format_one_unchanged_restores_mtime(
     os.utime(java, (past, past))
     before = java.stat().st_mtime_ns
 
-    outcome = format_file._format_one(java, format_source)
+    outcome = format_file._format_one(java, format_source, print_warnings)
     assert outcome == "unchanged"
     after = java.stat().st_mtime_ns
     assert after == before

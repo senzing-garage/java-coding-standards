@@ -41,6 +41,17 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Import the warning type lazily for type-checkers only.
+    # The runtime `from format_java import format_source` happens
+    # inside `_main()` after sys.path is set up, so we cannot
+    # eagerly import format_java at module top — but the type
+    # annotation only needs to resolve under static analysis,
+    # which `from __future__ import annotations` lets us
+    # express here without a runtime import.
+    from format_java import FormatterWarning
 
 
 def _sha256(path: Path) -> str:
@@ -93,6 +104,7 @@ def _restore_mtime(
 def _format_one(
     path: Path,
     format_source,
+    print_warnings,
 ) -> str:
     """Format `path` in place. Returns one of:
 
@@ -120,8 +132,9 @@ def _format_one(
             file=sys.stderr,
         )
         return "error"
+    warnings: list[FormatterWarning] = []
     try:
-        formatted = format_source(source)
+        formatted = format_source(source, warnings_out=warnings)
     except NotImplementedError as exc:
         print(
             f"REFUSED: {path}: {exc}",
@@ -141,6 +154,7 @@ def _format_one(
             file=sys.stderr,
         )
         return "error"
+    print_warnings(path, warnings)
     if formatted == source:
         # Bit-identical; restore mtime for IDE / build-cache
         # hygiene.
@@ -186,7 +200,10 @@ def main() -> int:
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
     try:
-        from format_java import format_source  # type: ignore[import-not-found]
+        from format_java import (  # type: ignore[import-not-found]
+            format_source,
+            print_warnings,
+        )
     except ImportError as exc:
         print(
             f"ERROR: could not import format_java: {exc}\n"
@@ -220,7 +237,7 @@ def main() -> int:
         "error": 0,
     }
     for path in target_paths:
-        outcome = _format_one(path, format_source)
+        outcome = _format_one(path, format_source, print_warnings)
         counts[outcome] += 1
 
     total = sum(counts.values())

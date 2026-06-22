@@ -10,6 +10,346 @@ and this project adheres to
 
 ## [Unreleased]
 
+No committed-but-unreleased changes at this time. Forward-looking
+work items are tracked in [ROADMAP.md](ROADMAP.md).
+
+## [0.4.3] - 2026-06-18
+
+Four formatter bugs caught by a code-review pass over the
+0.4.2 reformat in `senzing-commons-java`. One is a regression
+introduced by 0.4.2 itself (Bug 1); the other three are
+pre-existing bugs that 0.4.2's wrap-engine fixes made more
+visible (Bug 2), more frequently encountered (Bug 3), or more
+visually conspicuous in the reformatted output (Bug 4). All
+four are covered by new regression fixtures and the existing
+fixture set continues to pass.
+
+### Fixed
+
+- **Method-chain P1 over-rejects when an inner construct is
+  legitimately multi-line** (`_emit_method_chain_wrapped`,
+  Bug 1, **regression from 0.4.2**). The Bug 1 fix in 0.4.2
+  added per-segment newline detection so chain P1 would
+  reject when an inner argument-list wrap broke the chain
+  mid-call. That gate was too coarse: it also rejected when
+  the segment's args were multi-row because the source was
+  authored that way (the arg-list emitter takes the
+  source-preservation path) or because the args contain a
+  lambda whose body block is intrinsically multi-line. In
+  both cases the chain still ends cleanly at the closing
+  `)` and subsequent segments attach without breaking
+  integrity. Fix: discriminate via `_node_spans_multiple_rows`
+  on the segment's `arguments` node (and on any nested
+  `lambda_expression` body block); newlines from those
+  sources don't mark the chain as broken. Newlines from
+  the actual wrap engine still do — the original Bug 1 case
+  (long single-source-row chain that wrap-engine breaks via
+  arg-list P4) continues to fall through to chain P2 as
+  before.
+
+- **Multi-line `if` condition does not trigger Allman brace
+  placement** (`_emit_if_statement`, Bug 2, **pre-existing**).
+  When the wrap engine breaks an `if`'s condition across
+  multiple rendered lines (whether or not the source was
+  already multi-row), the opening `{` should go Allman per
+  the spec's "Brace Placement / Multi-Line Conditions" rule.
+  `_emit_while_statement` had this behavior since 0.4.0;
+  `_emit_if_statement` did not. The bug was masked in 0.4.1
+  and earlier because the wrap engine produced fewer
+  multi-line conditions; 0.4.2's precedence-aware spine
+  walk increased the surface area where `&&` / `||`
+  continuations land on their own lines, exposing the
+  missing Allman switch. Fix: snapshot before condition
+  emit, switch to Allman if `emitter.line_count` advances
+  during the emit. Note: the if-emitter does NOT also adopt
+  `_emit_while_statement`'s source-preserve fast path (which
+  emits a developer-authored multi-row condition verbatim
+  via `write_raw_lines`) — the if-emitter continues to
+  re-render through `_emit_node`, matching its 0.4.1 and
+  earlier behavior. Reconciling the two is left as a future
+  spec/implementation decision.
+
+- **Paren-aligned operator continuation per spec C6**
+  (`_emit_parenthesized_expression` + `_emit_binary_expression`,
+  Bug 3, **pre-existing**). When an expression is wrapped in
+  _grouping_ parens (developer-authored `(...)` to
+  disambiguate precedence), the spec calls for operator
+  continuations to align under the column immediately after
+  the opening `(`, not the standard cumulative `+4` indent.
+  Without this, nested grouping parens produce a "staircase"
+  shape where each level adds another `+4` of indent. Fix:
+  add a `_paren_align_col` field to `Emitter` that
+  `_emit_parenthesized_expression` sets to the column right
+  after `(` for grouping parens only (control-flow required
+  parens — `if (cond)`, `while (cond)`, `for (...)`,
+  `catch (...)`, etc. — are explicitly excluded via the
+  `_PAREN_NOT_GROUPING_PARENT_TYPES` set, since their
+  continuations follow the existing `+4`-indent rule).
+  `_emit_binary_expression` adds a new wrap candidate
+  (`emit_paren_aligned`) tried BEFORE the standard P2: if
+  paren-alignment fits, commit; otherwise fall through to
+  P2 (`+4` single-line continuation) and P3 (`+4` one per
+  line). `_emit_ternary_expression` gets the same treatment
+  with TWO paren-aligned candidates tried before the
+  standard T2/T3: `emit_paren_t2` (break before `?` only,
+  with `? consequence : alternative` continuation aligned
+  under the outer `(`) followed by `emit_paren_t3` (break
+  before both `?` and `:`). Without the paren-T2 candidate,
+  a ternary nested in grouping parens whose value branches
+  fit together on a continuation line at the paren-aligned
+  column was falling through to the standard `+4`-indent T2
+  — losing the alignment spec C6 was supposed to produce.
+
+- **Argument list preserves gratuitous multi-row source
+  layout when single-line would fit**
+  (`_arg_list_takes_source_preserve_path`, Bug 4,
+  **pre-existing**). When the source arg list spans multiple
+  rows AND its first source line fits at the current
+  emission column, `_emit_argument_list` took the
+  source-preserve path (`write_raw_lines`) and echoed the
+  multi-row layout back verbatim. That logic is right when
+  the author's break-points carry meaning (long log messages,
+  semantically-grouped args), but produced `Modifier.isStatic(
+      modifiers)`-style gratuitous wraps when a prior format
+  pass had split a single-arg call across two lines: the
+  source's first line is just `(`, trivially fits any
+  column, so source-preserve fires even though
+  `Modifier.isStatic(modifiers)` (27 chars) would
+  comfortably collapse to single-line at the new column.
+  Fix: before the `first_line_fits` gate, estimate whether
+  the full args would fit single-line at the current column.
+  The estimator (`_arg_list_single_line_estimate`) walks the
+  arg-list AST, marks `string_literal` / `character_literal`
+  / `line_comment` / `block_comment` regions as verbatim,
+  collapses whitespace and normalizes comma-spacing
+  (`,b` → `, b`) outside those regions, and returns the
+  result. The AST walk is what prevents the foot-gun where
+  a comma without a following space inside a string literal
+  (`foo("name=A,value=B")`) is mistakenly comma-normalized
+  and over-estimates the width by 1 per such comma — the
+  string-literal contents have to be preserved exactly as
+  the emitter would emit them. If the estimate fits at the
+  current column, decline source-preservation so the wrap
+  engine's P1 candidate produces the canonical single-line
+  form.
+  Skipped when any arg itself spans multiple rows (a text
+  block, a lambda body, a nested wrapping call) — single-
+  line is impossible in that case, so source-preservation
+  remains the right path. Reordered the function so the
+  unconditional preservation triggers (comments, CSOFF)
+  fire first and the width-based opt-out applies only to
+  the bare width-driven preservation path.
+
+### Changed
+
+- **`_PAREN_NOT_GROUPING_PARENT_TYPES` membership cleanup**
+  (`format_java.py`). Removed `catch_formal_parameter` — a
+  dead entry that could never match: the node represents the
+  `TYPE NAME` inside catch parens and never owns a
+  `parenthesized_expression` child (catch's required parens
+  are owned by `catch_clause`, which remains in the set).
+  The set is now exactly the tree-sitter-java node types
+  whose grammar specifies a required-parens
+  `parenthesized_expression` child. Note for future
+  maintainers: tree-sitter-java does NOT have a separate
+  `switch_statement` node — both `switch (x) { case ... }`
+  and the JEP-361 `int y = switch (x) { ... }` parse as
+  `switch_expression`. The set's `switch_expression` entry
+  therefore covers both forms (verified via
+  `Language.id_for_node_kind("switch_statement", True)`
+  returning `None`).
+
+- **Paren-alignment yields to source-preservation on
+  inversion** (`_emit_parenthesized_expression`). Spec C6
+  paren-aligned operator continuation (introduced as Bug 3
+  in this release) and the arg-list source-preserve path
+  could conflict when nested: an outer `(EXPR)` whose
+  `EXPR` contains a deeply-nested arg list that
+  source-preserves with continuation lines at a column LESS
+  than the outer's paren-align column would render visually
+  inverted — the outer operator chain (paren-aligned at
+  `emitter.column`) appearing MORE indented than the inner
+  source-preserved bytes. Fix: before setting
+  `paren_align_col`, walk the inner expression tree for
+  `argument_list` nodes that `_arg_list_takes_source_preserve_path`
+  confirms WILL source-preserve at the proposed column. If
+  any such arg list has a continuation line below the
+  proposed column, decline paren-alignment for this level
+  and fall back to the cumulative `+4` continuation (the
+  pre-Bug-3 behavior). Result: paren-alignment fires
+  wherever it's safe; source-preservation wins where it
+  would otherwise be visually clobbered. The AST-based
+  detection (rather than a pure source-text scan) is what
+  avoids over-triggering on continuation columns that
+  belong to arg lists Bug 4 will collapse — those don't
+  actually source-preserve, so their source columns don't
+  matter to the inversion check.
+
+### Added
+
+- **Formatter advisory channel** (`FormatterWarning` dataclass +
+  `Emitter.warnings` list + `format_source(source, warnings_out=...)`
+  parameter). The formatter now collects non-blocking advisories
+  during emission and exposes them via an optional `warnings_out`
+  list. The CLIs (`format_file.py` and `format_java.py --format`)
+  print each advisory to stderr in `file:line:column: WARNING: ...`
+  format consistent with editor / `grep` output.
+  - Currently emits one advisory shape: "source-preserved arg
+    list has continuation at column N below the surrounding
+    indent (M); consider splitting the contained literal or
+    expression into smaller chunks so the wrap engine can
+    re-indent consistently." Fires when `_emit_argument_list`
+    takes the source-preserve path AND the source has a
+    continuation line landing at a column less than
+    `emitter.indent_level * 4`. The classic trigger is a long
+    `throw new IOException("…long error message…" + variable)`
+    where the developer manually placed the string at a low
+    column to fit 80 chars; the string literal can't be
+    automatically split (Java syntax doesn't allow a literal
+    to span lines, and converting to a text block changes
+    semantics), so the developer is the only party who can
+    resolve the visual quirk by splitting the literal into
+    smaller concatenated chunks.
+  - Advisories are filtered to be unique by `(line, column)`
+    so speculative wrap-engine re-emission doesn't produce
+    duplicates.
+  - `warnings_out=None` (the default) silently discards the
+    advisory list, preserving the original `format_source`
+    API for callers that don't care.
+
+### Tests
+
+Thirteen new golden fixtures, each runs through the harness's
+automatic idempotency check, plus 22 new unit tests (18 for the
+pure helpers `_estimate_normalize` and
+`_arg_list_single_line_estimate`, plus 4 for the new
+`FormatterWarning` advisory channel):
+
+- `method_chain_wrap/09_chain_collapses_when_call_fits_single_line`
+  — locks the combined Bug 1 + Bug 4 behavior: input
+  `cls.getResource(\n    cls.getSimpleName() + ".class").toString()`
+  has source-preserved multi-row args inside the chain, the
+  whole chain fits single-line at 80 chars, and the
+  formatter collapses to a single line. The chain
+  discriminator's `_arg_list_takes_source_preserve_path`
+  agreement with the arg-list emitter is what makes the
+  collapse safe — both predict "single-line" together so
+  the chain doesn't get stranded mid-decision.
+- `method_chain_wrap/10_chain_with_multiline_lambda_body_inline`
+  — chain-P1 over a segment whose args contain a multi-row
+  lambda body (`forEach(flag -> { ... })`). Locks the
+  intrinsically-multi-line variant of the discriminator
+  (`any_multiline_arg=True` path) — chain stays inline,
+  doesn't get pulled to dot-aligned P2.
+- `method_chain_wrap/11_chain_with_wrap_engine_rewrapped_args`
+  — locks the bug-1-shape regression-guard for the case the
+  initial Bug 1 fix attempt missed: when the source is
+  multi-row but its first line doesn't fit at the chain's
+  emission column, the arg-list emitter falls through to the
+  wrap engine (P4), which produces multi-line output that
+  strands subsequent chain segments. The discriminator must
+  reject in that case. Added in follow-up after the first
+  code-review pass flagged the gap.
+- `method_chain_wrap/12_arg_list_collapses_when_single_line_fits`
+  — locks Bug 4 fix in a non-chain context: a single-arg
+  call `Modifier.isStatic(\n    modifiers)` that fits
+  single-line at the current emission column collapses
+  rather than echoing the source's multi-row layout.
+  The same fixture also covers a multi-line `if` condition
+  whose inner `Modifier.isStatic(modifiers)` calls each
+  collapse while the outer `&&`-chained condition still
+  wraps (proving the gate is per-arg-list, not per-
+  expression).
+- `method_chain_wrap/13_arg_list_collapses_with_string_literal_comma`
+  — locks the AST-aware width estimator
+  (`_arg_list_single_line_estimate`): a call whose args
+  include string literals with commas that have no following space
+  (`log("err=A,err=B", ..., "second,string", ...)`) lands
+  exactly at column 80. The naïve regex-only estimator
+  would over-estimate by 1 per such comma and incorrectly
+  retain source-preservation; the AST walk skips
+  string-literal contents and the gate correctly declines
+  preservation so the call collapses single-line.
+- `method_chain_wrap/14_long_chain_falls_to_dot_aligned_over_mid_arg_break`
+  — locks the chain-P1 segment cap at 2: a 4-segment chain
+  whose middle segment has source-preserved multi-row args
+  (`Builder.builder().setReader(r).setFormat(\n  fmt).get()`)
+  now wraps at the dots (chain P2, dot-aligned, one segment
+  per line with collapsed args), NOT chain P1 with the
+  trailing `.get()` piled on the continuation line of the
+  closing `)`. Matches the design preference "break on
+  method chaining (greedily) before breaking on parameter
+  names for a method in the chain".
+- `allman_braces/20_multiline_if_condition_uses_allman_brace`
+  — locks Bug 2 fix: a single-source-row condition that the
+  wrap engine breaks now triggers Allman brace.
+- `allman_braces/21_multiline_if_condition_nested_uses_allman`
+  — same shape for an `else if` chain with both branches'
+  conditions wrapping.
+- `condition_wrap/08_paren_aligned_operator_continuation`
+  — locks Bug 3 fix with nested grouping parens
+  (`(a || (b && (!c)))`). Both `||` and `&&` continuations
+  paren-align under their respective `(`.
+- `condition_wrap/09_paren_align_yields_to_source_preserve_inversion`
+  — locks the paren-align-yields-to-source-preserve
+  behavior: a `flag = (flag || (... && (!Boolean.FALSE.equals(
+  result.get(K).toString()))))` assignment whose outer `(`
+  lands at column 32 has a deeply-nested arg list whose
+  source-preserved continuation lines sit at columns 28 and
+  34. The AST-walk inversion check detects the col-28
+  continuation < proposed 32 and declines paren-alignment
+  for the outer grouping; `||` and `&&` fall back to the
+  standard `+4` cumulative continuation so the inner
+  source-preserved bytes nest correctly inside the outer
+  operator chain rather than being visually outdented.
+  Input == expected is intentional here — like
+  fixture 01 above, the regression lock is on
+  "formatter does NOT change this layout", not on a
+  reformat-shape transformation.
+- `ternary_wrap/05_paren_aligned_ternary`
+  — locks the spec C6 paren-alignment generalization to
+  ternaries: a `return (cond ? ... : ...)` whose value
+  branches are too long for single-line aligns `?` and `:`
+  under the column immediately after the outer `(`, not the
+  standard `+4` continuation indent.
+- `ternary_wrap/06_paren_aligned_ternary_t2`
+  — locks the paren-aligned T2 candidate (break before `?`
+  only, with `? consequence : alternative` continuation
+  aligned under the outer `(`). Used when T1 and the
+  standard +4 T2/T3 overflow but a paren-aligned T2 fits;
+  without this candidate the engine would fall to standard
+  `cont_indent` T2 and lose the paren alignment.
+- `explicit_constructor_invocation/01_this_args_reserve_trailing_semicolon`
+  — locks the tail_reserve fix surfaced by Bug 4. Input has
+  source-preserved multi-row args whose single-line estimate
+  would render the call at exactly column 80; with the
+  trailing-`;` reserve in place, the wrap engine's P1
+  candidate correctly rejects (would push to 81) and the
+  output falls to paren-aligned one-per-line. Locks the
+  parallel-with-`throw`/`return`/`expression_statement`
+  convention. Input == expected is intentional here — the
+  fixture is a regression lock for "formatter does NOT
+  collapse this multi-row call when the `;` would push the
+  line to 81", not a reformat-shape test.
+
+### Verification
+
+- 632 standards-repo tests pass (was 597; +13 new fixtures,
+  +18 helper unit tests, +4 advisory-channel unit tests).
+  One existing fixture
+  (`condition_wrap/06_binary_precedence_keeps_atomic`) also
+  had its `expected.java` updated to reflect the Bug 2
+  Allman-brace correction — its multi-line condition now
+  triggers the same Allman placement covered by the new
+  `allman_braces/20_multiline_if_condition_uses_allman_brace`
+  fixture.
+- `senzing-commons-java`: formatter produces a one-time
+  format diff (28 files modified — chain inline-recovery
+  from Bug 1 fix + Allman brace from Bug 2 fix + paren-align
+  from Bug 3 fix + arg-list single-line collapse from Bug 4
+  fix); the second pass is idempotent and
+  `mvn -Pcheckstyle validate` remains BUILD SUCCESS.
+
 ## [0.4.2] - 2026-06-17
 
 Five formatter bugs surfaced by adopting 0.4.1 in

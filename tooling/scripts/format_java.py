@@ -93,17 +93,18 @@ validation and diagnostics.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Final
+from typing import Callable, Final, TextIO
 
 import tree_sitter_java
 from tree_sitter import Language, Node, Parser, Tree
 
 
-__version__: Final[str] = "0.4.2"
+__version__: Final[str] = "0.4.3"
 
 # Tree-sitter Python binding + tree-sitter-java grammar versions
 # this formatter is calibrated against. Kept in sync with the pins
@@ -196,6 +197,27 @@ def has_parse_errors(tree: Tree) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class FormatterWarning:
+    """A non-blocking advisory emitted during formatting.
+
+    Reported when the formatter detects a layout corner case
+    it cannot fully canonicalize and the developer is the only
+    party who can resolve it — e.g. a source-preserved arg
+    list whose continuation columns sit below the current
+    indent because the contained string literal would need to
+    be split into smaller concatenated chunks (a code change,
+    not a formatting choice).
+
+    Line / column are 1-indexed for direct comparison with
+    editor / `grep` output.
+    """
+
+    line: int
+    column: int
+    message: str
+
+
 class Emitter:
     """Append-only output buffer with column tracking.
 
@@ -224,12 +246,28 @@ class Emitter:
     block.
     """
 
-    __slots__ = ("_lines", "_current", "_indent", "_tail_reserve")
+    __slots__ = (
+        "_lines",
+        "_current",
+        "_indent",
+        "_tail_reserve",
+        "_paren_align_col",
+        "warnings",
+    )
 
     def __init__(self) -> None:
         self._lines: list[str] = []
         self._current: str = ""
         self._indent: int = 0
+        # Collected formatter warnings — non-blocking advisories
+        # about layout corner cases the formatter can't fully
+        # canonicalize (e.g. a source-preserved arg list whose
+        # continuation columns are below the current indent
+        # because the contained string literal can't be split
+        # without a code change). The CLI prints these to stderr
+        # after each file so adopters know which spots warrant
+        # manual cleanup.
+        self.warnings: list[FormatterWarning] = []
         # Chars to reserve at the end of the current line for
         # trailing context the wrap candidates can't see — e.g.
         # `) {` after an `if` condition, `);` after a call inside
@@ -239,6 +277,15 @@ class Emitter:
         # otherwise commit at exactly `_MAX_LINE` and let the
         # trailing tokens push the line past the limit.
         self._tail_reserve: int = 0
+        # When an expression is wrapped in grouping parentheses,
+        # this records the column immediately after the opening
+        # `(` so an inner binary / ternary / chain emitter can
+        # paren-align its operator continuations per spec C6
+        # ("Parenthesized-expression operator continuation").
+        # `None` means no enclosing grouping paren is in scope;
+        # wrap candidates use the standard cumulative `+4` indent
+        # in that case.
+        self._paren_align_col: int | None = None
 
     @property
     def column(self) -> int:
@@ -315,12 +362,32 @@ class Emitter:
         self._tail_reserve = value
         return previous
 
-    def snapshot(self) -> tuple[int, str, int, int]:
+    @property
+    def paren_align_col(self) -> int | None:
+        """The column immediately after an enclosing grouping
+        `(` if one is in scope, else `None`. Set by
+        `_emit_parenthesized_expression` around its inner emit;
+        consulted by `_emit_binary_expression` to enable the
+        spec C6 paren-aligned operator-continuation candidate.
+        """
+        return self._paren_align_col
+
+    def set_paren_align_col(self, value: int | None) -> int | None:
+        """Set `paren_align_col` and return the previous value
+        so the caller can restore it via the symmetric call.
+        Pair with a try/finally to handle exceptions.
+        """
+        previous = self._paren_align_col
+        self._paren_align_col = value
+        return previous
+
+    def snapshot(self) -> tuple[int, str, int, int, int | None, int]:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
-        tail_reserve)` suitable for `restore()`. The
-        wrap-priority engines use the pattern:
+        tail_reserve, paren_align_col, warnings_count)` suitable
+        for `restore()`. The wrap-priority engines use the
+        pattern:
 
             saved = emitter.snapshot()
             <try emitting in some shape>
@@ -328,33 +395,53 @@ class Emitter:
                 emitter.restore(saved)
                 <emit in the next-priority shape>
 
-        Cheap because the lines list is immutable from the
-        perspective of restore (we capture its length, not its
-        contents). `tail_reserve` is included so a candidate
-        that adjusts it via `set_tail_reserve()` without using
-        try/finally still restores cleanly on backtrack.
+        Cheap because the lines / warnings lists are immutable
+        from the perspective of restore (we capture their
+        lengths, not their contents). `tail_reserve` is
+        included so a candidate that adjusts it via
+        `set_tail_reserve()` without using try/finally still
+        restores cleanly on backtrack. `warnings_count` is
+        included so any `FormatterWarning` appended during a
+        speculative emit that subsequently rolls back is
+        removed — otherwise a rejected P1 candidate's warnings
+        would linger and produce spurious advisories even when
+        the committed P2/P3 layout doesn't trigger them.
         """
         return (
             len(self._lines),
             self._current,
             self._indent,
             self._tail_reserve,
+            self._paren_align_col,
+            len(self.warnings),
         )
 
     def restore(
-        self, snap: tuple[int, str, int, int]
+        self,
+        snap: tuple[int, str, int, int, int | None, int],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
 
-        Truncates the lines list back to its captured length
-        and resets the current line, indent, and tail reserve.
-        Any text emitted after the snapshot is discarded.
+        Truncates the lines and warnings lists back to their
+        captured lengths and resets the current line, indent,
+        tail reserve, and paren-align column. Any text emitted
+        — and any warnings appended — after the snapshot are
+        discarded.
         """
-        lines_count, current, indent, tail_reserve = snap
+        (
+            lines_count,
+            current,
+            indent,
+            tail_reserve,
+            paren_align_col,
+            warnings_count,
+        ) = snap
         del self._lines[lines_count:]
         self._current = current
         self._indent = indent
         self._tail_reserve = tail_reserve
+        self._paren_align_col = paren_align_col
+        del self.warnings[warnings_count:]
 
     def last_lines_max_width(self, since: int) -> int:
         """Return the maximum width across all lines finalized
@@ -1389,6 +1476,21 @@ def _emit_binary_expression(
             _emit_node(emitter, source, operand)
         emitter.pop_indent()
 
+    def emit_paren_aligned(align_col: int) -> None:
+        # Spec C6: when an enclosing grouping `(` is in scope,
+        # paren-align each operator under the column immediately
+        # after that `(`. One operator per continuation line.
+        # Caller passes `align_col` directly (captured before
+        # clearing the emitter state so a nested grouping paren
+        # inside an operand resets cleanly).
+        _emit_node(emitter, source, leftmost_operand)
+        for op, operand in chain:
+            emitter.newline()
+            emitter.write(" " * align_col)
+            emitter.write(op.type)
+            emitter.write(" ")
+            _emit_node(emitter, source, operand)
+
     def emit_p3() -> None:
         # Each operand on its own continuation line at +4
         # indent column, prefixed with the operator.
@@ -1429,6 +1531,45 @@ def _emit_binary_expression(
     if p1_fits:
         return
     emitter.restore(saved)
+
+    # Spec C6 paren-aligned candidate, preferred over the
+    # standard +4-indent P2/P3 when an enclosing grouping `(`
+    # is in scope and paren-alignment doesn't itself overflow.
+    # Tried BEFORE standard P2 so a parenthesized expression
+    # like `(a || b || c)` wraps with `||` lined up under the
+    # column after `(`, rather than getting pulled to the
+    # cumulative `+4` column (which produces the "staircase"
+    # shape when grouping parens are nested).
+    align_col = emitter.paren_align_col
+    if align_col is not None:
+        paren_saved = emitter.snapshot()
+        # Clear paren_align_col while emitting this candidate's
+        # operands. The paren context applies to THIS binary
+        # chain's operator continuations only; nested binary
+        # expressions inside the operands have their own
+        # `_emit_parenthesized_expression` to re-set
+        # `paren_align_col` if they themselves sit inside
+        # grouping parens.
+        #
+        # try/finally restores `paren_align_col` only; the
+        # buffer rollback `emitter.restore(paren_saved)` is
+        # gated on the width check and runs only on the
+        # accept/reject decision below. This matches the
+        # p2_saved / p3_saved pattern used elsewhere in this
+        # function: exceptions in a candidate emit are not
+        # expected and would propagate up, leaving the
+        # speculative buffer as-is — acceptable because the
+        # outer wrap engine never resumes after such a
+        # programming error.
+        prev_align = emitter.set_paren_align_col(None)
+        try:
+            emit_paren_aligned(align_col)
+        finally:
+            emitter.set_paren_align_col(prev_align)
+        if emitter.last_lines_max_width(paren_saved[0]) <= effective_max:
+            return
+        emitter.restore(paren_saved)
+
     p2_saved = emitter.snapshot()
     emit_p2()
     if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
@@ -1484,6 +1625,18 @@ def _emit_update_expression(
             emitter.write(child.type)
 
 
+_PAREN_NOT_GROUPING_PARENT_TYPES: Final[frozenset[str]] = frozenset({
+    "if_statement",
+    "while_statement",
+    "do_statement",
+    "for_statement",
+    "enhanced_for_statement",
+    "switch_expression",
+    "synchronized_statement",
+    "catch_clause",
+})
+
+
 def _emit_parenthesized_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1510,14 +1663,108 @@ def _emit_parenthesized_expression(
     # commits, and the trailing `)` + further surrounding
     # tokens (e.g. an outer `;` or `) {`) push the line past
     # the budget.
+    #
+    # Spec C6 paren-alignment applies only to *grouping*
+    # parens — developer-authored `(...)` around an expression
+    # to disambiguate precedence. Parens that are
+    # syntactically required by an enclosing control-flow
+    # construct (`if (cond)`, `while (cond)`, `for (...)`,
+    # `catch (...)`, `synchronized (...)`, `switch (...)`)
+    # don't count as grouping; their wrap continuations use
+    # the standard cumulative `+4` indent.
+    is_grouping = (
+        node.parent is None
+        or node.parent.type
+        not in _PAREN_NOT_GROUPING_PARENT_TYPES
+    )
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 1
     )
+    # Paren-align yields to source-preservation when they
+    # conflict. Walk the inner expression looking for nested
+    # `argument_list` nodes that would actually source-preserve
+    # at their emission column; if any such arg list has a
+    # continuation line whose leading-whitespace count is LESS
+    # than the proposed paren-align column (`emitter.column`
+    # right after `(`), then engaging paren-alignment would
+    # visually invert the output — the outer operator chain
+    # (paren-aligned at `emitter.column`) would appear MORE
+    # indented than the source-preserved inner content. Spec C6
+    # paren-alignment is meant to avoid the +4-staircase shape;
+    # preserving the developer's source-authored break points
+    # wins when those two goals conflict.
+    #
+    # Using `_arg_list_takes_source_preserve_path` here (rather
+    # than scanning the source text directly) avoids the false
+    # positive where a low-col continuation in the source comes
+    # from an arg list that Bug 4's width opt-out will collapse
+    # to single-line. Those don't actually source-preserve, so
+    # their source columns are irrelevant to the inversion
+    # check.
+    apply_paren_align = is_grouping
+    if apply_paren_align and _inner_would_invert_paren_align(
+        emitter, source, inner, emitter.column
+    ):
+        apply_paren_align = False
+    prev_paren_align: int | None = None
+    if apply_paren_align:
+        prev_paren_align = emitter.set_paren_align_col(emitter.column)
     try:
         _emit_node(emitter, source, inner)
     finally:
         emitter.set_tail_reserve(prev_reserve)
+        if apply_paren_align:
+            emitter.set_paren_align_col(prev_paren_align)
     emitter.write(")")
+
+
+def _inner_would_invert_paren_align(
+    emitter: Emitter,
+    source: bytes,
+    inner: Node,
+    proposed_col: int,
+) -> bool:
+    """Return True when paren-aligning `inner` at `proposed_col`
+    would produce visually inverted output — i.e., the inner
+    expression contains an `argument_list` node that would
+    source-preserve via `_emit_argument_list`'s `write_raw_lines`
+    path AND that arg list's source has a continuation line at
+    a column less than `proposed_col`.
+
+    Walks the inner tree top-down. For each `argument_list`
+    node visited, consults
+    `_arg_list_takes_source_preserve_path` to determine whether
+    the arg list will actually take the verbatim-emit path. The
+    column passed to the predicate is `proposed_col` — a lower
+    bound on the arg list's eventual emit column (since the arg
+    list will be nested deeper than the paren whose alignment
+    we're considering). Using a lower bound makes the predicate's
+    width opt-out fire more aggressively (more arg lists treated
+    as "Bug 4 collapses"), which gives a safe under-detection
+    bias: we may miss declining paren-align in cases where the
+    actual inner emit column is larger and source-preservation
+    kicks in — at worst this leaves the inversion in place,
+    same as pre-0.4.3 behavior for those nested cases.
+    """
+    stack = [inner]
+    while stack:
+        current = stack.pop()
+        if current.type == "argument_list" and (
+            _arg_list_takes_source_preserve_path(
+                emitter, source, current, column=proposed_col
+            )
+        ):
+            src = _node_source_text(source, current)
+            for line in src.split("\n")[1:]:
+                stripped = line.lstrip()
+                if not stripped:
+                    continue
+                leading = len(line) - len(stripped)
+                if leading < proposed_col:
+                    return True
+        for child in current.named_children:
+            stack.append(child)
+    return False
 
 
 def _emit_method_header_wrapped(
@@ -2142,7 +2389,28 @@ def _emit_if_statement(
     # `) {` / `) STMT` after the condition closes. Without this
     # an `if (cond)` that fits at exactly _MAX_LINE commits
     # inline and the brace pushes the line past the limit.
+    #
+    # Brace placement follows the spec's "Multi-line Conditions"
+    # rule: when the condition's RENDERED output spans more than
+    # one line (either because the source was multi-row, or
+    # because the wrap engine broke a single-row source
+    # condition across multiple lines), the opening `{` goes
+    # Allman (on its own line at the if's indent column).
+    # Single-line rendered condition → same-line `{`.
+    #
+    # Intentional asymmetry vs. `_emit_while_statement`: the
+    # while-emitter takes a source-preserve fast path that emits
+    # a developer-authored multi-row condition verbatim via
+    # `write_raw_lines`. The if-emitter does NOT — it always
+    # re-renders through `_emit_node`, which collapses a
+    # multi-row source condition to single-line when it fits.
+    # This matches the established 0.4.1 and earlier behavior
+    # for if-conditions; we only added the Allman switch here.
+    # A future release may reconcile by either teaching the
+    # if-emitter to source-preserve, or removing the
+    # while-emitter's source-preserve fast path.
     emitter.write("if ")
+    cond_start_line_count = emitter.line_count
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 2
     )
@@ -2150,7 +2418,11 @@ def _emit_if_statement(
         _emit_node(emitter, source, condition)
     finally:
         emitter.set_tail_reserve(prev_reserve)
-    emitter.write(" ")
+    if emitter.line_count > cond_start_line_count:
+        emitter.newline()
+        emitter.write_indent()
+    else:
+        emitter.write(" ")
     _emit_branch_as_block(emitter, source, consequence)
 
     if alternative is not None:
@@ -2897,8 +3169,7 @@ def _emit_ternary_expression(
             "unexpected."
         )
 
-    cont_col = (emitter.indent_level + 1) * 4
-    cont_indent = " " * cont_col
+    cont_indent = " " * ((emitter.indent_level + 1) * 4)
 
     def emit_t1() -> None:
         _emit_node(emitter, source, cond)
@@ -2907,25 +3178,82 @@ def _emit_ternary_expression(
         emitter.write(" : ")
         _emit_node(emitter, source, alternative)
 
-    def emit_t2() -> None:
+    def emit_t2_at(indent: str) -> None:
         _emit_node(emitter, source, cond)
         emitter.newline()
-        emitter.write(cont_indent)
+        emitter.write(indent)
         emitter.write("? ")
         _emit_node(emitter, source, consequence)
         emitter.write(" : ")
         _emit_node(emitter, source, alternative)
 
-    def emit_t3() -> None:
+    def emit_t3_at(indent: str) -> None:
         _emit_node(emitter, source, cond)
         emitter.newline()
-        emitter.write(cont_indent)
+        emitter.write(indent)
         emitter.write("? ")
         _emit_node(emitter, source, consequence)
         emitter.newline()
-        emitter.write(cont_indent)
+        emitter.write(indent)
         emitter.write(": ")
         _emit_node(emitter, source, alternative)
+
+    def emit_t2() -> None:
+        emit_t2_at(cont_indent)
+
+    def emit_t3() -> None:
+        emit_t3_at(cont_indent)
+
+    # Spec C6 paren-aligned ternary: when an enclosing
+    # grouping `(` is in scope, prefer aligning `?` / `:`
+    # under the column immediately after the `(`. Same shape
+    # as the binary-expression paren-aligned candidate
+    # (`emit_paren_aligned` in `_emit_binary_expression`).
+    #
+    # Two paren-aligned candidates, tried in priority order
+    # before falling back to the standard +4-indent T2/T3:
+    #
+    #   - `emit_paren_t2` — break before `?` only, with the
+    #     `? consequence : alternative` continuation aligned
+    #     under the paren column. Used when both value
+    #     branches fit on one continuation line at that
+    #     column.
+    #   - `emit_paren_t3` — break before both `?` and `:`,
+    #     each on its own line at the paren column. Used
+    #     when the value branches are too long to share a
+    #     line.
+    align_col = emitter.paren_align_col
+    if align_col is not None:
+        paren_indent = " " * align_col
+        # Clear paren_align_col around the recursive emit
+        # of value branches so a nested grouping paren inside
+        # the consequence / alternative re-sets it
+        # independently.
+        def emit_paren_t2() -> None:
+            prev_align = emitter.set_paren_align_col(None)
+            try:
+                emit_t2_at(paren_indent)
+            finally:
+                emitter.set_paren_align_col(prev_align)
+
+        def emit_paren_t3() -> None:
+            prev_align = emitter.set_paren_align_col(None)
+            try:
+                emit_t3_at(paren_indent)
+            finally:
+                emitter.set_paren_align_col(prev_align)
+
+        try_priorities(
+            emitter,
+            [
+                emit_t1,
+                emit_paren_t2,
+                emit_paren_t3,
+                emit_t2,
+                emit_t3,
+            ],
+        )
+        return
 
     try_priorities(emitter, [emit_t1, emit_t2, emit_t3])
 
@@ -3449,7 +3777,18 @@ def _emit_explicit_constructor_invocation(
     if type_arguments is not None:
         _emit_node(emitter, source, type_arguments)
     emitter.write(keyword.type)
-    _emit_node(emitter, source, args)
+    # Reserve 1 char for the trailing `;` while the arg list
+    # wraps — without this, P1 could commit args ending at
+    # column 80 and the trailing `;` would push the line to
+    # 81. Mirrors the throw / return / expression_statement
+    # convention.
+    prev_reserve = emitter.set_tail_reserve(
+        emitter.tail_reserve + 1
+    )
+    try:
+        _emit_node(emitter, source, args)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     emitter.write(";")
 
 
@@ -3994,7 +4333,7 @@ def _emit_while_statement(
         # Bump tail_reserve so the condition's wrap engine
         # accounts for the upcoming `) {` (3 chars: `)`, ` `,
         # `{`) when deciding to wrap.
-        cond_start = emitter.snapshot()
+        cond_start_line_count = emitter.line_count
         prev_reserve = emitter.set_tail_reserve(
             emitter.tail_reserve + 2
         )
@@ -4002,7 +4341,7 @@ def _emit_while_statement(
             _emit_node(emitter, source, condition)
         finally:
             emitter.set_tail_reserve(prev_reserve)
-        if emitter.line_count > cond_start[0]:
+        if emitter.line_count > cond_start_line_count:
             emitter.newline()
             emitter.write_indent()
             _emit_node(emitter, source, body)
@@ -5538,6 +5877,204 @@ def _emit_cast_expression(
     _emit_node(emitter, source, value_node)
 
 
+_ESTIMATE_VERBATIM_NODE_TYPES: Final[frozenset[str]] = frozenset({
+    "string_literal",
+    "character_literal",
+    "line_comment",
+    "block_comment",
+})
+
+
+def _estimate_normalize(section: str) -> str:
+    """Collapse whitespace runs to single spaces and normalize
+    comma-space inside a non-verbatim section. Preserves
+    whether the section starts/ends with whitespace so
+    surrounding verbatim segments don't lose required
+    inter-token spacing.
+    """
+    if not section:
+        return ""
+    if not section.strip():
+        # Pure whitespace between verbatim regions collapses
+        # to a single space — preserves token boundaries
+        # without inflating width.
+        return " "
+    starts_ws = section[0].isspace()
+    ends_ws = section[-1].isspace()
+    collapsed = " ".join(section.split())
+    collapsed = re.sub(r",\s*", ", ", collapsed)
+    if starts_ws and not collapsed.startswith(" "):
+        collapsed = " " + collapsed
+    if ends_ws and not collapsed.endswith(" "):
+        collapsed = collapsed + " "
+    return collapsed
+
+
+def _arg_list_single_line_estimate(
+    source: bytes, node: Node
+) -> str:
+    """Approximate `_emit_argument_list`'s P1 (single-line)
+    emit for `node` without actually running the emitter.
+
+    Walks the AST to identify byte ranges that the formatter
+    must preserve verbatim (string literals, character
+    literals, line / block comments). Outside those regions
+    the source-text whitespace is collapsed and comma-space
+    is normalized (`,b` → `, b`) to match the canonical
+    single-line shape. Inside those regions the source bytes
+    are echoed unchanged so a comma-with-no-following-space inside a string
+    literal (`foo("name=A,value=B")`) doesn't get a spurious
+    `, ` inserted by the comma-normalize pass.
+
+    Idempotency note: the estimate is what the AST emission
+    would produce on a clean single-line input, not what it
+    would produce after a multi-pass reformat. The whitespace
+    inside the source is irrelevant to the estimate's value;
+    only the verbatim regions' literal content matters.
+    """
+    base = node.start_byte
+    verbatim: list[tuple[int, int]] = []
+
+    def collect(n: Node) -> None:
+        if n.type in _ESTIMATE_VERBATIM_NODE_TYPES:
+            verbatim.append((n.start_byte - base, n.end_byte - base))
+            return
+        for c in n.children:
+            collect(c)
+
+    collect(node)
+    verbatim.sort()
+
+    src_text = _node_source_text(source, node)
+    parts: list[str] = []
+    pos = 0
+    for verbatim_start, verbatim_end in verbatim:
+        if pos < verbatim_start:
+            parts.append(_estimate_normalize(src_text[pos:verbatim_start]))
+        parts.append(src_text[verbatim_start:verbatim_end])
+        pos = verbatim_end
+    if pos < len(src_text):
+        parts.append(_estimate_normalize(src_text[pos:]))
+    return "".join(parts)
+
+
+def _arg_list_takes_source_preserve_path(
+    emitter: Emitter,
+    source: bytes,
+    node: Node,
+    column: int | None = None,
+) -> bool:
+    """Return True when `_emit_argument_list` would emit `node`
+    verbatim from source (`write_raw_lines`) at the supplied
+    emission column, instead of falling through to the wrap
+    engine.
+
+    Contract: when `column` is `None`, the predicate evaluates
+    against `emitter.column` (the current emit position — what
+    `_emit_argument_list` itself sees). When `column` is
+    supplied, the predicate evaluates against that future
+    column — used by `_emit_method_chain_wrapped`'s P1
+    newline-discriminator, which runs the prediction BEFORE
+    the segment's name + args emit (so `emitter.column` would
+    be stale by the time the predicate runs).
+
+    Sharing the predicate between the arg-list emitter and the
+    chain discriminator is what keeps them in agreement. Two
+    callers, one column-sensitive contract: if a discriminator
+    were to guess from row-count alone (or duplicate the gate
+    without the width opt-out), the wrap-engine fallout case
+    can re-introduce the Bug 1 chain-stranding shape.
+
+    Source-preservation fires when the arg list spans multiple
+    source rows AND one of:
+
+      - The arg list contains interleaved `//` / `/* */`
+        comments (the wrap engine has no concept of inter-arg
+        comments and would corrupt the output). The CSOFF
+        opt-out below shares the unconditional nature: width
+        is irrelevant for both.
+      - The arg list sits inside a `// CSOFF` / `// CSON`
+        region — the spec's "Formatted Log and Diagnostic
+        Messages" rule explicitly opts out of reflow there.
+      - The source-text's first line fits at the supplied
+        emission column (`column + first_line_length
+        <= effective_max`) AND the full args would NOT fit
+        single-line at that column. The full-args-fit check
+        overrides preservation when the author-authored
+        multi-row layout is gratuitous (e.g. a prior format
+        pass split `foo(arg)` across two lines when single-
+        line would have been canonical).
+
+    The "full args fits single-line" override is skipped when
+    any arg itself spans multiple rows (a text block, lambda
+    body, nested multi-row expression) — source-preservation
+    remains the safer path then since single-line emit is
+    unlikely to fit.
+    """
+    col = emitter.column if column is None else column
+    if not _node_spans_multiple_rows(node):
+        return False
+
+    # Unconditional preservation: comments and CSOFF regions
+    # cannot be safely reflowed.
+    has_comment = any(
+        c.type in ("line_comment", "block_comment")
+        for c in node.children
+        if c.is_named
+    )
+    if has_comment:
+        return True
+    if _is_inside_csoff_region(source, node):
+        return True
+
+    src_text = _node_source_text(source, node)
+    effective_max = _MAX_LINE - emitter.tail_reserve
+
+    # Width-based opt-out: when the full args would render
+    # single-line at the supplied emission column (and no arg
+    # is itself multi-row, which would make single-line
+    # impossible), decline preservation so the wrap engine's
+    # P1 candidate produces the canonical single-line form.
+    # Catches `Modifier.isStatic(\n    modifiers)`-style
+    # gratuitous wraps that would otherwise be echoed back
+    # because the source's first line (e.g. just `foo(`)
+    # trivially fits.
+    #
+    # The single-line width is estimated by walking the AST
+    # to identify `string_literal` / `character_literal` /
+    # `line_comment` / `block_comment` regions and preserving
+    # their text verbatim, while collapsing whitespace and
+    # normalizing comma-spacing (`,b` → `, b`) outside those
+    # regions to match what the wrap engine's P1 will actually
+    # emit. Preserving verbatim regions avoids the
+    # foot-gun where a comma-with-no-following-space inside a string literal
+    # (`foo("name=A,value=B")`) is mistakenly comma-normalized
+    # by a naïve regex pass, over-estimating the width by one
+    # char per such comma and incorrectly retaining
+    # source-preservation. With the AST walk both callers
+    # (`_emit_argument_list` and the chain discriminator)
+    # see the same estimate and decide the same way.
+    arg_nodes = [
+        c for c in node.children
+        if c.is_named
+        and c.type not in ("line_comment", "block_comment")
+    ]
+    any_multiline_arg = any(
+        _node_spans_multiple_rows(a) for a in arg_nodes
+    )
+    if not any_multiline_arg:
+        single_line_estimate = _arg_list_single_line_estimate(
+            source, node
+        )
+        if col + len(single_line_estimate) <= effective_max:
+            return False
+
+    # Standard gate: source's first line fits at supplied
+    # emission column.
+    first_segment = src_text.split("\n", 1)[0]
+    return col + len(first_segment) <= effective_max
+
+
 def _emit_argument_list(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -5596,34 +6133,46 @@ def _emit_argument_list(
     # first line past 80 chars and there's no CSOFF marker),
     # fall through to the wrap engine, which picks fresh
     # break points appropriate to the new column.
-    if _node_spans_multiple_rows(node):
+    if _arg_list_takes_source_preserve_path(emitter, source, node):
         src_text = _node_source_text(source, node)
-        first_segment = src_text.split("\n", 1)[0]
-        effective_max = _MAX_LINE - emitter.tail_reserve
-        first_line_fits = (
-            emitter.column + len(first_segment) <= effective_max
-        )
-        # Interleaved `//` or `/* */` comments inside the arg
-        # list MUST source-preserve — the wrap engine has no
-        # concept of "comment between args" and would either
-        # drop the comment or treat it as a syntactic arg
-        # (producing output that fails to parse). The first-line-fit
-        # gate is bypassed in that case; the CSOFF gate is
-        # likewise unconditional.
-        has_comment = any(
-            a.type in ("line_comment", "block_comment")
-            for a in args
-        )
-        if (
-            first_line_fits
-            or has_comment
-            or _is_inside_csoff_region(source, node)
-        ):
-            emitter.write_raw_lines(src_text)
-            return
-        # Source-preserved first line wouldn't fit and there
-        # are no comments — fall through. The wrap engine
-        # below picks a layout that fits at the new column.
+        # Inverted-indent advisory: if any source continuation
+        # line lands at a column LESS than the current indent
+        # level, the verbatim emit will look visually inverted
+        # against the surrounding context. The formatter can't
+        # fix this on its own — the typical cause is a long
+        # string literal whose author placed it at a low column
+        # to fit 80 chars; rewriting requires splitting the
+        # literal into concatenated chunks. Surface a warning so
+        # the developer knows to consider manual cleanup.
+        current_indent_col = emitter.indent_level * 4
+        for advisory_line in src_text.split("\n")[1:]:
+            advisory_stripped = advisory_line.lstrip()
+            if not advisory_stripped:
+                continue
+            advisory_leading = (
+                len(advisory_line) - len(advisory_stripped)
+            )
+            if advisory_leading < current_indent_col:
+                emitter.warnings.append(FormatterWarning(
+                    line=node.start_point[0] + 1,
+                    column=node.start_point[1] + 1,
+                    message=(
+                        "source-preserved arg list has "
+                        f"continuation at column "
+                        f"{advisory_leading + 1} below the "
+                        f"surrounding indent "
+                        f"({current_indent_col + 1}); consider "
+                        "splitting the contained literal or "
+                        "expression into smaller chunks so the "
+                        "wrap engine can re-indent consistently."
+                    ),
+                ))
+                break
+        emitter.write_raw_lines(src_text)
+        return
+    # Source-preserved first line wouldn't fit and there
+    # are no comments — fall through. The wrap engine
+    # below picks a layout that fits at the new column.
 
     # A multi-line single arg (e.g. a text block) cannot fit
     # on the call line by definition; the P1 candidate is
@@ -5841,24 +6390,151 @@ def _emit_method_chain_wrapped(
         _emit_node(emitter, source, name)
         _emit_node(emitter, source, args)
 
-    # When emit_p1 runs, this list records the per-segment
-    # "line_count before this segment's emit" so the speculation
-    # below can detect a segment whose emit introduced newlines
-    # (typically because its argument list wrapped). The head
-    # itself is allowed to wrap — e.g. a head that is another
-    # chain — because chain P1 only claims to keep the
-    # *segments* on a single line starting wherever the head
-    # finished.
+    # When emit_p1 runs, this list records "did a segment's emit
+    # introduce newlines because the wrap engine had to break
+    # something to fit (vs. because the source itself was
+    # multi-row or the body is an intrinsically multi-line
+    # construct like a lambda block body)". Only the wrap-engine
+    # case actually breaks chain integrity; the
+    # source-preserved / intrinsically-multi-line cases leave
+    # the chain ending at its natural closing position with
+    # subsequent segments appended cleanly.
+    #
+    # Discriminator: if the segment's `arguments` node spans
+    # multiple source rows (so the arg-list emitter takes the
+    # source-preserve path) OR the arg list contains a lambda
+    # whose body block spans multiple source rows (the lambda
+    # is intrinsically multi-line in the developer's authored
+    # form), newlines introduced by the segment's emit are
+    # legitimate and do NOT mark the chain as broken. Newlines
+    # introduced by anything else mean the wrap engine had to
+    # break to fit, which DOES strand subsequent segments on
+    # continuation lines mid-call — that's the regression Bug 1
+    # in 0.4.2 was meant to catch.
+    #
+    # The head is always allowed to wrap (it can itself be
+    # another chain that legitimately wraps to P2/P3); chain P1
+    # only claims to keep the *segments* on whichever line the
+    # head finished on.
     p1_segment_break_seen = [False]
+
+    def _segment_emit_is_legitimately_multi_line(
+        seg: Node, args_emit_column: int
+    ) -> bool:
+        """Predict at the segment's pre-emit position whether
+        any newlines its emit introduces will come from a
+        legitimate source-preservation path (developer's
+        authored multi-row arg list, or a lambda body
+        intrinsically multi-line in source) vs. from the
+        wrap engine breaking to fit. Only the wrap-engine
+        case actually strands subsequent chain segments
+        mid-call.
+
+        `args_emit_column` is the emitter column at the moment
+        the segment's args open — captured BEFORE the segment
+        emits, since the source-preserve gate is column-
+        sensitive and the emitter's column is already past
+        the args by the time the post-emit discriminator
+        runs.
+        """
+        args = seg.child_by_field_name("arguments")
+        if args is None:
+            return False
+        # Consult the same predicate `_emit_argument_list`
+        # itself uses, evaluated at the chain segment's
+        # arg-list emission column. Sharing the predicate is
+        # what keeps the discriminator and the arg-list
+        # emitter in agreement — without that agreement, an
+        # arg list whose source-preserve gate declines (e.g.
+        # because the Bug 4 width opt-out fires) but whose
+        # wrap-engine P1 then overflows ends up multi-line
+        # via P2/P3/P4, and a discriminator that didn't share
+        # the predicate would mistakenly call that "legit",
+        # stranding subsequent chain segments — the Bug 1
+        # shape.
+        # Note: `_arg_list_takes_source_preserve_path` reads
+        # `emitter.tail_reserve` to compute `effective_max`.
+        # At the chain-discriminator call site that reserve
+        # belongs to the OUTER emit context (post-segment), not
+        # what it will be when the inner arg list actually
+        # emits. In practice this is acceptable as an
+        # approximation: tail_reserve is small (single-digit
+        # chars) and the source-preserve gate's width check is
+        # already an under-estimate-safe bound (the actual emit
+        # either matches the gate's decision, in which case it
+        # fits, or overflows to the wrap engine, in which case
+        # the chain's P1-newline-rejection picks it up). If a
+        # future change introduces a case where the
+        # discriminator and the arg-list emitter disagree on
+        # the source-preserve decision due to tail_reserve
+        # drift, the right fix is to thread the expected
+        # tail_reserve through the predicate's signature, not
+        # to defer the prediction until inside the arg list's
+        # own emit (which is when the chain has already
+        # committed to P1).
+        if _arg_list_takes_source_preserve_path(
+            emitter, source, args, column=args_emit_column
+        ):
+            return True
+        # Lambda body that spans multiple source rows — the
+        # lambda emitter source-preserves the body block, so
+        # those newlines are also the developer's authored
+        # layout rather than wrap fallout.
+        for child in args.named_children:
+            if child.type == "lambda_expression":
+                body = child.child_by_field_name("body")
+                if body is not None and _node_spans_multiple_rows(body):
+                    return True
+        return False
 
     def emit_p1() -> None:
         p1_segment_break_seen[0] = False
 
         def emit_seg_strict(seg: Node) -> None:
             before = emitter.line_count
+            # Capture the column AT the segment's args open
+            # (one past the `name` token). emit_segment writes
+            # name + args; the args open at `emitter.column +
+            # len(name)`. Source-preserve's first_line_fits
+            # check needs that column, not the post-emit
+            # column.
+            name_node = seg.child_by_field_name("name")
+            name_text = (
+                _node_source_text(source, name_node)
+                if name_node is not None
+                else ""
+            )
+            args_emit_column = emitter.column + len(name_text)
             emit_segment(seg)
             if emitter.line_count > before:
-                p1_segment_break_seen[0] = True
+                # Newlines introduced. Acceptable only if BOTH:
+                #   (1) the discriminator says the source itself
+                #       drove the multi-line layout (multi-row
+                #       args that take the source-preserve path
+                #       at this column, or a lambda body that's
+                #       multi-row in source), AND
+                #   (2) the total chain has at most TWO segments.
+                #
+                # The 2-segment cap reflects the design
+                # preference "break on method chaining (greedily)
+                # before breaking on parameter names for a method
+                # in the chain": a 3+ segment chain whose
+                # middle segment has multi-line args should
+                # wrap at the dots (chain P2), not pile the
+                # trailing segments onto the continuation line
+                # that starts with the closing `)` of the
+                # multi-line args. The cap of TWO matches the
+                # user's preferred layout for short chains like
+                # `cls.getResource(\n    arg).toString()` (2
+                # segments) while rejecting longer chains like
+                # `obj.builder().setReader(r).setFormat(\n  fmt)
+                # .get()` (4 segments) which read better as a
+                # dot-aligned wrap.
+                legit = _segment_emit_is_legitimately_multi_line(
+                    seg, args_emit_column
+                )
+                if (not legit) or len(segments) > 2:
+                    p1_segment_break_seen[0] = True
 
         if head is not None:
             _emit_node(emitter, source, head)
@@ -6355,7 +7031,10 @@ def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     handler(emitter, source, node)
 
 
-def format_source(source: bytes) -> bytes:
+def format_source(
+    source: bytes,
+    warnings_out: list[FormatterWarning] | None = None,
+) -> bytes:
     """Format a Java source byte string per the project standards.
 
     Handles every Java construct exercised by the 83 fixture
@@ -6390,7 +7069,44 @@ def format_source(source: bytes) -> bytes:
         )
     emitter = Emitter()
     _emit_node(emitter, source, tree.root_node)
+    if warnings_out is not None:
+        # Deduplicate by source position — speculative emit cascades
+        # can revisit the same arg list under different
+        # `indent_level` values, emitting the same advisory
+        # multiple times for one node. The developer only needs
+        # to see each source location once.
+        seen: set[tuple[int, int]] = set()
+        for warning in emitter.warnings:
+            key = (warning.line, warning.column)
+            if key in seen:
+                continue
+            seen.add(key)
+            warnings_out.append(warning)
     return emitter.finish()
+
+
+def print_warnings(
+    path: str | Path,
+    warnings: list[FormatterWarning],
+    *,
+    stream: TextIO | None = None,
+) -> None:
+    """Print `FormatterWarning` records to `stream` (default
+    `sys.stderr`) in `path:line:col: WARNING: message` format.
+
+    Shared helper used by both `format_java.py --format` and
+    `format_file.py` so the two CLIs render advisories
+    identically. Keeping the print contract in one place
+    means a future change (e.g. machine-parseable JSON output
+    behind a flag) lands in one site, not two.
+    """
+    out = sys.stderr if stream is None else stream
+    for warning in warnings:
+        print(
+            f"{path}:{warning.line}:{warning.column}: "
+            f"WARNING: {warning.message}",
+            file=out,
+        )
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -6513,8 +7229,9 @@ def _main(argv: list[str] | None = None) -> int:
             )
             return 2
         source = path.read_bytes()
+        warnings: list[FormatterWarning] = []
         try:
-            formatted = format_source(source)
+            formatted = format_source(source, warnings_out=warnings)
         except NotImplementedError as e:
             print(
                 f"format_java.py: REFUSED: {path}: {e}",
@@ -6527,6 +7244,7 @@ def _main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        print_warnings(path, warnings)
         if args.check:
             if formatted == source:
                 return 0

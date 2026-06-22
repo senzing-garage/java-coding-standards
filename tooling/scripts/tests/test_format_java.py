@@ -3570,6 +3570,303 @@ def test_leaf_emit_writes_verbatim(
     assert emitter.finish() == (expected + "\n").encode("utf-8")
 
 
+class TestEstimateNormalize:
+    """Cover `_estimate_normalize`, the pure-function helper
+    used by `_arg_list_single_line_estimate` to render the
+    non-verbatim sections of an arg list's source text into
+    a canonical single-line shape.
+
+    The helper has three behaviors worth locking:
+
+      - Whitespace runs collapse to single spaces.
+      - Comma-then-whitespace normalizes to `, ` (a comma
+        followed by exactly one space).
+      - Leading / trailing whitespace at section boundaries
+        is preserved as a single space so the surrounding
+        verbatim segments don't lose required inter-token
+        spacing.
+    """
+
+    def test_empty_section_returns_empty(self) -> None:
+        assert format_java._estimate_normalize("") == ""
+
+    def test_pure_whitespace_collapses_to_single_space(
+        self,
+    ) -> None:
+        # Pure-whitespace section between two verbatim regions
+        # must NOT become "", else the surrounding tokens would
+        # collide. Collapsing to a single space preserves the
+        # word boundary without inflating width.
+        assert format_java._estimate_normalize("  ") == " "
+        assert format_java._estimate_normalize("\n  \n") == " "
+
+    def test_internal_whitespace_collapses(self) -> None:
+        assert format_java._estimate_normalize("a  b") == "a b"
+        assert format_java._estimate_normalize("a\n\nb") == "a b"
+        assert format_java._estimate_normalize("a \t\n b") == "a b"
+
+    def test_comma_with_no_following_space_normalizes(
+        self,
+    ) -> None:
+        # The whole point of this helper — `,b` becomes `, b`
+        # to match what the wrap engine's P1 candidate will
+        # actually emit.
+        assert format_java._estimate_normalize("a,b") == "a, b"
+        assert format_java._estimate_normalize("a,b,c") == "a, b, c"
+
+    def test_comma_with_existing_space_unchanged(self) -> None:
+        # Already-canonical input stays canonical (idempotent
+        # under repeated application).
+        assert format_java._estimate_normalize("a, b") == "a, b"
+        once = format_java._estimate_normalize("a,b,c")
+        assert format_java._estimate_normalize(once) == once
+
+    def test_comma_followed_by_multiple_spaces_collapses(
+        self,
+    ) -> None:
+        # `,  b` (double space) → `, b` (single space) — the
+        # whitespace-collapse pass handles this even before
+        # the comma-normalize regex sees it.
+        assert format_java._estimate_normalize("a,  b") == "a, b"
+
+    def test_leading_whitespace_preserved_as_single_space(
+        self,
+    ) -> None:
+        # If the section starts with whitespace, the leading
+        # space survives so a preceding verbatim region (e.g.
+        # a string literal) doesn't directly abut the next
+        # non-verbatim token.
+        assert format_java._estimate_normalize(" a b") == " a b"
+        assert format_java._estimate_normalize("\ta") == " a"
+
+    def test_trailing_whitespace_preserved_as_single_space(
+        self,
+    ) -> None:
+        assert format_java._estimate_normalize("a b ") == "a b "
+        assert format_java._estimate_normalize("a\t") == "a "
+
+    def test_both_ends_preserved(self) -> None:
+        assert (
+            format_java._estimate_normalize("  a  b  ")
+            == " a b "
+        )
+
+
+class TestArgListSingleLineEstimate:
+    """Cover `_arg_list_single_line_estimate`, which walks the
+    AST of an `argument_list` node, marks string literal /
+    character literal / comment regions verbatim, and applies
+    `_estimate_normalize` to the gaps.
+
+    The headline guarantee is that a comma inside a string
+    literal is NOT mistakenly comma-normalized — over-
+    estimating the width by one char per such comma and
+    incorrectly retaining source-preservation.
+    """
+
+    @staticmethod
+    def _arg_list(src_bytes: bytes):
+        """Parse `src_bytes` and return the first
+        `argument_list` node along with the source bytes.
+        """
+        tree = format_java.parse_source(src_bytes)
+        node = _find_first(tree.root_node, "argument_list")
+        assert node is not None, "no argument_list in source"
+        return node, src_bytes
+
+    def test_plain_identifiers_canonical(self) -> None:
+        node, src = self._arg_list(
+            b'class A { void m() { f(a, b, c); } }'
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        assert est == "(a, b, c)"
+
+    def test_string_literal_with_internal_comma_preserved(
+        self,
+    ) -> None:
+        # The headline regression case — without the verbatim
+        # carve-out, the comma inside `"hello,world"` would
+        # get a space appended.
+        node, src = self._arg_list(
+            b'class A { void m() { f("hello,world", x); } }'
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        assert est == '("hello,world", x)'
+
+    def test_string_literal_with_internal_comma_and_no_space_arg(
+        self,
+    ) -> None:
+        # Combine both: a string-literal comma (must NOT
+        # normalize) and an inter-arg comma without following
+        # space (MUST normalize).
+        node, src = self._arg_list(
+            b'class A { void m() { f("a,b",c); } }'
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        assert est == '("a,b", c)'
+
+    def test_character_literal_preserved(self) -> None:
+        node, src = self._arg_list(
+            b"class A { void m() { f(',', x); } }"
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        assert est == "(',', x)"
+
+    def test_block_comment_with_comma_preserved(self) -> None:
+        node, src = self._arg_list(
+            b"class A { void m() { f(/* a,b */ x, y); } }"
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        # The block comment text is preserved verbatim;
+        # whitespace around it collapses to single spaces.
+        assert est == "(/* a,b */ x, y)"
+
+    def test_empty_arg_list(self) -> None:
+        node, src = self._arg_list(
+            b"class A { void m() { f(); } }"
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        assert est == "()"
+
+    def test_multi_row_source_collapses(self) -> None:
+        # Source spans multiple rows — the estimator must
+        # collapse the inter-arg whitespace runs.
+        node, src = self._arg_list(
+            b"class A { void m() { f(a,\n    b,\n    c); } }"
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        assert est == "(a, b, c)"
+
+    def test_string_with_comma_inside_multi_row_source(
+        self,
+    ) -> None:
+        # The verbatim carve-out and the whitespace-collapse
+        # compose correctly when both apply.
+        node, src = self._arg_list(
+            b'class A { void m() { f("x,y",\n    z); } }'
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        assert est == '("x,y", z)'
+
+    def test_nested_call_with_string_comma(self) -> None:
+        # String literal lives inside a nested call —
+        # `collect()` walks into the nested arg list and
+        # finds the literal regardless of depth.
+        node, src = self._arg_list(
+            b'class A { void m() { f(g("a,b"), c); } }'
+        )
+        est = format_java._arg_list_single_line_estimate(src, node)
+        assert est == '(g("a,b"), c)'
+
+
+class TestFormatterWarnings:
+    """Cover the formatter's non-blocking advisory channel.
+
+    `format_source(source, warnings_out=...)` populates the
+    supplied list with `FormatterWarning` records for layout
+    corner cases the formatter cannot fully canonicalize
+    (currently: source-preserved arg lists whose continuation
+    columns fall below the surrounding indent level — the
+    string-literal-with-low-author-chosen-break shape).
+
+    The advisory is informational only; the formatter still
+    emits an 80-char-compliant layout. The warning surfaces to
+    stderr via `format_file.py` / `format_java.py --format` so
+    adopters know which spots warrant manual literal splitting.
+    """
+
+    def test_no_warning_for_canonical_code(self) -> None:
+        src = (
+            b"public class A {\n"
+            b"    void m() { f(x); }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        assert warnings == []
+
+    def test_warning_for_low_indented_continuation(self) -> None:
+        # Mimic the `throw new IOException(\n  "long string"\n
+        # + sb.toString())` pattern: source-preserved arg list
+        # whose continuation columns sit BELOW the enclosing
+        # statement's indent. Triggers the advisory.
+        src = (
+            b"public class A {\n"
+            b"    void m(StringBuilder sb) {\n"
+            b"        if (true) {\n"
+            b"            if (true) {\n"
+            b"                throw new RuntimeException(\n"
+            b'      "some long error message that the developer "\n'
+            b'          + sb.toString());\n'
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        # Exactly one source-preserve site in this input
+        # triggers the advisory; the uniqueness filter ensures we
+        # see it once even if the wrap-engine speculates
+        # over the same node at multiple indent levels.
+        assert len(warnings) == 1
+        # Each warning carries a line / column / message.
+        for warning in warnings:
+            assert warning.line > 0
+            assert warning.column > 0
+            assert "source-preserved" in warning.message
+            assert "continuation at column" in warning.message
+
+    def test_warnings_unique_by_source_position(self) -> None:
+        # Speculative wrap-engine emits can revisit the same
+        # arg-list at different indent_level values; the
+        # advisory must be made unique by (line, column) so the
+        # developer doesn't see duplicate hits.
+        src = (
+            b"public class A {\n"
+            b"    void m(StringBuilder sb) {\n"
+            b"        if (true) {\n"
+            b"            if (true) {\n"
+            b"                throw new RuntimeException(\n"
+            b'      "some long error message that the developer "\n'
+            b'          + sb.toString());\n'
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        # Sanity: the input intentionally triggers the
+        # advisory, so we expect at least one warning — an
+        # empty list would make the uniqueness assertion
+        # vacuously true and mask a regression where the
+        # advisory stops firing entirely.
+        assert len(warnings) >= 1
+        positions = [(w.line, w.column) for w in warnings]
+        assert len(positions) == len(set(positions))
+
+    def test_warning_omits_when_warnings_out_is_none(self) -> None:
+        # API contract: when caller doesn't supply
+        # `warnings_out`, format_source still emits formatted
+        # output normally; the warnings are simply discarded.
+        src = (
+            b"public class A {\n"
+            b"    void m(StringBuilder sb) {\n"
+            b"        if (true) {\n"
+            b"            if (true) {\n"
+            b"                throw new RuntimeException(\n"
+            b'      "some long error message that the developer "\n'
+            b'          + sb.toString());\n'
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        # No exception, just discards the warnings.
+        format_java.format_source(src)
+
+
 class TestAnnotationTypeDeclaration:
     """Cover `_emit_annotation_type_declaration` and
     `_emit_annotation_type_element_declaration` end-to-end via
