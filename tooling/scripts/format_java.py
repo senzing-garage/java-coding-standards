@@ -1348,6 +1348,22 @@ combinations and benefit from greedy horizontal packing.
 """
 
 
+_PAIR_ALIGNED_LABEL_DELIM_PREFIXES: Final[frozenset[str]] = frozenset({
+    " ", ",", ";", "]", ")", "}", "|", ":",
+})
+"""Characters that, when they begin a string-literal operand
+inside a `+` chain, qualify that operand as a "label" worth
+breaking before for the 0.5.0 item 2a pair-aligned wrap. The
+set captures the canonical Senzing-style toString() pattern
+(`"label1=[ " + val1 + " ], label2=[ " + val2 + " ]"`) where
+each subsequent label introduces a new field with a leading
+separator. Opening delimiters (`{`, `[`, `(`) are deliberately
+excluded — the first label in a `toString()` typically opens
+with `{` or `[` and doesn't need a break before it (it's the
+line-anchor); subsequent labels carry the separator.
+"""
+
+
 _BINARY_OP_PRECEDENCE: Final[dict[str, int]] = {
     "||": 1,
     "&&": 2,
@@ -1360,6 +1376,68 @@ _BINARY_OP_PRECEDENCE: Final[dict[str, int]] = {
     "+": 9, "-": 9,
     "*": 10, "/": 10, "%": 10,
 }
+
+
+def _chain_matches_pair_aligned_pattern(
+    source: bytes,
+    root_op: Node,
+    leftmost_operand: Node,
+    chain: list[tuple[Node, Node]],
+) -> bool:
+    """Return True if a flattened binary chain matches the
+    label/value pattern eligible for `emit_pair_aligned`
+    (0.5.0 item 2a).
+
+    Gate (lenient — see Senzing handoff for full discussion):
+
+    1. Root operator is `+` AND all chain operators are `+`
+       (no mixed `+`/`-` since same precedence-group flattens
+       both into the chain).
+    2. Leftmost operand is a `string_literal` (the first
+       "label" — its prefix doesn't need to be a delimiter
+       since it's the line-anchor).
+    3. Operands alternate string ↔ non-string. Index 0 is
+       a string (already checked); indices 1, 3, 5, ...
+       must be non-string; indices 2, 4, 6, ... must be
+       string.
+    4. Subsequent label literals (overall indices 2, 4, 6,
+       ... = chain indices 1, 3, 5, ...) start with a
+       character from `_PAIR_ALIGNED_LABEL_DELIM_PREFIXES`
+       (`{" ", ",", ";", "]", ")", "}", "|", ":"}`).
+    5. Chain has at least 2 operators (= at least one
+       subsequent label to break before). A length-1 chain
+       has nothing to pair-align.
+
+    The lenient stance on the first label is what makes the
+    pattern match the typical Senzing toString() opener
+    `"ClassName[ "` or `"{ name=[ "` — those start with
+    `{`/`[` which aren't delimiters in this set, but they're
+    the line-anchor and don't need a break before them.
+    """
+    if root_op.type != "+":
+        return False
+    if any(op.type != "+" for op, _ in chain):
+        return False
+    if leftmost_operand.type != "string_literal":
+        return False
+    if len(chain) < 2:
+        return False
+    for chain_idx, (_op, operand) in enumerate(chain):
+        # Overall operand index = chain_idx + 1.
+        expected_string = ((chain_idx + 1) % 2 == 0)
+        is_string = operand.type == "string_literal"
+        if expected_string != is_string:
+            return False
+        if expected_string:
+            # Subsequent label — verify delim prefix.
+            text = _node_source_text(source, operand)
+            if (
+                len(text) < 2
+                or text[0] != '"'
+                or text[1] not in _PAIR_ALIGNED_LABEL_DELIM_PREFIXES
+            ):
+                return False
+    return True
 
 
 def _emit_binary_expression(
@@ -1516,6 +1594,37 @@ def _emit_binary_expression(
             _emit_node(emitter, source, operand)
         emitter.pop_indent()
 
+    def emit_pair_aligned(cont_col: int) -> None:
+        # Item 2a: label/value-aware pair-aligned wrap. For
+        # `+` chains where operands alternate string ↔
+        # non-string with delimiter-prefix subsequent labels,
+        # break before each subsequent label so each line
+        # carries one `label + value` pair. Continuation lines
+        # start with the operator at `cont_col`, the operand at
+        # `cont_col + 2` (after `+ `).
+        #
+        # Trades horizontal density for semantic alignment —
+        # makes the label/value structure visually obvious in
+        # the canonical Senzing `toString()` pattern.
+        _emit_node(emitter, source, leftmost_operand)
+        for index, (op, operand) in enumerate(chain):
+            # Chain index 0 corresponds to overall operand
+            # index 1 (first value after the first label).
+            # Chain indices 1, 3, 5, ... are subsequent
+            # labels — break before each.
+            is_subsequent_label = (index % 2 == 1)
+            if is_subsequent_label:
+                emitter.newline()
+                emitter.write(" " * cont_col)
+                emitter.write(op.type)
+                emitter.write(" ")
+                _emit_node(emitter, source, operand)
+            else:
+                emitter.write(" ")
+                emitter.write(op.type)
+                emitter.write(" ")
+                _emit_node(emitter, source, operand)
+
     def emit_greedy(cont_col: int) -> None:
         # Greedy packing (0.5.0 item 3): pack as many
         # `OP operand` pairs per continuation line as fit
@@ -1613,14 +1722,45 @@ def _emit_binary_expression(
         return
     emitter.restore(saved)
 
-    # Operator-conditional cascade (0.5.0 item 3):
+    # Operator-conditional cascade (0.5.0 items 2a + 3):
     #
     # Boolean chains (`&&` / `||`) preserve the spec preference
     # of one-per-line paren-aligned (each clause on its own
     # continuation line for vertical scannability). Non-boolean
     # chains (`+`, `-`, `*`, `/`, `==`, etc.) use greedy
     # horizontal packing.
+    #
+    # `+` chains with the label/value pattern (alternating
+    # string ↔ non-string operands, with delimiter-prefix
+    # subsequent labels) ALSO try `emit_pair_aligned` BEFORE
+    # greedy — break before each label so each line carries
+    # one `label + value` pair. Greedy stays as the fallback
+    # when the pair-aligned shape itself overflows (e.g. a
+    # particularly long value).
     is_boolean = root_op.type in _BINARY_BOOLEAN_OPERATORS
+    is_pair_aligned_candidate = _chain_matches_pair_aligned_pattern(
+        source, root_op, leftmost_operand, chain
+    )
+
+    # Item 2a — pair-aligned candidate. Tried BEFORE the
+    # paren-aligned / greedy candidates when the chain matches
+    # the label/value pattern. Uses paren_align_col if set,
+    # else +4 cumulative-indent column.
+    if is_pair_aligned_candidate:
+        pair_col = (
+            emitter.paren_align_col
+            if emitter.paren_align_col is not None
+            else 4 * (emitter.indent_level + 1)
+        )
+        pair_saved = emitter.snapshot()
+        prev_align = emitter.set_paren_align_col(None)
+        try:
+            emit_pair_aligned(pair_col)
+        finally:
+            emitter.set_paren_align_col(prev_align)
+        if emitter.last_lines_max_width(pair_saved[0]) <= effective_max:
+            return
+        emitter.restore(pair_saved)
 
     # Spec C6 paren-aligned candidate, preferred over the
     # standard +4-indent fallback when an enclosing grouping
