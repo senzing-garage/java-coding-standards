@@ -33,8 +33,8 @@ the source location to split.
 ### Changed
 
 - **Spec C6 paren-alignment extended to control-flow required
-  parens** (`_emit_parenthesized_expression`, item 1 from the
-  0.5.0 roadmap). 0.4.3 restricted paren-aligned operator
+  parens** (`_emit_parenthesized_expression`, item 1).
+  0.4.3 restricted paren-aligned operator
   continuation to grouping parens (developer-authored `(...)`
   around an expression). 0.5.0 extends the rule to the
   syntactically-required parens of control-flow constructs:
