@@ -1336,6 +1336,18 @@ def _emit_field_declaration(
 # `a + b + (c * d)` (precedence: `*` > `+`) breaks at `+` only,
 # never at `*` — matching Java associativity and the spec's
 # "break at the lowest-precedence operator" intent.
+_BINARY_BOOLEAN_OPERATORS: Final[frozenset[str]] = frozenset({
+    "&&", "||",
+})
+"""Operators whose chains keep one-per-line paren-aligned wrap
+(each clause on its own continuation line) rather than greedy
+packing. Per the spec preference: each boolean condition is a
+distinct semantic clause and benefits from vertical separation;
+arithmetic / string-concat / comparison chains are continuous
+combinations and benefit from greedy horizontal packing.
+"""
+
+
 _BINARY_OP_PRECEDENCE: Final[dict[str, int]] = {
     "||": 1,
     "&&": 2,
@@ -1504,6 +1516,75 @@ def _emit_binary_expression(
             _emit_node(emitter, source, operand)
         emitter.pop_indent()
 
+    def emit_greedy(cont_col: int) -> None:
+        # Greedy packing (0.5.0 item 3): pack as many
+        # `OP operand` pairs per continuation line as fit
+        # within `effective_max`; break at operator boundary;
+        # continuation lines start at `cont_col`. Used for
+        # non-boolean operators (`+`, `-`, `*`, `/`, `==`,
+        # etc.) where horizontal density is preferred over
+        # vertical separation. Boolean chains (`&&` / `||`)
+        # keep `emit_paren_aligned` (one-per-line) instead.
+        #
+        # Item 8 invariant: after each operand emit, if the
+        # operand's OWN render introduced newlines (a nested
+        # construct that wrapped multi-line), the next
+        # `OP operand` pair MUST break to a new line —
+        # otherwise the subsequent operator would visually
+        # merge with the wrapped operand's tail at the same
+        # column, stranding the chain. Same anti-stranding
+        # principle as 0.4.3's Bug 1 fix for method chains,
+        # applied at the binary-operator level. The key
+        # subtlety: we track ONLY the operand's internal
+        # newlines (captured AFTER any explicit break we
+        # wrote ourselves), not the cumulative newlines from
+        # this iteration — otherwise `pack-failed → broke →
+        # re-emit` would falsely signal "operand went
+        # multi-row" and force every subsequent operator to
+        # break (degenerating into one-per-line output).
+        start_line_count = emitter.line_count
+        _emit_node(emitter, source, leftmost_operand)
+        prev_operand_multi_row = (
+            emitter.line_count > start_line_count
+        )
+        for op, operand in chain:
+            if prev_operand_multi_row:
+                # Item 8: force break before this operator.
+                emitter.newline()
+                emitter.write(" " * cont_col)
+                emitter.write(op.type)
+                emitter.write(" ")
+                operand_start_line = emitter.line_count
+                _emit_node(emitter, source, operand)
+            else:
+                # Speculatively pack `" OP operand"` on the
+                # current line.
+                pack_saved = emitter.snapshot()
+                emitter.write(" ")
+                emitter.write(op.type)
+                emitter.write(" ")
+                operand_start_line = emitter.line_count
+                _emit_node(emitter, source, operand)
+                pack_ok = (
+                    emitter.last_lines_max_width(pack_saved[0])
+                    <= effective_max
+                    and emitter.line_count == operand_start_line
+                )
+                if not pack_ok:
+                    # Either overflowed or operand wrapped
+                    # multi-line. Restore, break, re-emit at
+                    # cont_col.
+                    emitter.restore(pack_saved)
+                    emitter.newline()
+                    emitter.write(" " * cont_col)
+                    emitter.write(op.type)
+                    emitter.write(" ")
+                    operand_start_line = emitter.line_count
+                    _emit_node(emitter, source, operand)
+            prev_operand_multi_row = (
+                emitter.line_count > operand_start_line
+            )
+
     # Manual P1 speculation with newline-detection (replaces
     # try_priorities for this site because try_priorities
     # only inspects widths — a nested emit that wraps
@@ -1532,14 +1613,28 @@ def _emit_binary_expression(
         return
     emitter.restore(saved)
 
+    # Operator-conditional cascade (0.5.0 item 3):
+    #
+    # Boolean chains (`&&` / `||`) preserve the spec preference
+    # of one-per-line paren-aligned (each clause on its own
+    # continuation line for vertical scannability). Non-boolean
+    # chains (`+`, `-`, `*`, `/`, `==`, etc.) use greedy
+    # horizontal packing.
+    is_boolean = root_op.type in _BINARY_BOOLEAN_OPERATORS
+
     # Spec C6 paren-aligned candidate, preferred over the
-    # standard +4-indent P2/P3 when an enclosing grouping `(`
-    # is in scope and paren-alignment doesn't itself overflow.
-    # Tried BEFORE standard P2 so a parenthesized expression
-    # like `(a || b || c)` wraps with `||` lined up under the
-    # column after `(`, rather than getting pulled to the
-    # cumulative `+4` column (which produces the "staircase"
-    # shape when grouping parens are nested).
+    # standard +4-indent fallback when an enclosing grouping
+    # `(` (or, post-0.5.0-item-4, a single-arg call paren) is
+    # in scope and the paren-aligned shape doesn't itself
+    # overflow. Tried BEFORE the +4 fallback so a parenthesized
+    # expression like `(a || b || c)` wraps with `||` lined up
+    # under the column after `(`, rather than getting pulled
+    # to the cumulative `+4` column (which would produce the
+    # "staircase" shape when grouping parens are nested).
+    #
+    # For boolean chains the paren-aligned shape is
+    # one-per-line (`emit_paren_aligned`); for non-boolean
+    # chains it is greedy at `align_col` (`emit_greedy`).
     align_col = emitter.paren_align_col
     if align_col is not None:
         paren_saved = emitter.snapshot()
@@ -1550,31 +1645,32 @@ def _emit_binary_expression(
         # `_emit_parenthesized_expression` to re-set
         # `paren_align_col` if they themselves sit inside
         # grouping parens.
-        #
-        # try/finally restores `paren_align_col` only; the
-        # buffer rollback `emitter.restore(paren_saved)` is
-        # gated on the width check and runs only on the
-        # accept/reject decision below. This matches the
-        # p2_saved / p3_saved pattern used elsewhere in this
-        # function: exceptions in a candidate emit are not
-        # expected and would propagate up, leaving the
-        # speculative buffer as-is — acceptable because the
-        # outer wrap engine never resumes after such a
-        # programming error.
         prev_align = emitter.set_paren_align_col(None)
         try:
-            emit_paren_aligned(align_col)
+            if is_boolean:
+                emit_paren_aligned(align_col)
+            else:
+                emit_greedy(align_col)
         finally:
             emitter.set_paren_align_col(prev_align)
         if emitter.last_lines_max_width(paren_saved[0]) <= effective_max:
             return
         emitter.restore(paren_saved)
 
-    p2_saved = emitter.snapshot()
-    emit_p2()
-    if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
+    # +4-indent fallback. For boolean chains: P2 (leftmost-only
+    # break, rest on one continuation line); falls through to
+    # P3 (every operator on own line) on overflow. For
+    # non-boolean chains: greedy at the +4 continuation column;
+    # P3 remains as defensive last-resort.
+    p2_col = 4 * (emitter.indent_level + 1)
+    fallback_saved = emitter.snapshot()
+    if is_boolean:
+        emit_p2()
+    else:
+        emit_greedy(p2_col)
+    if emitter.last_lines_max_width(fallback_saved[0]) <= effective_max:
         return
-    emitter.restore(p2_saved)
+    emitter.restore(fallback_saved)
     emit_p3()
 
 

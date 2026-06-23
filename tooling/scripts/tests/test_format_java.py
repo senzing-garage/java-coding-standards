@@ -627,15 +627,16 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_binary_expression_wrap_at_leftmost_op(
+    def test_binary_expression_wrap_greedy_packs(
         self,
     ) -> None:
         # Spec "Line Continuation / break before binary
-        # operators": when the single-line binary expression
-        # would exceed 80 chars, break before the leftmost
-        # operator in the chain. The leftmost operand lands on
-        # its own line; the operator plus the remainder of
-        # the chain wraps to a continuation at +4 indent.
+        # operators" + 0.5.0 item 3 (greedy): non-boolean
+        # binary chains pack as many `OP operand` pairs per
+        # line as fit, then break at the operator boundary.
+        # Continuation lines start at the +4 indent column.
+        # This replaces the older leftmost-only-break (P2)
+        # behavior for non-boolean operators.
         src = (
             b"class A {\n"
             b"    String s = "
@@ -644,18 +645,15 @@ class TestFormatSourceSubset:
             b"}\n"
         )
         out = format_java.format_source(src)
-        # The string-concat overflows; break before the
-        # leftmost `+` operator. Leftmost operand on its own
-        # line; remainder packed onto continuation at +4.
-        # (Exact column depends on the value's start column,
-        # which here is after `String s = ` at column 15.)
-        # Substring check (rather than exact equality on the
-        # whole output) is deliberate: this test pins the
-        # wrap-relevant fragment only, leaving the surrounding
-        # column choice — which the wrap-priority engine may
-        # legitimately adjust — free to drift without
-        # triggering an unrelated failure.
-        assert b'        + "beta"' in out
+        # The chain overflows single-line; greedy packs the
+        # short middle operands (`+ "beta"`, `+ "gamma"`)
+        # onto the leftmost-operand line until adding
+        # `+ "delta delta"` would overflow, then breaks.
+        # Substring checks pin the greedy behavior without
+        # over-constraining the exact column choice (which
+        # the wrap engine may legitimately adjust).
+        assert b'+ "beta" + "gamma"' in out
+        assert b'        + "delta delta"' in out
 
     def test_method_call_without_receiver(self) -> None:
         # Method call with no `object` field — bare
