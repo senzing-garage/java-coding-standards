@@ -6590,6 +6590,35 @@ def _is_method_chain_inner(node: Node) -> bool:
     )
 
 
+def _chain_segments_share_method_name(
+    source: bytes, segments: list[Node]
+) -> bool:
+    """Return True when every chain segment calls the same
+    method name. Gates `emit_p2_greedy` (0.5.0 item 2b):
+    same-method chains like `sb.append(a).append(b)…` benefit
+    from horizontal greedy packing because each call is
+    semantically equivalent; mixed-name chains like
+    `.builder().setReader().get()` keep one-per-line P2 because
+    each call is a distinct semantic step worth its own line.
+
+    Requires at least 2 segments — a single-segment "chain" is
+    just a plain call with no wrap candidates beyond P1.
+    """
+    if len(segments) < 2:
+        return False
+    first_name_node = segments[0].child_by_field_name("name")
+    if first_name_node is None:
+        return False
+    first_name = _node_source_text(source, first_name_node)
+    for seg in segments[1:]:
+        name_node = seg.child_by_field_name("name")
+        if name_node is None:
+            return False
+        if _node_source_text(source, name_node) != first_name:
+            return False
+    return True
+
+
 def _emit_method_chain_wrapped(
     emitter: Emitter,
     source: bytes,
@@ -6830,6 +6859,69 @@ def _emit_method_chain_wrapped(
             emitter.write(".")
             emit_segment(seg)
 
+    def emit_p2_greedy() -> None:
+        # 0.5.0 item 2b: same-method method-chain greedy.
+        # Pack as many `.METHOD(args)` segments per continuation
+        # line as fit. Continuation column = first_dot_col
+        # (same dot-alignment as P2 dot-aligned). Used only when
+        # all segments call the same method name — chains like
+        # `sb.append(a).append(b).append(c)` where each segment
+        # is semantically equivalent and benefit from horizontal
+        # density.
+        #
+        # Mixed-name chains (`.builder().setReader().get()`)
+        # keep P2 one-per-line — each call is distinct and the
+        # vertical layout aids scannability.
+        #
+        # Item 8 invariant: after each segment emit, if the
+        # segment's args wrapped multi-line (a nested arg list
+        # that itself wrapped, e.g. `.method(longArg, longArg)`
+        # going to P4), force a break before the next segment —
+        # otherwise the trailing segment would land at the same
+        # column as the wrapped arg's tail, stranding the chain.
+        if head is not None:
+            _emit_node(emitter, source, head)
+            first_dot_col = emitter.column
+            emitter.write(".")
+            emit_segment(segments[0])
+            wrap_from = 1
+        else:
+            emit_segment(segments[0])
+            first_dot_col = emitter.column
+            emitter.write(".")
+            emit_segment(segments[1])
+            wrap_from = 2
+        prev_segment_multi_row = False
+        for seg in segments[wrap_from:]:
+            if prev_segment_multi_row:
+                # Item 8: previous segment's args wrapped — force
+                # break before this segment.
+                emitter.newline()
+                emitter.write(" " * first_dot_col)
+                emitter.write(".")
+                seg_start_line = emitter.line_count
+                emit_segment(seg)
+            else:
+                pack_saved = emitter.snapshot()
+                emitter.write(".")
+                seg_start_line = emitter.line_count
+                emit_segment(seg)
+                pack_ok = (
+                    emitter.last_lines_max_width(pack_saved[0])
+                    <= effective_max
+                    and emitter.line_count == seg_start_line
+                )
+                if not pack_ok:
+                    emitter.restore(pack_saved)
+                    emitter.newline()
+                    emitter.write(" " * first_dot_col)
+                    emitter.write(".")
+                    seg_start_line = emitter.line_count
+                    emit_segment(seg)
+            prev_segment_multi_row = (
+                emitter.line_count > seg_start_line
+            )
+
     # Manual P1 speculation with per-segment newline detection.
     # P1 is "all segments stay on whichever line the head
     # finished on"; if a nested arg-list emit wraps mid-segment
@@ -6851,6 +6943,20 @@ def _emit_method_chain_wrapped(
     if p1_fits:
         return
     emitter.restore(saved)
+
+    # 0.5.0 item 2b: try emit_p2_greedy BEFORE the standard P2
+    # (one-per-line dot-aligned) when all chain segments call
+    # the same method name. Same-method chains
+    # (`.append(a).append(b)…`) benefit from horizontal density;
+    # mixed-name chains (`.builder().setReader().get()`) keep
+    # the one-per-line shape via P2.
+    if _chain_segments_share_method_name(source, segments):
+        greedy_saved = emitter.snapshot()
+        emit_p2_greedy()
+        if emitter.last_lines_max_width(greedy_saved[0]) <= effective_max:
+            return
+        emitter.restore(greedy_saved)
+
     p2_saved = emitter.snapshot()
     emit_p2()
     if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
