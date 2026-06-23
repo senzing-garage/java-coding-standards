@@ -3784,18 +3784,22 @@ class TestFormatterWarnings:
         assert warnings == []
 
     def test_warning_for_low_indented_continuation(self) -> None:
-        # Mimic the `throw new IOException(\n  "long string"\n
-        # + sb.toString())` pattern: source-preserved arg list
-        # whose continuation columns sit BELOW the enclosing
-        # statement's indent. Triggers the advisory.
+        # Under 0.5.0 item 4: source-preserve column-remaps the
+        # arg list to `block + 4`. When the contained string
+        # literal is long enough that the remapped line still
+        # exceeds 80 chars, the formatter fires a
+        # `FormatterWarning` advisory (the literal can't be
+        # split by the formatter — that's a developer code
+        # change). The line will overflow on disk; checkstyle
+        # is expected to surface the LineLength violation, and
+        # the advisory tells the developer which site to split.
         src = (
             b"public class A {\n"
-            b"    void m(StringBuilder sb) {\n"
+            b"    void m() {\n"
             b"        if (true) {\n"
             b"            if (true) {\n"
             b"                throw new RuntimeException(\n"
-            b'      "some long error message that the developer "\n'
-            b'          + sb.toString());\n'
+            b'      "some quite long error message that the developer authored at low column");\n'
             b"            }\n"
             b"        }\n"
             b"    }\n"
@@ -3813,7 +3817,7 @@ class TestFormatterWarnings:
             assert warning.line > 0
             assert warning.column > 0
             assert "source-preserved" in warning.message
-            assert "continuation at column" in warning.message
+            assert "overflows 80 chars" in warning.message
 
     def test_warnings_unique_by_source_position(self) -> None:
         # Speculative wrap-engine emits can revisit the same
@@ -3822,12 +3826,11 @@ class TestFormatterWarnings:
         # developer doesn't see duplicate hits.
         src = (
             b"public class A {\n"
-            b"    void m(StringBuilder sb) {\n"
+            b"    void m() {\n"
             b"        if (true) {\n"
             b"            if (true) {\n"
             b"                throw new RuntimeException(\n"
-            b'      "some long error message that the developer "\n'
-            b'          + sb.toString());\n'
+            b'      "some quite long error message that the developer authored at low column");\n'
             b"            }\n"
             b"        }\n"
             b"    }\n"
@@ -3850,12 +3853,11 @@ class TestFormatterWarnings:
         # output normally; the warnings are simply discarded.
         src = (
             b"public class A {\n"
-            b"    void m(StringBuilder sb) {\n"
+            b"    void m() {\n"
             b"        if (true) {\n"
             b"            if (true) {\n"
             b"                throw new RuntimeException(\n"
-            b'      "some long error message that the developer "\n'
-            b'          + sb.toString());\n'
+            b'      "some quite long error message that the developer authored at low column");\n'
             b"            }\n"
             b"        }\n"
             b"    }\n"

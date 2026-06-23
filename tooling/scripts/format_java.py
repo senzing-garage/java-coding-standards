@@ -6209,6 +6209,61 @@ def _arg_list_single_line_estimate(
     return "".join(parts)
 
 
+_SEMANTIC_WRAP_ARG_TYPES: Final[frozenset[str]] = frozenset({
+    "lambda_expression",
+    "binary_expression",
+    "method_invocation",
+})
+"""Argument types that opt out of source-preservation when they
+appear as multi-row arguments inside an arg list (0.5.0 item 4).
+
+Each of these has its own wrap engine that can produce a
+clean canonical layout when re-emitted from scratch — keeping
+their source layout via verbatim emit propagates whatever
+column the developer chose (often hand-tuned for the OLD
+indent context) forward through every format pass.
+
+The opt-out is safe under the 0.5.0 no-fallback policy:
+when the wrap engine's output would overflow 80 (e.g. a
+binary expression with a contained long literal), the
+formatter emits at the canonical column anyway and fires
+a `FormatterWarning` advisory; checkstyle's LineLength
+check then surfaces the overflow and the developer must
+manually split the literal. Earlier spikes that included
+binary / method_invocation in the opt-out WITHOUT the
+no-fallback policy failed because the wrap engine had no
+overflow path for long literals — that's no longer a
+blocker.
+"""
+
+
+def _arg_list_has_semantic_multi_row_arg(node: Node) -> bool:
+    """Return True when any arg in `node` is a multi-row
+    construct from `_SEMANTIC_WRAP_ARG_TYPES`. Parenthesized
+    expressions are transparently unwrapped — a multi-row
+    `(a + b + c)` is still a multi-row binary for opt-out
+    purposes.
+    """
+    arg_nodes = [
+        c for c in node.children
+        if c.is_named
+        and c.type not in ("line_comment", "block_comment")
+    ]
+    for arg in arg_nodes:
+        inner = arg
+        while inner.type == "parenthesized_expression":
+            named = [c for c in inner.children if c.is_named]
+            if not named:
+                break
+            inner = named[0]
+        if (
+            inner.type in _SEMANTIC_WRAP_ARG_TYPES
+            and _node_spans_multiple_rows(inner)
+        ):
+            return True
+    return False
+
+
 def _arg_list_takes_source_preserve_path(
     emitter: Emitter,
     source: bytes,
@@ -6277,6 +6332,18 @@ def _arg_list_takes_source_preserve_path(
         return True
     if _is_inside_csoff_region(source, node):
         return True
+
+    # 0.5.0 item 4 — semantic opt-out. When any arg is a
+    # multi-row lambda / binary / method-chain, decline
+    # source-preservation so the arg re-emits via its own
+    # wrap engine. Re-emission produces columns rooted in
+    # the current emit position rather than echoing
+    # potentially-stale source columns; the lambda body /
+    # binary / chain gets the canonical layout for its
+    # construct type instead of preserving the developer's
+    # (often hand-tuned) source indent.
+    if _arg_list_has_semantic_multi_row_arg(node):
+        return False
 
     src_text = _node_source_text(source, node)
     effective_max = _MAX_LINE - emitter.tail_reserve
@@ -6386,40 +6453,120 @@ def _emit_argument_list(
     # break points appropriate to the new column.
     if _arg_list_takes_source_preserve_path(emitter, source, node):
         src_text = _node_source_text(source, node)
-        # Inverted-indent advisory: if any source continuation
-        # line lands at a column LESS than the current indent
-        # level, the verbatim emit will look visually inverted
-        # against the surrounding context. The formatter can't
-        # fix this on its own — the typical cause is a long
-        # string literal whose author placed it at a low column
-        # to fit 80 chars; rewriting requires splitting the
-        # literal into concatenated chunks. Surface a warning so
-        # the developer knows to consider manual cleanup.
-        current_indent_col = emitter.indent_level * 4
-        for advisory_line in src_text.split("\n")[1:]:
-            advisory_stripped = advisory_line.lstrip()
-            if not advisory_stripped:
-                continue
-            advisory_leading = (
-                len(advisory_line) - len(advisory_stripped)
-            )
-            if advisory_leading < current_indent_col:
-                emitter.warnings.append(FormatterWarning(
-                    line=node.start_point[0] + 1,
-                    column=node.start_point[1] + 1,
-                    message=(
-                        "source-preserved arg list has "
-                        f"continuation at column "
-                        f"{advisory_leading + 1} below the "
-                        f"surrounding indent "
-                        f"({current_indent_col + 1}); consider "
-                        "splitting the contained literal or "
-                        "expression into smaller chunks so the "
-                        "wrap engine can re-indent consistently."
-                    ),
-                ))
+        # 0.5.0 item 4 — context-aware source-preservation
+        # with no-fallback policy.
+        #
+        # Column rule:
+        #   - With governing paren (innermost
+        #     `parenthesized_expression` ancestor — captured by
+        #     `emitter.paren_align_col`): target =
+        #     `paren_align_col + 4`. The `+4` separates the
+        #     continuation from the outer paren's direct
+        #     contents (which themselves start at
+        #     `paren_align_col`).
+        #   - Without governing paren: target = `block + 4`
+        #     (canonical "one indent past the owning
+        #     statement" continuation).
+        #
+        # No-fallback policy: emit at target unconditionally.
+        # Fire an advisory. If the resulting line exceeds 80,
+        # let it overflow — checkstyle's LineLength check
+        # surfaces the overflow and the developer manually
+        # splits the literal. Breaking the propagation cycle
+        # where source-preserved verbatim layouts silently
+        # re-appeared each format pass.
+        #
+        # CSOFF / has_comment cases are handled by the
+        # predicate above — they emit verbatim without
+        # column-remap (semantic columns are part of their
+        # meaning).
+        comments_present = any(
+            c.type in ("line_comment", "block_comment")
+            for c in node.children
+            if c.is_named
+        )
+        if comments_present or _is_inside_csoff_region(
+            source, node
+        ):
+            emitter.write_raw_lines(src_text)
+            return
+        if emitter.paren_align_col is not None:
+            target_col = emitter.paren_align_col + 4
+        else:
+            target_col = emitter.indent_level * 4 + 4
+        lines = src_text.split("\n")
+        # Find the source's first non-empty continuation col.
+        source_first_cont_col = None
+        for line in lines[1:]:
+            if line.lstrip():
+                source_first_cont_col = len(line) - len(
+                    line.lstrip()
+                )
                 break
-        emitter.write_raw_lines(src_text)
+        if source_first_cont_col is None:
+            # No continuation lines to shift.
+            final_lines = lines
+        elif source_first_cont_col >= target_col:
+            # Source is already at or past the canonical target —
+            # developer chose a deeper indent (e.g. wrap-engine
+            # P3 at the inner call's paren_align_col, or a
+            # manually-placed continuation at a deeper col).
+            # Respect that choice; do NOT pull it shallower.
+            # This preserves idempotency: when first-pass output
+            # places continuations at a column deeper than this
+            # rule's target, subsequent passes leave them
+            # untouched.
+            final_lines = lines
+        else:
+            # Shift all continuation lines by the same delta so
+            # internal alignment (paren-aligned operators, dot-
+            # aligned chains within the source-preserved block)
+            # is preserved relative to the new anchor.
+            delta = target_col - source_first_cont_col
+            shifted: list[str] = [lines[0]]
+            for line in lines[1:]:
+                stripped = line.lstrip()
+                if not stripped:
+                    shifted.append("")
+                    continue
+                leading = len(line) - len(stripped)
+                new_leading = max(0, leading + delta)
+                shifted.append(" " * new_leading + stripped)
+            final_lines = shifted
+        # Width-check fires uniformly across the final lines —
+        # whether shifted or unshifted — so any source-preserved
+        # arg list with a line over 80 surfaces an advisory.
+        # No fallback to a shallower column or to verbatim.
+        # The overflow becomes checkstyle's problem; the
+        # advisory tells the developer which site to split.
+        #
+        # `effective_max` accounts for `tail_reserve` so the
+        # advisory matches what checkstyle's LineLength check
+        # will see on disk after the parent appends trailing
+        # tokens (`;`, `)`, etc.). A `_MAX_LINE - tail_reserve`
+        # internal cap means the actual line width is bounded
+        # by `len(ln) + tail_reserve`, and the LineLength rule
+        # sees `_MAX_LINE`.
+        effective_max = _MAX_LINE - emitter.tail_reserve
+        line_widths = [
+            emitter.column + len(final_lines[0]),
+            *(len(ln) for ln in final_lines[1:]),
+        ]
+        max_line_width = max(line_widths)
+        if max_line_width > effective_max:
+            on_disk_width = max_line_width + emitter.tail_reserve
+            emitter.warnings.append(FormatterWarning(
+                line=node.start_point[0] + 1,
+                column=node.start_point[1] + 1,
+                message=(
+                    "source-preserved arg list overflows 80 chars "
+                    f"(max line width {on_disk_width}). Split "
+                    "the contained literal or expression into "
+                    "smaller chunks so the formatter can re-"
+                    "indent within the line limit."
+                ),
+            ))
+        emitter.write_raw_lines("\n".join(final_lines))
         return
     # Source-preserved first line wouldn't fit and there
     # are no comments — fall through. The wrap engine
@@ -6756,15 +6903,29 @@ def _emit_method_chain_wrapped(
             emitter, source, args, column=args_emit_column
         ):
             return True
-        # Lambda body that spans multiple source rows — the
-        # lambda emitter source-preserves the body block, so
-        # those newlines are also the developer's authored
-        # layout rather than wrap fallout.
+        # 0.5.0 item 4 — semantic multi-row args (lambda body,
+        # multi-row binary/chain) opt out of source-preservation
+        # but STILL emit multi-line via their own wrap engines,
+        # which still strands subsequent chain segments. Mirror
+        # the predicate's opt-out so the discriminator's
+        # "will-be-multi-line" answer stays consistent with what
+        # `_emit_argument_list` actually does.
         for child in args.named_children:
             if child.type == "lambda_expression":
                 body = child.child_by_field_name("body")
                 if body is not None and _node_spans_multiple_rows(body):
                     return True
+            inner = child
+            while inner.type == "parenthesized_expression":
+                named = [c for c in inner.children if c.is_named]
+                if not named:
+                    break
+                inner = named[0]
+            if (
+                inner.type in _SEMANTIC_WRAP_ARG_TYPES
+                and _node_spans_multiple_rows(inner)
+            ):
+                return True
         return False
 
     def emit_p1() -> None:
