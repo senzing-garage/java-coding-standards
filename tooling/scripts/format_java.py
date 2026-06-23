@@ -4366,21 +4366,28 @@ def _emit_for_statement(
 
     condition = node.child_by_field_name("condition")
 
-    # Per spec "Brace Placement / Exception: Multi-Line
-    # Conditions" — when the for-header spans multiple source
-    # rows the body's opening `{` switches to Allman. Detect
-    # via body.start_row vs node.start_row; emit the verbatim
-    # header text in that case to preserve developer-authored
-    # line breaks (paren-aligned semicolon-separated parts).
-    if body.start_point[0] != node.start_point[0]:
-        header_text = source[
-            node.start_byte : body.start_byte
-        ].decode("utf-8").rstrip()
-        emitter.write_raw_lines(header_text)
-        emitter.newline()
-        emitter.write_indent()
-        _emit_node(emitter, source, body)
-        return
+    # 0.5.0 item 5 — when the source had the for-header
+    # spanning multiple rows, the developer chose to break
+    # init / cond / update onto separate lines (typically
+    # because the single-line form was too long). Earlier
+    # behavior emitted the source TEXT verbatim, which
+    # preserved the developer's source columns even when
+    # surrounding context had shifted the for-statement to
+    # a different block depth — producing the
+    # `for (int x = …;\n    x >= 0;\n    x = …)` staircase
+    # where the continuation cols don't match the
+    # `for (` open paren's `paren_col` for the new context.
+    #
+    # Fix: re-emit the header at the current `paren_col`,
+    # paren-aligning the semicolon-separated parts. The
+    # actual emission is identical to the single-line→too-
+    # wide fallback below (the paren-aligned cascade is the
+    # canonical multi-row for-header shape); just skip the
+    # single-line attempt and go straight to paren-aligned
+    # when the source was already multi-row.
+    source_was_multi_row = (
+        body.start_point[0] != node.start_point[0]
+    )
 
     # Single-row source: build the header inline. After
     # emission, check whether wrapping inside the
@@ -4416,50 +4423,14 @@ def _emit_for_statement(
 
     emitter.write("for (")
     paren_col = emitter.column
-    # Bump tail_reserve while emitting the for header parts so
-    # any binary-expression wrap inside accounts for the
-    # upcoming `) {`. Restored after the closing `)` is written.
-    prev_reserve = emitter.set_tail_reserve(
-        emitter.tail_reserve + 2
-    )
-    try:
-        emit_for_init_section()
-        if condition is not None:
-            emitter.write(" ")
-            _emit_node(emitter, source, condition)
-        emitter.write(";")
-        for index, update in enumerate(updates):
-            if index == 0:
-                emitter.write(" ")
-            else:
-                emitter.write(", ")
-            _emit_node(emitter, source, update)
-    finally:
-        emitter.set_tail_reserve(prev_reserve)
-    emitter.write(")")
 
-    # If the header ended up too wide on a single line — no
-    # inner wrap fired (e.g. no `&&`/`||` for the condition
-    # wrap to break at) but the rendered text still exceeds
-    # `_MAX_LINE` — backtrack and emit a paren-aligned wrap at
-    # the `for (` column. Init/cond/update each get their own
-    # line, separated by `;`-terminated sections. This mirrors
-    # the multi-resource try-with-resources shape.
-    effective_max = _MAX_LINE - emitter.tail_reserve
-    single_line_header = emitter.line_count == header_start[0]
-    header_too_wide = (
-        emitter.last_lines_max_width(header_start[0])
-        > effective_max
-    )
-    if single_line_header and header_too_wide:
-        # `paren_col` was captured during the first-pass write
-        # of `"for ("` above. After `restore(header_start)`,
-        # the indent level is back to what it was at the start
-        # of the for-header, so re-emitting `"for ("` lands the
-        # `(` at the same column — re-using `paren_col` for
-        # the continuation indent is safe.
-        emitter.restore(header_start)
-        emitter.write("for (")
+    def emit_header_paren_aligned() -> None:
+        """Emit init / cond / update with paren-aligned semicolon
+        separators — each clause on its own line, continuation
+        col = `paren_col`. Used both when the single-line
+        attempt overflows AND when the source had the for-
+        header multi-row to begin with (0.5.0 item 5).
+        """
         cont_indent = " " * paren_col
         prev_reserve = emitter.set_tail_reserve(
             emitter.tail_reserve + 2
@@ -4480,7 +4451,54 @@ def _emit_for_statement(
                     _emit_node(emitter, source, update)
         finally:
             emitter.set_tail_reserve(prev_reserve)
+
+    if source_was_multi_row:
+        # Skip the single-line attempt; the developer's
+        # multi-row source signals that the canonical layout
+        # is paren-aligned at the semicolons.
+        emit_header_paren_aligned()
         emitter.write(")")
+    else:
+        # Single-row source: try single-line first, fall to
+        # paren-aligned only if the rendered text overflows
+        # _MAX_LINE.
+        prev_reserve = emitter.set_tail_reserve(
+            emitter.tail_reserve + 2
+        )
+        try:
+            emit_for_init_section()
+            if condition is not None:
+                emitter.write(" ")
+                _emit_node(emitter, source, condition)
+            emitter.write(";")
+            for index, update in enumerate(updates):
+                if index == 0:
+                    emitter.write(" ")
+                else:
+                    emitter.write(", ")
+                _emit_node(emitter, source, update)
+        finally:
+            emitter.set_tail_reserve(prev_reserve)
+        emitter.write(")")
+
+        # If the header ended up too wide on a single line —
+        # no inner wrap fired (e.g. no `&&`/`||` for the
+        # condition wrap to break at) but the rendered text
+        # still exceeds `_MAX_LINE` — backtrack and emit a
+        # paren-aligned wrap at the `for (` column.
+        effective_max = _MAX_LINE - emitter.tail_reserve
+        single_line_header = (
+            emitter.line_count == header_start[0]
+        )
+        header_too_wide = (
+            emitter.last_lines_max_width(header_start[0])
+            > effective_max
+        )
+        if single_line_header and header_too_wide:
+            emitter.restore(header_start)
+            emitter.write("for (")
+            emit_header_paren_aligned()
+            emitter.write(")")
     # Three reasons to switch to Allman brace placement:
     #   (1) the header itself emitted newlines (multi-row
     #       source or wrap inside the header),
