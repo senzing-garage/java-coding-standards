@@ -3449,39 +3449,62 @@ def _emit_ternary_expression(
     #     when the value branches are too long to share a
     #     line.
     align_col = emitter.paren_align_col
-    if align_col is not None:
-        paren_indent = " " * align_col
+    paren_indent = " " * align_col if align_col is not None else ""
+
+    def emit_paren_t2() -> None:
         # Clear paren_align_col around the recursive emit
         # of value branches so a nested grouping paren inside
         # the consequence / alternative re-sets it
         # independently.
-        def emit_paren_t2() -> None:
-            prev_align = emitter.set_paren_align_col(None)
-            try:
-                emit_t2_at(paren_indent)
-            finally:
-                emitter.set_paren_align_col(prev_align)
+        prev_align = emitter.set_paren_align_col(None)
+        try:
+            emit_t2_at(paren_indent)
+        finally:
+            emitter.set_paren_align_col(prev_align)
 
-        def emit_paren_t3() -> None:
-            prev_align = emitter.set_paren_align_col(None)
-            try:
-                emit_t3_at(paren_indent)
-            finally:
-                emitter.set_paren_align_col(prev_align)
+    def emit_paren_t3() -> None:
+        prev_align = emitter.set_paren_align_col(None)
+        try:
+            emit_t3_at(paren_indent)
+        finally:
+            emitter.set_paren_align_col(prev_align)
 
+    # Item 8 invariant for ternary T1 — manually try T1 with
+    # newline-detection gate. If the condition / consequence /
+    # alternative emit produces ANY newlines internally, T1 is
+    # NOT a true single-line shape and we must fall through to
+    # T2 / T3 (which break before `?` or before both `?` and
+    # `:`, properly signaling the multi-line shape). Same
+    # anti-stranding principle as the binary P1 newline gate
+    # at the top of `_emit_binary_expression`: a width-only
+    # check accepts "looks single-line in total chars but
+    # actually wrapped internally," which produces ugly
+    # output where the inner construct's wrap point and the
+    # outer construct's continuation collide visually.
+    effective_max = _MAX_LINE - emitter.tail_reserve
+    t1_saved = emitter.snapshot()
+    emit_t1()
+    t1_fits = (
+        emitter.last_lines_max_width(t1_saved[0]) <= effective_max
+        and emitter.line_count == t1_saved[0]
+    )
+    if t1_fits:
+        return
+    emitter.restore(t1_saved)
+
+    # Fall-through cascade. When paren_align_col is set,
+    # prefer the paren-aligned T2 / T3 shapes over the
+    # +4-indent T2 / T3 (so a parenthesized ternary's
+    # `?` / `:` line up under the open paren, not at the
+    # cumulative `+4` column).
+    if align_col is not None:
         try_priorities(
             emitter,
-            [
-                emit_t1,
-                emit_paren_t2,
-                emit_paren_t3,
-                emit_t2,
-                emit_t3,
-            ],
+            [emit_paren_t2, emit_paren_t3, emit_t2, emit_t3],
         )
         return
 
-    try_priorities(emitter, [emit_t1, emit_t2, emit_t3])
+    try_priorities(emitter, [emit_t2, emit_t3])
 
 
 def _emit_object_creation_expression(
