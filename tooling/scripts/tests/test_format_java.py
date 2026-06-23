@@ -3819,6 +3819,33 @@ class TestFormatterWarnings:
             assert "source-preserved" in warning.message
             assert "overflows 80 chars" in warning.message
 
+    def test_warning_for_binary_wrap_overflow(self) -> None:
+        # Item 11: when the binary cascade commits its C1
+        # emit + warn fallback with a line wider than 80
+        # chars, a `FormatterWarning` advisory fires. Driven
+        # by a long string literal that doesn't fit at any
+        # break point the wrap engine can choose.
+        src = (
+            b"public class A {\n"
+            b"    void m() {\n"
+            b"        if (this.isClosed()) {\n"
+            b"            throw new IllegalStateException(\n"
+            b'                "This WorkerThreadPool has already been marked '
+            b'as closed and the "\n'
+            b'                    + "threads have been shutdown.");\n'
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        assert len(warnings) >= 1
+        sites = [w.message for w in warnings]
+        assert any(
+            "binary expression wrap could not fit" in m
+            for m in sites
+        )
+
     def test_warnings_unique_by_source_position(self) -> None:
         # Speculative wrap-engine emits can revisit the same
         # arg-list at different indent_level values; the

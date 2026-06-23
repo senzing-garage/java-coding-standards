@@ -640,7 +640,85 @@ def try_priorities(
         max_width = emitter.last_lines_max_width(speculative[0])
         if max_width <= effective_max:
             return index
+    # Spec C1 emit-and-warn: the last candidate is left
+    # committed even though its lines overflow. Callers that
+    # supply an `overflow_node` get a `FormatterWarning`
+    # appended pointing back at the source site so the
+    # developer can split a long literal / rename a long
+    # operand / restructure the expression to give the wrap
+    # engine a break point that fits.
     return last_index
+
+
+def _fire_wrap_overflow_advisory(
+    emitter: "Emitter",
+    node: "Node",
+    since_line_count: int,
+    site_label: str,
+) -> None:
+    """Fire a `FormatterWarning` when this wrap site's
+    committed emit produced any line wider than
+    `_MAX_LINE - emitter.tail_reserve`.
+
+    Called at the terminal commit point of every wrap-engine
+    cascade (binary / ternary / method-chain / arg-list) — the
+    "spec C1 emit + warn" exit. Speculative emits earlier in
+    the cascade that overflowed but rolled back via
+    `snapshot()` / `restore()` don't fire this — their
+    `warnings` appended would be truncated by `restore()`. The
+    advisory therefore describes only the line(s) the
+    formatter actually committed and could not shrink further.
+
+    `site_label` names the wrap engine for the message (e.g.
+    `"binary expression"`, `"ternary expression"`,
+    `"method chain"`, `"argument list"`); the message tells
+    the developer that no break-point in the cascade fit and
+    that the only resolution is a source-code change (split a
+    literal, rename a long operand, restructure the
+    expression).
+    """
+    # The wrap engine uses `_MAX_LINE - tail_reserve` as its
+    # commit gate (be conservative because the parent may
+    # append tail chars to the in-progress line). The on-disk
+    # width is different: every line is rendered verbatim, and
+    # ONLY the in-progress `_current` line will receive
+    # `tail_reserve` chars from the parent. The advisory must
+    # match what checkstyle's LineLength check will actually
+    # see, so compute per-line on-disk widths instead of
+    # uniformly applying `tail_reserve` to every line.
+    max_finalized_width = 0
+    for line in emitter._lines[since_line_count:]:
+        if len(line) > max_finalized_width:
+            max_finalized_width = len(line)
+    current_on_disk = len(emitter._current) + emitter.tail_reserve
+    max_on_disk = max(max_finalized_width, current_on_disk)
+    if max_on_disk <= _MAX_LINE:
+        return
+    # Dedupe: a wrap engine that contains another wrap engine
+    # which already fired (e.g. an argument list containing a
+    # binary expression that exhausted its own cascade) inherits
+    # the inner advisory and shouldn't double-fire. Suppress when
+    # any existing advisory's source line falls inside this
+    # node's line range — the inner advisory is more specific
+    # (a smaller source span) so it's the more actionable
+    # pointer for the developer.
+    my_start_line = node.start_point[0] + 1
+    my_end_line = node.end_point[0] + 1
+    for existing in emitter.warnings:
+        if my_start_line <= existing.line <= my_end_line:
+            return
+    on_disk_width = max_on_disk
+    emitter.warnings.append(FormatterWarning(
+        line=node.start_point[0] + 1,
+        column=node.start_point[1] + 1,
+        message=(
+            f"{site_label} wrap could not fit within "
+            f"{_MAX_LINE} chars (max line width "
+            f"{on_disk_width}). Split a long operand or "
+            f"literal so the wrap engine has a break point "
+            f"that fits the line limit."
+        ),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -1891,6 +1969,9 @@ def _emit_binary_expression(
         return
     emitter.restore(fallback_saved)
     emit_p3()
+    _fire_wrap_overflow_advisory(
+        emitter, node, fallback_saved[0], "binary expression"
+    )
 
 
 def _emit_unary_expression(
@@ -3578,14 +3659,17 @@ def _emit_ternary_expression(
     # +4-indent T2 / T3 (so a parenthesized ternary's
     # `?` / `:` line up under the open paren, not at the
     # cumulative `+4` column).
+    cascade_start = t1_saved[0]
     if align_col is not None:
         try_priorities(
             emitter,
             [emit_paren_t2, emit_paren_t3, emit_t2, emit_t3],
         )
-        return
-
-    try_priorities(emitter, [emit_t2, emit_t3])
+    else:
+        try_priorities(emitter, [emit_t2, emit_t3])
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "ternary expression"
+    )
 
 
 def _emit_object_creation_expression(
@@ -6812,7 +6896,11 @@ def _emit_argument_list(
     else:
         candidates.append(emit_p2_greedy)
         candidates.append(emit_p4_multi_arg)
+    cascade_start = emitter.line_count
     try_priorities(emitter, candidates)
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "argument list"
+    )
 
 
 def _collect_method_chain(
@@ -7251,6 +7339,14 @@ def _emit_method_chain_wrapped(
         return
     emitter.restore(p2_saved)
     emit_p3()
+    # Method-chain wrap site advisory uses the first segment
+    # (or head, if present) as the source position — the
+    # earliest token of the chain is the most useful jump
+    # target for the developer fixing an overflow.
+    advisory_anchor = head if head is not None else segments[0]
+    _fire_wrap_overflow_advisory(
+        emitter, advisory_anchor, p2_saved[0], "method chain"
+    )
 
 
 def _emit_method_invocation(
