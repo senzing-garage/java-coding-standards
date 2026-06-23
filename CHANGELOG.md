@@ -11,7 +11,23 @@ and this project adheres to
 ## [Unreleased]
 
 Toward 0.5.0 — see [ROADMAP.md](ROADMAP.md) for the full
-phased plan.
+phased plan. This release expands the formatter from the
+"control-flow + grouping paren" wrap surface introduced in
+0.4.3 to cover **every place a governing `(` exists**:
+control-flow constructs (item 1), for-statement clause
+parens (item 5), and single-arg call/constructor parens
+whose argument is a binary expression (item 10). It also
+adds the **greedy** wrap shape for non-boolean binary
+chains (item 3), label/value pair-aligned wrap for the
+canonical `toString()` pattern (item 2a), same-method
+greedy chain wrap (item 2b), the **ternary paren-aligned
+T1/T2/T3 cascade** (items 7 + 9), the
+**multi-row-inner-forces-outer-break** invariant (item 8),
+**context-aware source-preservation with no-fallback policy**
+(item 4), and **comprehensive wrap-engine overflow
+advisories** (item 11) so every site the formatter cannot
+fit produces a `FormatterWarning` pointing the developer at
+the source location to split.
 
 ### Changed
 
@@ -39,6 +55,178 @@ phased plan.
   one new fixture
   (`condition_wrap/10_if_condition_paren_aligned`) locks the
   4-operand `if (a && b && c && d)` paren-align case.
+
+- **Label/value-aware pair-aligned binary `+` wrap** (item 2a).
+  When a `+` chain alternates string ↔ non-string with each
+  subsequent string literal carrying a delimiter prefix from
+  `{" ", ",", ";", "]", ")", "}", "|", ":"}` (the canonical
+  Senzing `toString()` "label=[ " + value + " ], " pattern),
+  the wrap engine breaks before each subsequent label so every
+  continuation line carries one `label + value` pair.
+  Continuation column is `paren_align_col` when set, else the
+  +4 indent. The first label literal is the line anchor and
+  doesn't need a delim prefix — that's the "lenient gate" the
+  pattern uses to match the canonical Senzing diagnostic
+  string. Tried BEFORE the paren-aligned / greedy candidates
+  when the alternation matches. New fixture:
+  `binary_wrap/02_pair_aligned_label_value`. The gate's no-
+  match path falls through to greedy as before; new fixture
+  `binary_wrap/03_pair_aligned_no_match_falls_to_greedy`
+  locks the negative case.
+
+- **Same-method method-chain greedy wrap** (item 2b). When
+  every segment in a chain shares the same method name (the
+  classic `.append(...).append(...).append(...)` pattern),
+  the chain wraps with greedy packing instead of P2's strict
+  dot-alignment one-per-segment. Each segment packs onto the
+  current line until adding the next would overflow, then
+  breaks at the dot-aligned column. Keeps multi-`.append(...)`
+  builder calls horizontally dense while preserving the chain
+  invariant that breaks at segment boundaries (not mid-segment).
+  Gated on `_chain_segments_share_method_name` so mixed-method
+  chains keep the existing one-per-line wrap. New fixtures:
+  `method_chain_wrap/15_same_method_greedy_packs` and
+  `method_chain_wrap/16_mixed_methods_keep_one_per_line`.
+
+- **Greedy binary expression wrap for non-boolean operators**
+  (item 3). Replaces the prior P2 (break-before-leftmost-only)
+  + paren-aligned one-per-line for `+`, `-`, `*`, `/`, `==`,
+  `!=`, etc. The greedy candidate packs as many `OP operand`
+  pairs per continuation line as fit within
+  `_MAX_LINE - tail_reserve`; breaks at the operator boundary
+  when adding the next pair would overflow. Boolean chains
+  (`&&` / `||`) keep `emit_paren_aligned` (one-per-line) for
+  vertical scannability — the spec preference for boolean
+  conjunction. Greedy naturally degenerates to one-per-line
+  for long operands, so it's a strict improvement over the
+  earlier paren-aligned candidate for the non-boolean case.
+  New fixture: `binary_wrap/01_greedy_paren_aligned`. Existing
+  `condition_wrap/04_expression_statement_tail_semicolon`
+  regenerated to reflect the new greedy shape.
+
+- **Context-aware source-preservation with no-fallback
+  policy** (item 4). The source-preserve path
+  (`_emit_argument_list`) no longer falls back to verbatim
+  preservation when its remapped column would overflow.
+  Instead it commits at the canonical column rule (governing
+  paren → `paren_align_col + 4`; else `block + 4`), fires a
+  `FormatterWarning` advisory, and lets checkstyle's
+  LineLength surface the overflow — breaking the propagation
+  cycle where source-preserved verbatim layouts silently
+  re-appeared each format pass. The arg-list semantic opt-out
+  expands to `{lambda_expression, binary_expression,
+  method_invocation}`: when any arg is a multi-row construct
+  of these types, source-preserve declines and the wrap
+  engine re-emits the arg via its own cascade. The "only shift
+  up, never down" idempotency rule preserves developer-chosen
+  deeper continuation columns. New advisory message points
+  the developer at the literal/expression to split.
+
+- **For-statement clause paren-alignment** (item 5).
+  `_emit_for_statement` now re-anchors each clause
+  (initializer, condition, update) to `paren_align_col` when
+  the header wraps multi-line, instead of source-preserving
+  the clauses at their original (possibly stale, possibly
+  hand-tuned) columns. Fixes a pre-existing bug where a
+  for-loop at deep block indent kept its clauses at the
+  source columns even after the surrounding context shifted.
+  New helper `emit_header_paren_aligned()` unifies the
+  single-row-overflow-fallback and multi-row-source-input
+  paths. New fixture:
+  `condition_wrap/11_for_loop_clauses_paren_aligned_at_deep_block`.
+
+- **Ternary T1 newline-detection gate** (item 7). The
+  `_emit_ternary_expression` T1 candidate (single-line
+  ternary) now rejects when ANY nested emit introduced
+  newlines — even if the resulting line widths all fit.
+  Prevents the "looks single-line in total chars but
+  actually wrapped internally" foot-gun where a ternary's
+  consequence or alternative contains a multi-line construct
+  that satisfies the width check but breaks the "single line"
+  semantic the T1 shape promises.
+
+- **Multi-row-inner-forces-outer-break invariant** (item 8).
+  After each operand / clause emit in a wrap cascade, if the
+  operand's OWN render introduced newlines (a nested
+  construct that wrapped multi-line), the next OP/separator
+  MUST break to a new line. Same anti-stranding principle as
+  0.4.3's Bug 1 fix for method chains, applied generally to
+  binary expressions (greedy + pair-aligned + paren-aligned),
+  ternary expressions (condition → `?`, `?` → `:`), and
+  argument lists (between adjacent args). Prevents the
+  operator from visually merging with the wrapped operand's
+  tail at the same column.
+
+- **Ternary `paren_align_col` inheritance** (item 9). The
+  `emit_paren_t2` / `emit_paren_t3` ternary candidates no
+  longer clear `paren_align_col` while emitting the
+  consequence / alternative branches. Inner binary chains
+  inside ternary branches see the outer ternary's
+  paren-aligned context and align their operator
+  continuations under the same column the ternary's `?` / `:`
+  use. New fixture:
+  `ternary_wrap/07_paren_aligned_inherits_to_inner_binary`.
+
+- **Spec C6 paren-align extended to single-arg binary call
+  parens** (item 10). `_emit_argument_list` sets
+  `paren_align_col` to the column immediately after a
+  call/constructor `(` when the single arg is itself a
+  `binary_expression`. The inner binary's cascade then sees
+  the call's `(` as a governing paren and emits operator
+  continuations paren-aligned under that column — covering
+  the canonical `super("..." + foo() + "...")` /
+  `throw new Exception("..." + arg)` patterns. Scope is
+  deliberately narrow (binary args only): lambda, method-
+  chain, and object-creation single args don't fire item 10
+  because their interaction with `try_priorities` speculative
+  emits breaks idempotency. A complementary universal rule
+  rejects the binary paren-aligned candidate when any operand
+  emits a continuation line shallower than the chain's
+  `align_col` — prevents the visual-escape where an inner
+  arg-list wrap pulls left past the chain's anchor. New
+  fixtures: `arg_list_wrap/02_single_arg_binary_paren_aligned`
+  (positive) and
+  `arg_list_wrap/03_single_arg_binary_inner_wrap_falls_to_indent`
+  (rejection).
+
+### Added
+
+- **Comprehensive wrap-engine overflow advisories** (item 11).
+  The `FormatterWarning` advisory channel — previously fired
+  only for source-preserve overflows — now also fires when
+  the binary, ternary, method-chain, or argument-list wrap
+  cascade commits a layout (spec C1 emit + warn) whose
+  on-disk widths exceed `_MAX_LINE`. New shared helper
+  `_fire_wrap_overflow_advisory` called at each cascade's
+  terminal commit point. Per-line on-disk width is computed
+  (not the uniform `max_width + tail_reserve`) so the
+  advisory matches what checkstyle's LineLength actually
+  sees. Speculative emits that rolled back via
+  `snapshot()` / `restore()` don't fire — their warnings
+  appended would be truncated. Dedupe by source range: when
+  a wrap engine that contains another wrap engine which
+  already fired (e.g. argument list containing a binary that
+  exhausted its own cascade), the outer engine suppresses
+  its own advisory — the inner one is more specific
+  (smaller source span) and more actionable.
+
+### Verification
+
+- 644 formatter tests pass (was 626 at 0.4.3); +18 fixtures
+  and unit tests across `binary_wrap`, `arg_list_wrap`,
+  `ternary_wrap`, `method_chain_wrap`, and `condition_wrap`.
+- `senzing-commons-java/src/main/java/` consumer trial:
+  34 files reformat, `mvn -Pcheckstyle validate` BUILD
+  SUCCESS, idempotent on 2nd pass, 0 LineLength violations
+  after 18 manual literal splits (the no-fallback policy's
+  expected adoption burden — each long literal in the
+  reformatted output that couldn't fit was split at a
+  word-boundary midpoint, with a couple of cases benefitting
+  from extracting a long expression into a local variable so
+  the label/value pair could fit on one line).
+- Formatter test suite: 2151 consumer JUnit tests pass after
+  reformat — no semantic regressions from the layout
+  changes.
 
 ## [0.4.3] - 2026-06-18
 
