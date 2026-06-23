@@ -12,8 +12,7 @@ and this project adheres to
 
 ## [0.5.0] - 2026-06-23
 
-See [ROADMAP.md](ROADMAP.md) for the full phased plan. This
-release expands the formatter from the
+Expands the formatter from the
 "control-flow + grouping paren" wrap surface introduced in
 0.4.3 to cover **every place a governing `(` exists**:
 control-flow constructs (item 1), for-statement clause
