@@ -708,14 +708,13 @@ def _fire_wrap_overflow_advisory(
     for existing in emitter.warnings:
         if my_start_line <= existing.line <= my_end_line:
             return
-    on_disk_width = max_on_disk
     emitter.warnings.append(FormatterWarning(
         line=node.start_point[0] + 1,
         column=node.start_point[1] + 1,
         message=(
             f"{site_label} wrap could not fit within "
             f"{_MAX_LINE} chars (max line width "
-            f"{on_disk_width}). Split a long operand or "
+            f"{max_on_disk}). Split a long operand or "
             f"literal so the wrap engine has a break point "
             f"that fits the line limit."
         ),
@@ -1671,7 +1670,7 @@ def _emit_binary_expression(
     # operator column; fall back to the +4 cascade where the
     # operand typically fits single-line because the operand
     # has more horizontal room.
-    paren_inner_wrap = [False]
+    paren_inner_wrap = False
 
     def _operand_emitted_shallow_line(
         start_line_count: int, threshold: int
@@ -1708,10 +1707,11 @@ def _emit_binary_expression(
         # Caller passes `align_col` directly (captured before
         # clearing the emitter state so a nested grouping paren
         # inside an operand resets cleanly).
+        nonlocal paren_inner_wrap
         operand_start = emitter.line_count
         _emit_node(emitter, source, leftmost_operand)
         if _operand_emitted_shallow_line(operand_start, align_col):
-            paren_inner_wrap[0] = True
+            paren_inner_wrap = True
         for op, operand in chain:
             emitter.newline()
             emitter.write(" " * align_col)
@@ -1720,7 +1720,7 @@ def _emit_binary_expression(
             operand_start = emitter.line_count
             _emit_node(emitter, source, operand)
             if _operand_emitted_shallow_line(operand_start, align_col):
-                paren_inner_wrap[0] = True
+                paren_inner_wrap = True
 
     def emit_p3() -> None:
         # Each operand on its own continuation line at +4
@@ -1790,6 +1790,7 @@ def _emit_binary_expression(
             )
 
     def emit_greedy(cont_col: int) -> None:
+        nonlocal paren_inner_wrap
         # Greedy packing (0.5.0 item 3): pack as many
         # `OP operand` pairs per continuation line as fit
         # within `effective_max`; break at operator boundary;
@@ -1823,7 +1824,7 @@ def _emit_binary_expression(
         if _operand_emitted_shallow_line(
             start_line_count, cont_col
         ):
-            paren_inner_wrap[0] = True
+            paren_inner_wrap = True
         for op, operand in chain:
             if prev_operand_multi_row:
                 # Item 8: force break before this operator.
@@ -1864,7 +1865,7 @@ def _emit_binary_expression(
             if _operand_emitted_shallow_line(
                 operand_start_line, cont_col
             ):
-                paren_inner_wrap[0] = True
+                paren_inner_wrap = True
 
     # Manual P1 speculation with newline-detection (replaces
     # try_priorities for this site because try_priorities
@@ -1958,7 +1959,7 @@ def _emit_binary_expression(
         # `paren_align_col` if they themselves sit inside
         # grouping parens.
         prev_align = emitter.set_paren_align_col(None)
-        paren_inner_wrap[0] = False
+        paren_inner_wrap = False
         try:
             if is_boolean:
                 emit_paren_aligned(align_col)
@@ -1981,7 +1982,7 @@ def _emit_binary_expression(
         if (
             emitter.last_lines_max_width(paren_saved[0])
             <= effective_max
-            and not paren_inner_wrap[0]
+            and not paren_inner_wrap
         ):
             return
         emitter.restore(paren_saved)
@@ -6804,13 +6805,12 @@ def _emit_argument_list(
                 + intermediate_widths
             )
         if max_line_width > _MAX_LINE:
-            on_disk_width = max_line_width
             emitter.warnings.append(FormatterWarning(
                 line=node.start_point[0] + 1,
                 column=node.start_point[1] + 1,
                 message=(
                     "source-preserved arg list overflows 80 chars "
-                    f"(max line width {on_disk_width}). Split "
+                    f"(max line width {max_line_width}). Split "
                     "the contained literal or expression into "
                     "smaller chunks so the formatter can re-"
                     "indent within the line limit."
@@ -7348,19 +7348,23 @@ def _emit_method_chain_wrapped(
         # ThatWraps).append(b)`) also forces the SECOND
         # segment to break — same anti-stranding behavior as
         # the per-segment check inside the loop below.
+        # Call site at line ~7430 gates on `head is not None`, so
+        # the headless branch is unreachable here. Asserting
+        # rather than handling keeps the contract explicit: if
+        # the gate is ever relaxed, this assert surfaces the
+        # need to revisit `first_dot_col`'s capture point (it
+        # must be the column of the FIRST `.` in the chain, not
+        # the column after the second segment's args).
+        assert head is not None, (
+            "emit_p2_greedy_dot_aligned requires a non-None "
+            "head; call site gates on this."
+        )
         start_line_count = emitter.line_count
-        if head is not None:
-            _emit_node(emitter, source, head)
-            first_dot_col = emitter.column
-            emitter.write(".")
-            emit_segment(segments[0])
-            wrap_from = 1
-        else:
-            emit_segment(segments[0])
-            first_dot_col = emitter.column
-            emitter.write(".")
-            emit_segment(segments[1])
-            wrap_from = 2
+        _emit_node(emitter, source, head)
+        first_dot_col = emitter.column
+        emitter.write(".")
+        emit_segment(segments[0])
+        wrap_from = 1
         prev_segment_multi_row = (
             emitter.line_count > start_line_count
         )
