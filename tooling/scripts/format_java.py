@@ -1566,6 +1566,54 @@ def _emit_binary_expression(
             _emit_node(emitter, source, operand)
         emitter.pop_indent()
 
+    # Shared with `emit_greedy` — set when an operand of the
+    # paren-aligned candidate (this function or `emit_greedy`
+    # called at `align_col`) introduces a continuation line
+    # whose leading-whitespace column is SHALLOWER than the
+    # chain's `align_col`. The paren-aligned site reads this
+    # after the candidate's emit to decide whether to commit
+    # or fall back to the +4 cascade.
+    #
+    # Multi-row operands at or deeper than `align_col` are
+    # fine (e.g. a nested parenthesized binary that
+    # paren-aligns to its own inner `(` at a deeper column).
+    # Operands that "escape" left past `align_col` (e.g. a
+    # nested call whose arg-list wrap-engine emit_p4 indents
+    # to `block + 4` while the chain is paren-aligned at a
+    # much deeper column) break visual alignment with the
+    # operator column; fall back to the +4 cascade where the
+    # operand typically fits single-line because the operand
+    # has more horizontal room.
+    paren_inner_wrap = [False]
+
+    def _operand_emitted_shallow_line(
+        start_line_count: int, threshold: int
+    ) -> bool:
+        # Skip the first newly-finalized line — it's the line
+        # the operand started on (containing the chain prefix +
+        # whatever the operand wrote before its first newline);
+        # its leading-whitespace reflects the chain's container
+        # statement, not the operand's continuations. Any
+        # subsequent finalized lines, plus the in-progress
+        # `_current` (when the operand advanced past at least
+        # one newline) are continuation lines the operand chose
+        # itself.
+        for line in emitter._lines[start_line_count + 1:]:
+            stripped = line.lstrip()
+            if not stripped:
+                continue
+            leading = len(line) - len(stripped)
+            if leading < threshold:
+                return True
+        if emitter.line_count > start_line_count:
+            current = emitter._current
+            stripped = current.lstrip()
+            if stripped:
+                leading = len(current) - len(stripped)
+                if leading < threshold:
+                    return True
+        return False
+
     def emit_paren_aligned(align_col: int) -> None:
         # Spec C6: when an enclosing grouping `(` is in scope,
         # paren-align each operator under the column immediately
@@ -1573,13 +1621,19 @@ def _emit_binary_expression(
         # Caller passes `align_col` directly (captured before
         # clearing the emitter state so a nested grouping paren
         # inside an operand resets cleanly).
+        operand_start = emitter.line_count
         _emit_node(emitter, source, leftmost_operand)
+        if _operand_emitted_shallow_line(operand_start, align_col):
+            paren_inner_wrap[0] = True
         for op, operand in chain:
             emitter.newline()
             emitter.write(" " * align_col)
             emitter.write(op.type)
             emitter.write(" ")
+            operand_start = emitter.line_count
             _emit_node(emitter, source, operand)
+            if _operand_emitted_shallow_line(operand_start, align_col):
+                paren_inner_wrap[0] = True
 
     def emit_p3() -> None:
         # Each operand on its own continuation line at +4
@@ -1656,6 +1710,10 @@ def _emit_binary_expression(
         prev_operand_multi_row = (
             emitter.line_count > start_line_count
         )
+        if _operand_emitted_shallow_line(
+            start_line_count, cont_col
+        ):
+            paren_inner_wrap[0] = True
         for op, operand in chain:
             if prev_operand_multi_row:
                 # Item 8: force break before this operator.
@@ -1693,6 +1751,10 @@ def _emit_binary_expression(
             prev_operand_multi_row = (
                 emitter.line_count > operand_start_line
             )
+            if _operand_emitted_shallow_line(
+                operand_start_line, cont_col
+            ):
+                paren_inner_wrap[0] = True
 
     # Manual P1 speculation with newline-detection (replaces
     # try_priorities for this site because try_priorities
@@ -1786,6 +1848,7 @@ def _emit_binary_expression(
         # `paren_align_col` if they themselves sit inside
         # grouping parens.
         prev_align = emitter.set_paren_align_col(None)
+        paren_inner_wrap[0] = False
         try:
             if is_boolean:
                 emit_paren_aligned(align_col)
@@ -1793,7 +1856,23 @@ def _emit_binary_expression(
                 emit_greedy(align_col)
         finally:
             emitter.set_paren_align_col(prev_align)
-        if emitter.last_lines_max_width(paren_saved[0]) <= effective_max:
+        # Commit the paren-aligned candidate ONLY when (a) all
+        # lines fit within `effective_max` AND (b) no operand
+        # wrapped multi-row internally. (b) is what keeps the
+        # +4-fallback as the preferred shape for cases like
+        # `super("..." + foo() + (longInner.that.wraps))` — the
+        # paren-aligned column gives each operand less
+        # horizontal room than the +4 column does, so an
+        # operand that wraps at align_col will typically fit
+        # single-line at the +4 column. Rejecting here keeps
+        # the chain visually coherent (operator column aligned
+        # with operand body) rather than committing to a
+        # misaligned shape.
+        if (
+            emitter.last_lines_max_width(paren_saved[0])
+            <= effective_max
+            and not paren_inner_wrap[0]
+        ):
             return
         emitter.restore(paren_saved)
 
@@ -6597,12 +6676,42 @@ def _emit_argument_list(
         _node_spans_multiple_rows(a) for a in args
     )
 
+    # 0.5.0 item 10 — spec C6 extension to method/constructor
+    # call parens, restricted to single-arg calls whose only
+    # argument is itself a `binary_expression`. The call's `(`
+    # becomes a governing paren for the inner binary so its
+    # operator continuations paren-align under the column after
+    # `(`, matching the spec C6 grouping-paren behavior.
+    #
+    # Scope is deliberately narrow: applying this to lambdas,
+    # method chains, or object creations as single args
+    # interacts with `try_priorities`' speculative emits in
+    # ways that break idempotency (a single-arg `.execute(
+    # lambda)` chain whose paren-aligned candidate fires on
+    # the first pass but not the second can re-emit at a
+    # different column). Multi-arg calls keep the existing
+    # P2-greedy / P4 cascade unchanged — spec C6's extension
+    # to call parens applies only when there is a single arg
+    # to anchor.
+    single_arg_binary = (
+        len(args) == 1
+        and args[0].type == "binary_expression"
+    )
+
     def emit_p1() -> None:
         emitter.write("(")
-        for index, arg in enumerate(args):
-            if index > 0:
-                emitter.write(", ")
-            _emit_node(emitter, source, arg)
+        if single_arg_binary:
+            arg_col = emitter.column
+            prev_align = emitter.set_paren_align_col(arg_col)
+            try:
+                _emit_node(emitter, source, args[0])
+            finally:
+                emitter.set_paren_align_col(prev_align)
+        else:
+            for index, arg in enumerate(args):
+                if index > 0:
+                    emitter.write(", ")
+                _emit_node(emitter, source, arg)
         emitter.write(")")
 
     def emit_p4_single_arg() -> None:
