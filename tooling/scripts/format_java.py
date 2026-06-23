@@ -3452,22 +3452,24 @@ def _emit_ternary_expression(
     paren_indent = " " * align_col if align_col is not None else ""
 
     def emit_paren_t2() -> None:
-        # Clear paren_align_col around the recursive emit
-        # of value branches so a nested grouping paren inside
-        # the consequence / alternative re-sets it
-        # independently.
-        prev_align = emitter.set_paren_align_col(None)
-        try:
-            emit_t2_at(paren_indent)
-        finally:
-            emitter.set_paren_align_col(prev_align)
+        # Item 9 (0.5.0): PRESERVE paren_align_col across the
+        # recursive emit of consequence / alternative so an
+        # inner binary chain that wraps multi-line aligns its
+        # continuation operators under the same column as the
+        # ternary's `?` / `:` (rather than landing at the
+        # cumulative `+4` indent and producing a "staircase").
+        # Nested grouping parens inside the consequence /
+        # alternative still re-set paren_align_col
+        # independently via `_emit_parenthesized_expression`,
+        # and the binary wrap engine itself clears
+        # paren_align_col before emitting individual operands
+        # — so this doesn't leak the ternary's paren context
+        # into operand-internal expressions.
+        emit_t2_at(paren_indent)
 
     def emit_paren_t3() -> None:
-        prev_align = emitter.set_paren_align_col(None)
-        try:
-            emit_t3_at(paren_indent)
-        finally:
-            emitter.set_paren_align_col(prev_align)
+        # Same paren_align_col inheritance as emit_paren_t2.
+        emit_t3_at(paren_indent)
 
     # Item 8 invariant for ternary T1 — manually try T1 with
     # newline-detection gate. If the condition / consequence /
