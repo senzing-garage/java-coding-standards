@@ -15,13 +15,14 @@ candidate set, spec C6 scope, source-preserve column policy).
 
 ### Items in 0.5.0
 
+<!-- prettier-ignore -->
 | # | Item | Risk | Spec change? |
 |---|---|---|---|
 | 1 | Control-flow paren-alignment (extend spec C6) | Low | Yes |
 | 2a | Label/value-aware binary `+` chain wrap | Low | Yes |
 | 2b | Same-method greedy method-chain wrap | Medium | Yes |
-| 3 | Greedy-P2 binary expression wrap | Low | Minor (new candidate, no rule change) |
-| 4 | Context-aware source-preservation for multi-row arg bodies | High | Yes |
+| 3 | Greedy-P2 binary expression wrap | Low | Minor (new candidate) |
+| 4 | Context-aware source-preservation | High | Yes |
 
 ### Phasing
 

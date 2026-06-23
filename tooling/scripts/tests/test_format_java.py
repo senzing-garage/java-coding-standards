@@ -3783,7 +3783,7 @@ class TestFormatterWarnings:
         format_java.format_source(src, warnings_out=warnings)
         assert warnings == []
 
-    def test_warning_for_low_indented_continuation(self) -> None:
+    def test_warning_for_source_preserve_overflow(self) -> None:
         # Under 0.5.0 item 4: source-preserve column-remaps the
         # arg list to `block + 4`. When the contained string
         # literal is long enough that the remapped line still

@@ -90,13 +90,13 @@ the source location to split.
 
 - **Greedy binary expression wrap for non-boolean operators**
   (item 3). Replaces the prior P2 (break-before-leftmost-only)
-  + paren-aligned one-per-line for `+`, `-`, `*`, `/`, `==`,
+  plus paren-aligned one-per-line for `+`, `-`, `*`, `/`, `==`,
   `!=`, etc. The greedy candidate packs as many `OP operand`
   pairs per continuation line as fit within
   `_MAX_LINE - tail_reserve`; breaks at the operator boundary
   when adding the next pair would overflow. Boolean chains
   (`&&` / `||`) keep `emit_paren_aligned` (one-per-line) for
-  vertical scannability — the spec preference for boolean
+  vertical readability — the spec preference for boolean
   conjunction. Greedy naturally degenerates to one-per-line
   for long operands, so it's a strict improvement over the
   earlier paren-aligned candidate for the non-boolean case.
@@ -114,10 +114,10 @@ the source location to split.
   LineLength surface the overflow — breaking the propagation
   cycle where source-preserved verbatim layouts silently
   re-appeared each format pass. The arg-list semantic opt-out
-  expands to `{lambda_expression, binary_expression,
-  method_invocation}`: when any arg is a multi-row construct
-  of these types, source-preserve declines and the wrap
-  engine re-emits the arg via its own cascade. The "only shift
+  expands to lambda / binary / method-invocation: when any arg
+  is a multi-row construct of these types, source-preserve
+  declines and the wrap engine re-emits the arg via its own
+  cascade. The "only shift
   up, never down" idempotency rule preserves developer-chosen
   deeper continuation columns. New advisory message points
   the developer at the literal/expression to split.
@@ -324,9 +324,10 @@ fixture set continues to pass.
   source-preserve path (`write_raw_lines`) and echoed the
   multi-row layout back verbatim. That logic is right when
   the author's break-points carry meaning (long log messages,
-  semantically-grouped args), but produced `Modifier.isStatic(
-      modifiers)`-style gratuitous wraps when a prior format
-  pass had split a single-arg call across two lines: the
+  semantically-grouped args), but produced gratuitous
+  `Modifier.isStatic(modifiers)`-style wraps when a prior
+  format pass had split a single-arg call across two lines:
+  the
   source's first line is just `(`, trivially fits any
   column, so source-preserve fires even though
   `Modifier.isStatic(modifiers)` (27 chars) would
@@ -506,13 +507,13 @@ pure helpers `_estimate_normalize` and
   (`(a || (b && (!c)))`). Both `||` and `&&` continuations
   paren-align under their respective `(`.
 - `condition_wrap/09_paren_align_yields_to_source_preserve_inversion`
-  — locks the paren-align-yields-to-source-preserve
-  behavior: a `flag = (flag || (... && (!Boolean.FALSE.equals(
-  result.get(K).toString()))))` assignment whose outer `(`
-  lands at column 32 has a deeply-nested arg list whose
-  source-preserved continuation lines sit at columns 28 and
-  34. The AST-walk inversion check detects the col-28
-  continuation < proposed 32 and declines paren-alignment
+  — locks the paren-align-yields-to-source-preserve behavior:
+  a deeply-nested boolean assignment containing a chained
+  `Boolean.FALSE.equals(...)` call whose outer `(` lands at
+  column 32 has a source-preserved arg list whose continuation
+  lines sit at columns 28 and 34. The AST-walk inversion
+  check detects the col-28 continuation < proposed 32 and
+  declines paren-alignment
   for the outer grouping; `||` and `&&` fall back to the
   standard `+4` cumulative continuation so the inner
   source-preserved bytes nest correctly inside the outer

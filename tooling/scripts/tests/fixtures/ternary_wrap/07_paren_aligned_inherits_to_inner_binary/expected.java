@@ -6,6 +6,7 @@ public class Demo
                 ? "name=[ " + name
                 + " ], count=[ " + count
                 + " ], status=[ " + status
-                + " ]" : "no data");
+                + " ]"
+                : "no data");
     }
 }
