@@ -1412,15 +1412,47 @@ connects it to the previous line.
 
 ### String Concatenation
 
-Break at `+` operators, with the `+` starting the continuation line:
+Break at `+` operators, with the `+` starting the continuation
+line. Two shapes apply depending on the chain's pattern.
+
+**Greedy packing (default).** Pack as many `+ operand` pairs per
+continuation line as fit within 80 chars; break at the operator
+boundary when adding the next pair would overflow:
 
 ```java
     throw new IllegalArgumentException(
         "Cannot specify a secondary value when "
             + "the primary value is null.  primary=[ "
-            + primary + " ], secondary=[ "
-            + secondary + " ]");
+            + primary + " ], secondary=[ " + secondary + " ]");
 ```
+
+**Label/value pair-aligned (canonical `toString()` pattern).**
+When a `+` chain alternates string ↔ non-string and each
+subsequent string literal carries a delimiter-prefix character
+from `{" ", ",", ";", "]", ")", "}", "|", ":"}` — the canonical
+Senzing diagnostic message "label=[ value ]" pattern — the
+formatter breaks before each subsequent label so every
+continuation line carries one `label + value` pair:
+
+```java
+    return "name=[ " + name
+        + " ], age=[ " + age
+        + " ], status=[ " + status
+        + " ]";
+```
+
+The first label literal is the line anchor and doesn't need a
+delim prefix — the gate is "lenient" in that regard. The shape
+applies in both grouping-paren context (where labels paren-align
+under the `(`) and at the +4 indent (no governing paren).
+
+**Multi-row-inner-forces-outer-break invariant.** If an operand's
+own emit introduced newlines (a nested call's arg list wrapped,
+a parenthesized binary wrapped, etc.), the subsequent `+`
+operator MUST break to a new line. Without this, the operator
+would visually merge with the wrapped operand's tail at the same
+column, stranding the chain. This applies to greedy, pair-
+aligned, and paren-aligned shapes uniformly.
 
 ### Ternary Operator
 
@@ -1430,6 +1462,15 @@ Break at `+` operators, with the `+` starting the continuation line:
     int x = (num == null) ? 0 : num.intValue();
 ```
 
+Tier 1 also requires that no nested emit introduced newlines —
+a ternary whose consequence or alternative contains a multi-row
+construct (long binary that wrapped, nested call that wrapped)
+is NOT eligible for Tier 1 even if the total width happens to
+fit, because the resulting layout is not really "single-line."
+When the newline-detection gate rejects Tier 1, the cascade
+falls to Tier 2 (and onward) at the appropriate continuation
+column.
+
 **Tier 2: Condition + `?` value + `:` value exceeds 80 chars but
 `?` value fits** — break before `?`, keep `? value : value` together:
 
@@ -1437,6 +1478,27 @@ Break at `+` operators, with the `+` starting the continuation line:
     String text = (index == text.length() - 1)
         ? "" : text.substring(index + 1);
 ```
+
+If the consequence wraps multi-row (e.g. it's a long binary
+chain that pair-aligns onto multiple lines), the `:` also breaks
+to a new line at the same continuation column as `?` — applying
+the multi-row-inner-forces-outer-break invariant to the
+`?` → `:` boundary. T2 morphs into a T2/T3 hybrid as needed:
+
+```java
+    return ((flag)
+            ? "name=[ " + name
+            + " ], count=[ " + count
+            + " ]"
+            : "no data");
+```
+
+Inside a governing `(`, the ternary's `?` and `:` continuation
+column is `paren_align_col` (the column after the governing
+`(`), and that paren-align context is inherited by any binary
+expression appearing inside the consequence or alternative — so
+the inner `+` continuations line up under the same column the
+`?` / `:` use.
 
 **Tier 3: `? value : value` itself exceeds 80 chars** — break before
 both `?` and `:`, with `:` aligned under `?`:
@@ -1488,6 +1550,26 @@ vertically with the first `.` in the chain:
                            .trim()
                            .toLowerCase();
 ```
+
+**Same-method greedy packing.** When every segment in the chain
+calls the same method name AND the chain has an explicit
+receiver (the canonical `sb.append(x).append(y).append(z)`
+builder pattern), the formatter packs as many `.METHOD(args)`
+segments per continuation line as fit, instead of strict
+one-per-segment dot-alignment. The continuation column remains
+the dot-aligned column; the segments just pack horizontally
+until the next would overflow:
+
+```java
+    StringBuilder sb = new StringBuilder();
+    sb.append("Status: ").append(status).append(", count: ")
+      .append(count).append(", details: ").append(details);
+```
+
+Mixed-name chains (`.builder().setReader().get()`) keep the
+strict one-per-segment shape — the greedy gate doesn't fire
+because the segments have different semantics and benefit from
+vertical alignment.
 
 If the chain starts too far right for alignment to fit within
 80 characters, use continuation indentation instead:
@@ -1566,46 +1648,72 @@ deep wraps that overflow are a signal to extract intermediate
 locals (a `final String message = "..."; service.use(message);`
 is usually clearer than 4 levels of nested wrap anyway).
 
-### Parenthesized-Expression Continuation
+### Parenthesized-Expression Continuation (governing `(`)
 
-When an expression is wrapped in **grouping parentheses** —
-`(a + b + c)` written explicitly by the developer to group an
-expression — operator continuation aligns under the column
-immediately after the opening parenthesis if that alignment
+When an expression sits inside a **governing `(`** — the column
+immediately after that `(` becomes the operator-continuation
+anchor — operator continuation aligns under that column if it
 doesn't itself overflow 80 chars; otherwise it falls back to the
 standard cumulative +4 indent rule.
 
-**Scoping clarification (important):** this rule applies to
-**grouping parentheses** (developer-written parens around an
-expression), NOT to method-call parens (`f(a + b)`) or
-constructor-call parens. Method-call argument lists use the
-priority 1–4 argument-wrap rules (single-line / two-line packed /
-paren-aligned one-per-line / next-line single-indent), not
-paren-aligned operator continuation. If an argument inside a
-call is itself a grouping-parenthesized expression that
-overflows, the inner expression's wrap uses paren-aligned
-continuation relative to the grouping paren (not the call paren).
+**What counts as a governing `(`:**
+
+1. **Grouping parentheses** — `(a + b + c)` written explicitly by
+   the developer to group an expression. This was the only case
+   in 0.4.x; 0.5.0 extends to the cases below.
+2. **Control-flow required parens** — the syntactically-required
+   parens of `if (cond)`, `while (cond)`, `for (...)`,
+   `synchronized (...)`, `switch (...)`. A multi-line condition
+   / clause aligns its operator continuations under the column
+   after the `(`. (`catch (...)` is grammatically the same shape
+   but its contents are a type list + name, not an expression
+   with operator continuation, so the rule has no practical
+   effect there.)
+3. **For-statement clause parens** — the `for (init; cond; update)`
+   header re-anchors each clause (initializer / condition /
+   update) to the column after the `(` when the header wraps
+   multi-line.
+4. **Single-arg method/constructor call parens whose argument is
+   a binary expression** — `super("..." + foo() + "...")`,
+   `throw new IllegalArgumentException(msg + arg)`, etc. The
+   inner binary aligns its operator continuations under the
+   column after the call's `(`. Restricted to single-arg binary
+   args; multi-arg call parens, lambda args, method-chain args,
+   and object-creation args do NOT engage this rule (they use
+   their own per-construct wrap shapes).
 
 This applies to ALL operators (`+`, `-`, `*`, `/`, `&&`, `||`,
 `?`/`:` in ternaries, etc.) and to nested constructs:
 
 ```java
-// String concat in parens — operator aligns under (:
+// String concat in grouping parens — operator aligns under (:
 result = ("active state with details: "
           + describeDetails(input));
 
-// Ternary expression in parens — both ? and : align under (:
+// Ternary expression in grouping parens — both ? and : align under (:
 String status = (level >= 3 ? "high"
                 : level >= 1 ? "medium"
                              : "low");
 
-// Boolean expression in parens — && / || align under (:
-if ((firstCondition
-     && secondCondition
-     && thirdCondition))
+// Boolean expression in if-condition — && / || align under (:
+if (firstCondition
+    && secondCondition
+    && thirdCondition)
 {
     foo();
 }
+
+// For-statement clauses align under for's (:
+for (int readCount = source.read(buf);
+     readCount >= 0;
+     readCount = source.read(buf))
+{
+    sink.write(buf, 0, readCount);
+}
+
+// Single-arg binary call paren — inner + aligns under super's (:
+super("prefix " + value
+      + " suffix");
 
 // Falls back to cumulative +4 indent when paren-alignment itself
 // overflows:
@@ -1614,8 +1722,30 @@ result = ("a very long string that starts deep inside many wrappers"
         + describeOrigin(input));
 ```
 
-The non-parenthesized form continues to use the standard
-cumulative +4 rule.
+**What does NOT count as a governing `(`:**
+
+- **Multi-arg method-call parens** — `f(a, b, c)` argument lists
+  use the priority 1–4 argument-wrap rules (single-line /
+  two-line packed / paren-aligned one-per-line / next-line
+  single-indent), not paren-aligned operator continuation.
+- **Single-arg lambda / method-chain / object-creation args** —
+  `.execute(() -> ...)`, `.then(chain.of.calls())`,
+  `f(new Bar(...))`. These constructs have their own
+  per-construct wrap shapes that the call paren shouldn't
+  override.
+
+The non-parenthesized form (no governing `(` in any of the four
+cases above) continues to use the standard cumulative +4 rule.
+
+**Shallow-operand rejection.** When a paren-aligned chain's
+inner operand wraps to a column SHALLOWER than the chain's own
+operator-continuation column (e.g. an inner method call's
+arg-list wraps via emit_p4 at `block + 4` while the chain is
+paren-aligned at a much deeper governing-`(` column), the
+paren-aligned shape is rejected and the chain falls back to the
++4 cascade where the operand typically fits single-line.
+Prevents the visual-escape pattern where an operand's body
+"escapes" left past the chain's anchor.
 
 ---
 
@@ -1843,6 +1973,40 @@ only entering a deeper wrap level adds another 4. The full rule
 and worked examples are in "Line Continuation / General
 Continuation Indentation" above.
 
+### Multi-row inner forces outer break
+
+When emitting a chain or wrappable construct, if an inner
+operand / clause's own render introduced newlines (a nested call
+that wrapped, a parenthesized binary that wrapped, etc.), the
+next separator (operator, comma, `:`) MUST break to a new line
+before being emitted. Without this, the separator visually
+merges with the wrapped inner's tail at the same column,
+"stranding" the chain at a confusing position.
+
+This invariant applies uniformly to:
+
+- Binary expression cascades (greedy, pair-aligned, paren-
+  aligned) — explicit anti-stranding check: break before the
+  next `+` / `-` / `*` / etc. when the previous operand
+  wrapped.
+- Ternary expressions — explicit check: break before `:` when
+  the consequence wrapped, even in Tier 2 (T2 morphs into a
+  T2/T3 hybrid).
+- Method chains — explicit check (in both the standard P2 and
+  the same-method greedy P2 candidate): break before the next
+  segment when the previous segment's argument list wrapped
+  multi-row.
+- Argument lists — anti-stranding is handled implicitly by the
+  per-arg `widths_ok` width gate during speculative packing,
+  not by an explicit "previous arg wrapped → break" branch.
+  When a prior arg's emission wraps, the next pack-attempt
+  usually overflows the current line and falls back to a new-
+  line break naturally. This gives the same end-result as the
+  explicit check, but the mechanism is different.
+
+This is the same anti-stranding principle that 0.4.3's Bug 1 fix
+applied to method chains, generalized across constructs.
+
 ### Wrap promotion is all-or-nothing
 
 When **any** item in a wrappable list would overflow at the
@@ -1933,6 +2097,30 @@ This "emit but warn" behavior applies analogously to all
 constructs where wrap rules can't bring lines under 80 (multi-
 catch priority 3, switch-case-multi-label priority 2, long single
 exception in throws clause, etc.).
+
+**Wrap-engine overflow advisories.** Each wrap engine (binary
+expression, ternary expression, method chain, argument list)
+fires a `FormatterWarning` when its last-resort candidate
+commits a layout whose on-disk widths exceed 80 chars. The
+advisory points at the source site so the developer knows
+which literal / operand to split. Speculative emits earlier in
+the cascade that overflowed but rolled back don't fire — only
+the committed candidate's advisory persists.
+
+**Source-preservation with no fallback.** When the formatter
+encounters an argument list whose source already wraps multi-
+line, it may preserve the developer's layout verbatim
+(re-anchoring continuation columns at the canonical
+`paren_align_col + 4` or `block + 4` target). If the re-anchored
+layout still overflows 80 chars (because a contained string
+literal or expression is itself too long), the formatter fires
+the advisory and emits anyway — it does NOT fall back to a
+shallower column or to raw verbatim. The overflow becomes a
+checkstyle LineLength violation the developer must resolve by
+splitting the offending literal at a word boundary, extracting
+a long expression to a local variable, or restructuring. This
+breaks the propagation cycle where source-preserved verbatim
+layouts silently re-appeared each format pass.
 
 ---
 

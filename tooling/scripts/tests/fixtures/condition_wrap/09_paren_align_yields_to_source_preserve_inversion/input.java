@@ -6,7 +6,6 @@ public class Demo
         somewhatLongFlagName = (somewhatLongFlagName
             || (result.containsKey("key")
                 && (!Boolean.FALSE.equals(
-                            result.get("anotherKey")
-                                  .toString()))));
+                            "a quite long string literal that the developer placed at a low column"))));
     }
 }

@@ -5,7 +5,7 @@ public class Demo
                                                     int portNumberPart,
                                                     String dbNamePart)
     {
-        this.url = "jdbc:postgresql://"
-            + hostNamePart + ":" + portNumberPart + "/" + dbNamePart;
+        this.url = "jdbc:postgresql://" + hostNamePart + ":" + portNumberPart
+            + "/" + dbNamePart;
     }
 }

@@ -627,15 +627,16 @@ class TestFormatSourceSubset:
             b"}\n"
         )
 
-    def test_binary_expression_wrap_at_leftmost_op(
+    def test_binary_expression_wrap_greedy_packs(
         self,
     ) -> None:
         # Spec "Line Continuation / break before binary
-        # operators": when the single-line binary expression
-        # would exceed 80 chars, break before the leftmost
-        # operator in the chain. The leftmost operand lands on
-        # its own line; the operator plus the remainder of
-        # the chain wraps to a continuation at +4 indent.
+        # operators" + 0.5.0 item 3 (greedy): non-boolean
+        # binary chains pack as many `OP operand` pairs per
+        # line as fit, then break at the operator boundary.
+        # Continuation lines start at the +4 indent column.
+        # This replaces the older leftmost-only-break (P2)
+        # behavior for non-boolean operators.
         src = (
             b"class A {\n"
             b"    String s = "
@@ -644,18 +645,15 @@ class TestFormatSourceSubset:
             b"}\n"
         )
         out = format_java.format_source(src)
-        # The string-concat overflows; break before the
-        # leftmost `+` operator. Leftmost operand on its own
-        # line; remainder packed onto continuation at +4.
-        # (Exact column depends on the value's start column,
-        # which here is after `String s = ` at column 15.)
-        # Substring check (rather than exact equality on the
-        # whole output) is deliberate: this test pins the
-        # wrap-relevant fragment only, leaving the surrounding
-        # column choice — which the wrap-priority engine may
-        # legitimately adjust — free to drift without
-        # triggering an unrelated failure.
-        assert b'        + "beta"' in out
+        # The chain overflows single-line; greedy packs the
+        # short middle operands (`+ "beta"`, `+ "gamma"`)
+        # onto the leftmost-operand line until adding
+        # `+ "delta delta"` would overflow, then breaks.
+        # Substring checks pin the greedy behavior without
+        # over-constraining the exact column choice (which
+        # the wrap engine may legitimately adjust).
+        assert b'+ "beta" + "gamma"' in out
+        assert b'        + "delta delta"' in out
 
     def test_method_call_without_receiver(self) -> None:
         # Method call with no `object` field — bare
@@ -3785,19 +3783,23 @@ class TestFormatterWarnings:
         format_java.format_source(src, warnings_out=warnings)
         assert warnings == []
 
-    def test_warning_for_low_indented_continuation(self) -> None:
-        # Mimic the `throw new IOException(\n  "long string"\n
-        # + sb.toString())` pattern: source-preserved arg list
-        # whose continuation columns sit BELOW the enclosing
-        # statement's indent. Triggers the advisory.
+    def test_warning_for_source_preserve_overflow(self) -> None:
+        # Under 0.5.0 item 4: source-preserve column-remaps the
+        # arg list to `block + 4`. When the contained string
+        # literal is long enough that the remapped line still
+        # exceeds 80 chars, the formatter fires a
+        # `FormatterWarning` advisory (the literal can't be
+        # split by the formatter — that's a developer code
+        # change). The line will overflow on disk; checkstyle
+        # is expected to surface the LineLength violation, and
+        # the advisory tells the developer which site to split.
         src = (
             b"public class A {\n"
-            b"    void m(StringBuilder sb) {\n"
+            b"    void m() {\n"
             b"        if (true) {\n"
             b"            if (true) {\n"
             b"                throw new RuntimeException(\n"
-            b'      "some long error message that the developer "\n'
-            b'          + sb.toString());\n'
+            b'      "some quite long error message that the developer authored at low column");\n'
             b"            }\n"
             b"        }\n"
             b"    }\n"
@@ -3815,7 +3817,34 @@ class TestFormatterWarnings:
             assert warning.line > 0
             assert warning.column > 0
             assert "source-preserved" in warning.message
-            assert "continuation at column" in warning.message
+            assert "overflows 80 chars" in warning.message
+
+    def test_warning_for_binary_wrap_overflow(self) -> None:
+        # Item 11: when the binary cascade commits its C1
+        # emit + warn fallback with a line wider than 80
+        # chars, a `FormatterWarning` advisory fires. Driven
+        # by a long string literal that doesn't fit at any
+        # break point the wrap engine can choose.
+        src = (
+            b"public class A {\n"
+            b"    void m() {\n"
+            b"        if (this.isClosed()) {\n"
+            b"            throw new IllegalStateException(\n"
+            b'                "This WorkerThreadPool has already been marked '
+            b'as closed and the "\n'
+            b'                    + "threads have been shutdown.");\n'
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        assert len(warnings) >= 1
+        sites = [w.message for w in warnings]
+        assert any(
+            "binary expression wrap could not fit" in m
+            for m in sites
+        )
 
     def test_warnings_unique_by_source_position(self) -> None:
         # Speculative wrap-engine emits can revisit the same
@@ -3824,12 +3853,11 @@ class TestFormatterWarnings:
         # developer doesn't see duplicate hits.
         src = (
             b"public class A {\n"
-            b"    void m(StringBuilder sb) {\n"
+            b"    void m() {\n"
             b"        if (true) {\n"
             b"            if (true) {\n"
             b"                throw new RuntimeException(\n"
-            b'      "some long error message that the developer "\n'
-            b'          + sb.toString());\n'
+            b'      "some quite long error message that the developer authored at low column");\n'
             b"            }\n"
             b"        }\n"
             b"    }\n"
@@ -3852,12 +3880,11 @@ class TestFormatterWarnings:
         # output normally; the warnings are simply discarded.
         src = (
             b"public class A {\n"
-            b"    void m(StringBuilder sb) {\n"
+            b"    void m() {\n"
             b"        if (true) {\n"
             b"            if (true) {\n"
             b"                throw new RuntimeException(\n"
-            b'      "some long error message that the developer "\n'
-            b'          + sb.toString());\n'
+            b'      "some quite long error message that the developer authored at low column");\n'
             b"            }\n"
             b"        }\n"
             b"    }\n"

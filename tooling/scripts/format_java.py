@@ -640,7 +640,89 @@ def try_priorities(
         max_width = emitter.last_lines_max_width(speculative[0])
         if max_width <= effective_max:
             return index
+    # Spec C1 emit-and-warn: the last candidate is left
+    # committed even though its lines overflow. Callers that
+    # want a `FormatterWarning` advisory invoke
+    # `_fire_wrap_overflow_advisory(emitter, node,
+    # cascade_start, label)` AFTER `try_priorities` returns —
+    # the advisory describes only the committed candidate's
+    # lines, since speculative emits rolled back during the
+    # cascade have their warnings truncated by `restore()`.
     return last_index
+
+
+def _fire_wrap_overflow_advisory(
+    emitter: "Emitter",
+    node: "Node",
+    since_line_count: int,
+    site_label: str,
+) -> None:
+    """Fire a `FormatterWarning` when this wrap site's
+    committed emit produced any on-disk line wider than
+    `_MAX_LINE`. Per-line accounting applies: finalized lines
+    are checked at their literal width, while only the
+    in-progress `_current` line gets `+ tail_reserve` added
+    (representing the trailing chars the parent will append
+    after this wrap returns).
+
+    Called at the terminal commit point of every wrap-engine
+    cascade (binary / ternary / method-chain / arg-list) — the
+    "spec C1 emit + warn" exit. Speculative emits earlier in
+    the cascade that overflowed but rolled back via
+    `snapshot()` / `restore()` don't fire this — their
+    `warnings` appended would be truncated by `restore()`. The
+    advisory therefore describes only the line(s) the
+    formatter actually committed and could not shrink further.
+
+    `site_label` names the wrap engine for the message (e.g.
+    `"binary expression"`, `"ternary expression"`,
+    `"method chain"`, `"argument list"`); the message tells
+    the developer that no break-point in the cascade fit and
+    that the only resolution is a source-code change (split a
+    literal, rename a long operand, restructure the
+    expression).
+    """
+    # The wrap engine uses `_MAX_LINE - tail_reserve` as its
+    # commit gate (be conservative because the parent may
+    # append tail chars to the in-progress line). The on-disk
+    # width is different: every line is rendered verbatim, and
+    # ONLY the in-progress `_current` line will receive
+    # `tail_reserve` chars from the parent. The advisory must
+    # match what checkstyle's LineLength check will actually
+    # see, so compute per-line on-disk widths instead of
+    # uniformly applying `tail_reserve` to every line.
+    max_finalized_width = 0
+    for line in emitter._lines[since_line_count:]:
+        if len(line) > max_finalized_width:
+            max_finalized_width = len(line)
+    current_on_disk = len(emitter._current) + emitter.tail_reserve
+    max_on_disk = max(max_finalized_width, current_on_disk)
+    if max_on_disk <= _MAX_LINE:
+        return
+    # Deduplicate: a wrap engine that contains another wrap engine
+    # which already fired (e.g. an argument list containing a
+    # binary expression that exhausted its own cascade) inherits
+    # the inner advisory and shouldn't double-fire. Suppress when
+    # any existing advisory's source line falls inside this
+    # node's line range — the inner advisory is more specific
+    # (a smaller source span) so it's the more actionable
+    # pointer for the developer.
+    my_start_line = node.start_point[0] + 1
+    my_end_line = node.end_point[0] + 1
+    for existing in emitter.warnings:
+        if my_start_line <= existing.line <= my_end_line:
+            return
+    emitter.warnings.append(FormatterWarning(
+        line=node.start_point[0] + 1,
+        column=node.start_point[1] + 1,
+        message=(
+            f"{site_label} wrap could not fit within "
+            f"{_MAX_LINE} chars (max line width "
+            f"{max_on_disk}). Split a long operand or "
+            f"literal so the wrap engine has a break point "
+            f"that fits the line limit."
+        ),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -1336,6 +1418,34 @@ def _emit_field_declaration(
 # `a + b + (c * d)` (precedence: `*` > `+`) breaks at `+` only,
 # never at `*` — matching Java associativity and the spec's
 # "break at the lowest-precedence operator" intent.
+_BINARY_BOOLEAN_OPERATORS: Final[frozenset[str]] = frozenset({
+    "&&", "||",
+})
+"""Operators whose chains keep one-per-line paren-aligned wrap
+(each clause on its own continuation line) rather than greedy
+packing. Per the spec preference: each boolean condition is a
+distinct semantic clause and benefits from vertical separation;
+arithmetic / string-concat / comparison chains are continuous
+combinations and benefit from greedy horizontal packing.
+"""
+
+
+_PAIR_ALIGNED_LABEL_DELIM_PREFIXES: Final[frozenset[str]] = frozenset({
+    " ", ",", ";", "]", ")", "}", "|", ":",
+})
+"""Characters that, when they begin a string-literal operand
+inside a `+` chain, qualify that operand as a "label" worth
+breaking before for the 0.5.0 item 2a pair-aligned wrap. The
+set captures the canonical Senzing-style toString() pattern
+(`"label1=[ " + val1 + " ], label2=[ " + val2 + " ]"`) where
+each subsequent label introduces a new field with a leading
+separator. Opening delimiters (`{`, `[`, `(`) are deliberately
+excluded — the first label in a `toString()` typically opens
+with `{` or `[` and doesn't need a break before it (it's the
+line-anchor); subsequent labels carry the separator.
+"""
+
+
 _BINARY_OP_PRECEDENCE: Final[dict[str, int]] = {
     "||": 1,
     "&&": 2,
@@ -1348,6 +1458,76 @@ _BINARY_OP_PRECEDENCE: Final[dict[str, int]] = {
     "+": 9, "-": 9,
     "*": 10, "/": 10, "%": 10,
 }
+
+
+def _chain_matches_pair_aligned_pattern(
+    source: bytes,
+    root_op: Node,
+    leftmost_operand: Node,
+    chain: list[tuple[Node, Node]],
+) -> bool:
+    """Return True if a flattened binary chain matches the
+    label/value pattern eligible for `emit_pair_aligned`
+    (0.5.0 item 2a).
+
+    Gate (lenient — see Senzing handoff for full discussion):
+
+    1. Root operator is `+` AND all chain operators are `+`
+       (no mixed `+`/`-` since same precedence-group flattens
+       both into the chain).
+    2. Leftmost operand is a `string_literal` (the first
+       "label" — its prefix doesn't need to be a delimiter
+       since it's the line-anchor).
+    3. Operands alternate string ↔ non-string. Index 0 is
+       a string (already checked); indices 1, 3, 5, ...
+       must be non-string; indices 2, 4, 6, ... must be
+       string.
+    4. Subsequent label literals (overall indices 2, 4, 6,
+       ... = chain indices 1, 3, 5, ...) start with a
+       character from `_PAIR_ALIGNED_LABEL_DELIM_PREFIXES`
+       (`{" ", ",", ";", "]", ")", "}", "|", ":"}`).
+    5. Chain has at least 2 operators (= at least one
+       subsequent label to break before). A length-1 chain
+       has nothing to pair-align.
+
+    The lenient stance on the first label is what makes the
+    pattern match the typical Senzing toString() opener
+    `"ClassName[ "` or `"{ name=[ "` — those start with
+    `{`/`[` which aren't delimiters in this set, but they're
+    the line-anchor and don't need a break before them.
+    """
+    if root_op.type != "+":
+        return False
+    if any(op.type != "+" for op, _ in chain):
+        return False
+    if leftmost_operand.type != "string_literal":
+        return False
+    if len(chain) < 2:
+        return False
+    for chain_idx, (_op, operand) in enumerate(chain):
+        # Overall operand index = chain_idx + 1.
+        expected_string = ((chain_idx + 1) % 2 == 0)
+        is_string = operand.type == "string_literal"
+        if expected_string != is_string:
+            return False
+        if expected_string:
+            # Subsequent label — verify delim prefix. The gate
+            # is over-conservative for escape-led literals
+            # (`"\\foo"`, `"\nbar"`): `text[1]` is the escape's
+            # leading backslash (or similar), never one of the
+            # delim characters, so the gate declines. Acceptable
+            # because escape-led labels are not part of the
+            # canonical Senzing `toString()` pattern this gate
+            # is designed to detect; the chain falls through to
+            # greedy / paren-aligned (still valid layout).
+            text = _node_source_text(source, operand)
+            if (
+                len(text) < 2
+                or text[0] != '"'
+                or text[1] not in _PAIR_ALIGNED_LABEL_DELIM_PREFIXES
+            ):
+                return False
+    return True
 
 
 def _emit_binary_expression(
@@ -1476,6 +1656,54 @@ def _emit_binary_expression(
             _emit_node(emitter, source, operand)
         emitter.pop_indent()
 
+    # Shared with `emit_greedy` — set when an operand of the
+    # paren-aligned candidate (this function or `emit_greedy`
+    # called at `align_col`) introduces a continuation line
+    # whose leading-whitespace column is SHALLOWER than the
+    # chain's `align_col`. The paren-aligned site reads this
+    # after the candidate's emit to decide whether to commit
+    # or fall back to the +4 cascade.
+    #
+    # Multi-row operands at or deeper than `align_col` are
+    # fine (e.g. a nested parenthesized binary that
+    # paren-aligns to its own inner `(` at a deeper column).
+    # Operands that "escape" left past `align_col` (e.g. a
+    # nested call whose arg-list wrap-engine emit_p4 indents
+    # to `block + 4` while the chain is paren-aligned at a
+    # much deeper column) break visual alignment with the
+    # operator column; fall back to the +4 cascade where the
+    # operand typically fits single-line because the operand
+    # has more horizontal room.
+    paren_inner_wrap = False
+
+    def _operand_emitted_shallow_line(
+        start_line_count: int, threshold: int
+    ) -> bool:
+        # Skip the first newly-finalized line — it's the line
+        # the operand started on (containing the chain prefix +
+        # whatever the operand wrote before its first newline);
+        # its leading-whitespace reflects the chain's container
+        # statement, not the operand's continuations. Any
+        # subsequent finalized lines, plus the in-progress
+        # `_current` (when the operand advanced past at least
+        # one newline) are continuation lines the operand chose
+        # itself.
+        for line in emitter._lines[start_line_count + 1:]:
+            stripped = line.lstrip()
+            if not stripped:
+                continue
+            leading = len(line) - len(stripped)
+            if leading < threshold:
+                return True
+        if emitter.line_count > start_line_count:
+            current = emitter._current
+            stripped = current.lstrip()
+            if stripped:
+                leading = len(current) - len(stripped)
+                if leading < threshold:
+                    return True
+        return False
+
     def emit_paren_aligned(align_col: int) -> None:
         # Spec C6: when an enclosing grouping `(` is in scope,
         # paren-align each operator under the column immediately
@@ -1483,13 +1711,20 @@ def _emit_binary_expression(
         # Caller passes `align_col` directly (captured before
         # clearing the emitter state so a nested grouping paren
         # inside an operand resets cleanly).
+        nonlocal paren_inner_wrap
+        operand_start = emitter.line_count
         _emit_node(emitter, source, leftmost_operand)
+        if _operand_emitted_shallow_line(operand_start, align_col):
+            paren_inner_wrap = True
         for op, operand in chain:
             emitter.newline()
             emitter.write(" " * align_col)
             emitter.write(op.type)
             emitter.write(" ")
+            operand_start = emitter.line_count
             _emit_node(emitter, source, operand)
+            if _operand_emitted_shallow_line(operand_start, align_col):
+                paren_inner_wrap = True
 
     def emit_p3() -> None:
         # Each operand on its own continuation line at +4
@@ -1503,6 +1738,138 @@ def _emit_binary_expression(
             emitter.write(" ")
             _emit_node(emitter, source, operand)
         emitter.pop_indent()
+
+    def emit_pair_aligned(cont_col: int) -> None:
+        # Item 2a: label/value-aware pair-aligned wrap. For
+        # `+` chains where operands alternate string ↔
+        # non-string with delimiter-prefix subsequent labels,
+        # break before each subsequent label so each line
+        # carries one `label + value` pair. Continuation lines
+        # start with the operator at `cont_col`, the operand at
+        # `cont_col + 2` (after `+ `).
+        #
+        # Trades horizontal density for semantic alignment —
+        # makes the label/value structure visually obvious in
+        # the canonical Senzing `toString()` pattern.
+        # Item 8 invariant: after each operand emit, if the
+        # operand's OWN render introduced newlines (a nested
+        # construct that wrapped multi-line), the next
+        # operator MUST break to a new line — otherwise the
+        # subsequent operator would visually merge with the
+        # wrapped operand's tail at the same column, stranding
+        # the chain. Applies to both label-break positions
+        # (already break-before by design) and value-pack
+        # positions (which otherwise pack onto the same line
+        # as the prior label). The check captures
+        # `start_line_count` BEFORE the leftmost emit so a
+        # multi-row leftmost operand (e.g. a parenthesized
+        # binary that wraps) also forces the first chain entry
+        # to break, matching the `emit_greedy` shape.
+        start_line_count = emitter.line_count
+        _emit_node(emitter, source, leftmost_operand)
+        prev_operand_multi_row = (
+            emitter.line_count > start_line_count
+        )
+        for index, (op, operand) in enumerate(chain):
+            # Chain index 0 corresponds to overall operand
+            # index 1 (first value after the first label).
+            # Chain indices 1, 3, 5, ... are subsequent
+            # labels — break before each.
+            is_subsequent_label = (index % 2 == 1)
+            if is_subsequent_label or prev_operand_multi_row:
+                emitter.newline()
+                emitter.write(" " * cont_col)
+                emitter.write(op.type)
+                emitter.write(" ")
+                operand_start_line = emitter.line_count
+                _emit_node(emitter, source, operand)
+            else:
+                emitter.write(" ")
+                emitter.write(op.type)
+                emitter.write(" ")
+                operand_start_line = emitter.line_count
+                _emit_node(emitter, source, operand)
+            prev_operand_multi_row = (
+                emitter.line_count > operand_start_line
+            )
+
+    def emit_greedy(cont_col: int) -> None:
+        nonlocal paren_inner_wrap
+        # Greedy packing (0.5.0 item 3): pack as many
+        # `OP operand` pairs per continuation line as fit
+        # within `effective_max`; break at operator boundary;
+        # continuation lines start at `cont_col`. Used for
+        # non-boolean operators (`+`, `-`, `*`, `/`, `==`,
+        # etc.) where horizontal density is preferred over
+        # vertical separation. Boolean chains (`&&` / `||`)
+        # keep `emit_paren_aligned` (one-per-line) instead.
+        #
+        # Item 8 invariant: after each operand emit, if the
+        # operand's OWN render introduced newlines (a nested
+        # construct that wrapped multi-line), the next
+        # `OP operand` pair MUST break to a new line —
+        # otherwise the subsequent operator would visually
+        # merge with the wrapped operand's tail at the same
+        # column, stranding the chain. Same anti-stranding
+        # principle as 0.4.3's Bug 1 fix for method chains,
+        # applied at the binary-operator level. The key
+        # subtlety: we track ONLY the operand's internal
+        # newlines (captured AFTER any explicit break we
+        # wrote ourselves), not the cumulative newlines from
+        # this iteration — otherwise `pack-failed → broke →
+        # re-emit` would falsely signal "operand went
+        # multi-row" and force every subsequent operator to
+        # break (degenerating into one-per-line output).
+        start_line_count = emitter.line_count
+        _emit_node(emitter, source, leftmost_operand)
+        prev_operand_multi_row = (
+            emitter.line_count > start_line_count
+        )
+        if _operand_emitted_shallow_line(
+            start_line_count, cont_col
+        ):
+            paren_inner_wrap = True
+        for op, operand in chain:
+            if prev_operand_multi_row:
+                # Item 8: force break before this operator.
+                emitter.newline()
+                emitter.write(" " * cont_col)
+                emitter.write(op.type)
+                emitter.write(" ")
+                operand_start_line = emitter.line_count
+                _emit_node(emitter, source, operand)
+            else:
+                # Speculatively pack `" OP operand"` on the
+                # current line.
+                pack_saved = emitter.snapshot()
+                emitter.write(" ")
+                emitter.write(op.type)
+                emitter.write(" ")
+                operand_start_line = emitter.line_count
+                _emit_node(emitter, source, operand)
+                pack_ok = (
+                    emitter.last_lines_max_width(pack_saved[0])
+                    <= effective_max
+                    and emitter.line_count == operand_start_line
+                )
+                if not pack_ok:
+                    # Either overflowed or operand wrapped
+                    # multi-line. Restore, break, re-emit at
+                    # cont_col.
+                    emitter.restore(pack_saved)
+                    emitter.newline()
+                    emitter.write(" " * cont_col)
+                    emitter.write(op.type)
+                    emitter.write(" ")
+                    operand_start_line = emitter.line_count
+                    _emit_node(emitter, source, operand)
+            prev_operand_multi_row = (
+                emitter.line_count > operand_start_line
+            )
+            if _operand_emitted_shallow_line(
+                operand_start_line, cont_col
+            ):
+                paren_inner_wrap = True
 
     # Manual P1 speculation with newline-detection (replaces
     # try_priorities for this site because try_priorities
@@ -1532,14 +1899,59 @@ def _emit_binary_expression(
         return
     emitter.restore(saved)
 
+    # Operator-conditional cascade (0.5.0 items 2a + 3):
+    #
+    # Boolean chains (`&&` / `||`) preserve the spec preference
+    # of one-per-line paren-aligned (each clause on its own
+    # continuation line for vertical readability). Non-boolean
+    # chains (`+`, `-`, `*`, `/`, `==`, etc.) use greedy
+    # horizontal packing.
+    #
+    # `+` chains with the label/value pattern (alternating
+    # string ↔ non-string operands, with delimiter-prefix
+    # subsequent labels) ALSO try `emit_pair_aligned` BEFORE
+    # greedy — break before each label so each line carries
+    # one `label + value` pair. Greedy stays as the fallback
+    # when the pair-aligned shape itself overflows (e.g. a
+    # particularly long value).
+    is_boolean = root_op.type in _BINARY_BOOLEAN_OPERATORS
+    is_pair_aligned_candidate = _chain_matches_pair_aligned_pattern(
+        source, root_op, leftmost_operand, chain
+    )
+
+    # Item 2a — pair-aligned candidate. Tried BEFORE the
+    # paren-aligned / greedy candidates when the chain matches
+    # the label/value pattern. Uses paren_align_col if set,
+    # else +4 cumulative-indent column.
+    if is_pair_aligned_candidate:
+        pair_col = (
+            emitter.paren_align_col
+            if emitter.paren_align_col is not None
+            else 4 * (emitter.indent_level + 1)
+        )
+        pair_saved = emitter.snapshot()
+        prev_align = emitter.set_paren_align_col(None)
+        try:
+            emit_pair_aligned(pair_col)
+        finally:
+            emitter.set_paren_align_col(prev_align)
+        if emitter.last_lines_max_width(pair_saved[0]) <= effective_max:
+            return
+        emitter.restore(pair_saved)
+
     # Spec C6 paren-aligned candidate, preferred over the
-    # standard +4-indent P2/P3 when an enclosing grouping `(`
-    # is in scope and paren-alignment doesn't itself overflow.
-    # Tried BEFORE standard P2 so a parenthesized expression
-    # like `(a || b || c)` wraps with `||` lined up under the
-    # column after `(`, rather than getting pulled to the
-    # cumulative `+4` column (which produces the "staircase"
-    # shape when grouping parens are nested).
+    # standard +4-indent fallback when an enclosing grouping
+    # `(` (or, post-0.5.0-item-4, a single-arg call paren) is
+    # in scope and the paren-aligned shape doesn't itself
+    # overflow. Tried BEFORE the +4 fallback so a parenthesized
+    # expression like `(a || b || c)` wraps with `||` lined up
+    # under the column after `(`, rather than getting pulled
+    # to the cumulative `+4` column (which would produce the
+    # "staircase" shape when grouping parens are nested).
+    #
+    # For boolean chains the paren-aligned shape is
+    # one-per-line (`emit_paren_aligned`); for non-boolean
+    # chains it is greedy at `align_col` (`emit_greedy`).
     align_col = emitter.paren_align_col
     if align_col is not None:
         paren_saved = emitter.snapshot()
@@ -1550,32 +1962,62 @@ def _emit_binary_expression(
         # `_emit_parenthesized_expression` to re-set
         # `paren_align_col` if they themselves sit inside
         # grouping parens.
-        #
-        # try/finally restores `paren_align_col` only; the
-        # buffer rollback `emitter.restore(paren_saved)` is
-        # gated on the width check and runs only on the
-        # accept/reject decision below. This matches the
-        # p2_saved / p3_saved pattern used elsewhere in this
-        # function: exceptions in a candidate emit are not
-        # expected and would propagate up, leaving the
-        # speculative buffer as-is — acceptable because the
-        # outer wrap engine never resumes after such a
-        # programming error.
         prev_align = emitter.set_paren_align_col(None)
+        # Reset the shared `paren_inner_wrap` flag before this
+        # candidate's speculative emit so the post-emit check
+        # below reflects ONLY operands emitted under this
+        # candidate. Without the reset, a prior speculative
+        # attempt (e.g. emit_pair_aligned at the same align_col)
+        # could leave the flag True and cause this candidate to
+        # falsely reject. Keep this reset paired with any future
+        # addition of a third candidate that calls the shared
+        # emit_paren_aligned / emit_greedy.
+        paren_inner_wrap = False
         try:
-            emit_paren_aligned(align_col)
+            if is_boolean:
+                emit_paren_aligned(align_col)
+            else:
+                emit_greedy(align_col)
         finally:
             emitter.set_paren_align_col(prev_align)
-        if emitter.last_lines_max_width(paren_saved[0]) <= effective_max:
+        # Commit the paren-aligned candidate ONLY when (a) all
+        # lines fit within `effective_max` AND (b) no operand
+        # wrapped multi-row internally. (b) is what keeps the
+        # +4-fallback as the preferred shape for cases like
+        # `super("..." + foo() + (longInner.that.wraps))` — the
+        # paren-aligned column gives each operand less
+        # horizontal room than the +4 column does, so an
+        # operand that wraps at align_col will typically fit
+        # single-line at the +4 column. Rejecting here keeps
+        # the chain visually coherent (operator column aligned
+        # with operand body) rather than committing to a
+        # poorly aligned shape.
+        if (
+            emitter.last_lines_max_width(paren_saved[0])
+            <= effective_max
+            and not paren_inner_wrap
+        ):
             return
         emitter.restore(paren_saved)
 
-    p2_saved = emitter.snapshot()
-    emit_p2()
-    if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
+    # +4-indent fallback. For boolean chains: P2 (leftmost-only
+    # break, rest on one continuation line); falls through to
+    # P3 (every operator on own line) on overflow. For
+    # non-boolean chains: greedy at the +4 continuation column;
+    # P3 remains as defensive last-resort.
+    p2_col = 4 * (emitter.indent_level + 1)
+    fallback_saved = emitter.snapshot()
+    if is_boolean:
+        emit_p2()
+    else:
+        emit_greedy(p2_col)
+    if emitter.last_lines_max_width(fallback_saved[0]) <= effective_max:
         return
-    emitter.restore(p2_saved)
+    emitter.restore(fallback_saved)
     emit_p3()
+    _fire_wrap_overflow_advisory(
+        emitter, node, fallback_saved[0], "binary expression"
+    )
 
 
 def _emit_unary_expression(
@@ -1625,18 +2067,6 @@ def _emit_update_expression(
             emitter.write(child.type)
 
 
-_PAREN_NOT_GROUPING_PARENT_TYPES: Final[frozenset[str]] = frozenset({
-    "if_statement",
-    "while_statement",
-    "do_statement",
-    "for_statement",
-    "enhanced_for_statement",
-    "switch_expression",
-    "synchronized_statement",
-    "catch_clause",
-})
-
-
 def _emit_parenthesized_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -1664,19 +2094,23 @@ def _emit_parenthesized_expression(
     # tokens (e.g. an outer `;` or `) {`) push the line past
     # the budget.
     #
-    # Spec C6 paren-alignment applies only to *grouping*
-    # parens — developer-authored `(...)` around an expression
-    # to disambiguate precedence. Parens that are
-    # syntactically required by an enclosing control-flow
-    # construct (`if (cond)`, `while (cond)`, `for (...)`,
-    # `catch (...)`, `synchronized (...)`, `switch (...)`)
-    # don't count as grouping; their wrap continuations use
-    # the standard cumulative `+4` indent.
-    is_grouping = (
-        node.parent is None
-        or node.parent.type
-        not in _PAREN_NOT_GROUPING_PARENT_TYPES
-    )
+    # Spec C6 paren-alignment applies to every
+    # `parenthesized_expression` node (0.5.0+) — both
+    # developer-authored grouping parens AND the
+    # syntactically-required parens of control-flow
+    # constructs (`if (cond)`, `while (cond)`, `for (...)`,
+    # `catch (...)`, `synchronized (...)`, `switch (...)`).
+    # Earlier releases (0.4.3) restricted paren-alignment to
+    # grouping parens only; 0.5.0 extends the rule to
+    # control-flow parens so an operator continuation inside
+    # an `if (long binary)` aligns under the column after the
+    # `(`, matching what the formatter already did inside
+    # `return (long binary)`. The yields-to-source-preserve
+    # inversion check below still applies — when an inner
+    # source-preserved arg list has continuation columns
+    # below the proposed paren-align column, paren-alignment
+    # is declined and the wrap engine falls back to the
+    # cumulative `+4` continuation.
     prev_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 1
     )
@@ -1701,11 +2135,9 @@ def _emit_parenthesized_expression(
     # to single-line. Those don't actually source-preserve, so
     # their source columns are irrelevant to the inversion
     # check.
-    apply_paren_align = is_grouping
-    if apply_paren_align and _inner_would_invert_paren_align(
+    apply_paren_align = not _inner_would_invert_paren_align(
         emitter, source, inner, emitter.column
-    ):
-        apply_paren_align = False
+    )
     prev_paren_align: int | None = None
     if apply_paren_align:
         prev_paren_align = emitter.set_paren_align_col(emitter.column)
@@ -3183,8 +3615,22 @@ def _emit_ternary_expression(
         emitter.newline()
         emitter.write(indent)
         emitter.write("? ")
+        consequence_start = emitter.line_count
         _emit_node(emitter, source, consequence)
-        emitter.write(" : ")
+        if emitter.line_count > consequence_start:
+            # Item 8: consequence wrapped multi-line; break
+            # before `:` so the alternative lands at the
+            # same continuation column as `?` instead of
+            # stranding `: alternative` on the consequence's
+            # final wrapped line. Morphs T2 into a T2/T3
+            # hybrid when the consequence forces it — the
+            # spec's "Line Continuation / Ternary Operator"
+            # rule about `:` aligning with `?` applies.
+            emitter.newline()
+            emitter.write(indent)
+            emitter.write(": ")
+        else:
+            emitter.write(" : ")
         _emit_node(emitter, source, alternative)
 
     def emit_t3_at(indent: str) -> None:
@@ -3223,39 +3669,67 @@ def _emit_ternary_expression(
     #     when the value branches are too long to share a
     #     line.
     align_col = emitter.paren_align_col
+    paren_indent = " " * align_col if align_col is not None else ""
+
+    def emit_paren_t2() -> None:
+        # Item 9 (0.5.0): PRESERVE paren_align_col across the
+        # recursive emit of consequence / alternative so an
+        # inner binary chain that wraps multi-line aligns its
+        # continuation operators under the same column as the
+        # ternary's `?` / `:` (rather than landing at the
+        # cumulative `+4` indent and producing a "staircase").
+        # Nested grouping parens inside the consequence /
+        # alternative still re-set paren_align_col
+        # independently via `_emit_parenthesized_expression`,
+        # and the binary wrap engine itself clears
+        # paren_align_col before emitting individual operands
+        # — so this doesn't leak the ternary's paren context
+        # into operand-internal expressions.
+        emit_t2_at(paren_indent)
+
+    def emit_paren_t3() -> None:
+        # Same paren_align_col inheritance as emit_paren_t2.
+        emit_t3_at(paren_indent)
+
+    # Item 8 invariant for ternary T1 — manually try T1 with
+    # newline-detection gate. If the condition / consequence /
+    # alternative emit produces ANY newlines internally, T1 is
+    # NOT a true single-line shape and we must fall through to
+    # T2 / T3 (which break before `?` or before both `?` and
+    # `:`, properly signaling the multi-line shape). Same
+    # anti-stranding principle as the binary P1 newline gate
+    # at the top of `_emit_binary_expression`: a width-only
+    # check accepts "looks single-line in total chars but
+    # actually wrapped internally," which produces ugly
+    # output where the inner construct's wrap point and the
+    # outer construct's continuation collide visually.
+    effective_max = _MAX_LINE - emitter.tail_reserve
+    t1_saved = emitter.snapshot()
+    emit_t1()
+    t1_fits = (
+        emitter.last_lines_max_width(t1_saved[0]) <= effective_max
+        and emitter.line_count == t1_saved[0]
+    )
+    if t1_fits:
+        return
+    emitter.restore(t1_saved)
+
+    # Fall-through cascade. When paren_align_col is set,
+    # prefer the paren-aligned T2 / T3 shapes over the
+    # +4-indent T2 / T3 (so a parenthesized ternary's
+    # `?` / `:` line up under the open paren, not at the
+    # cumulative `+4` column).
+    cascade_start = t1_saved[0]
     if align_col is not None:
-        paren_indent = " " * align_col
-        # Clear paren_align_col around the recursive emit
-        # of value branches so a nested grouping paren inside
-        # the consequence / alternative re-sets it
-        # independently.
-        def emit_paren_t2() -> None:
-            prev_align = emitter.set_paren_align_col(None)
-            try:
-                emit_t2_at(paren_indent)
-            finally:
-                emitter.set_paren_align_col(prev_align)
-
-        def emit_paren_t3() -> None:
-            prev_align = emitter.set_paren_align_col(None)
-            try:
-                emit_t3_at(paren_indent)
-            finally:
-                emitter.set_paren_align_col(prev_align)
-
         try_priorities(
             emitter,
-            [
-                emit_t1,
-                emit_paren_t2,
-                emit_paren_t3,
-                emit_t2,
-                emit_t3,
-            ],
+            [emit_paren_t2, emit_paren_t3, emit_t2, emit_t3],
         )
-        return
-
-    try_priorities(emitter, [emit_t1, emit_t2, emit_t3])
+    else:
+        try_priorities(emitter, [emit_t2, emit_t3])
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "ternary expression"
+    )
 
 
 def _emit_object_creation_expression(
@@ -4115,21 +4589,28 @@ def _emit_for_statement(
 
     condition = node.child_by_field_name("condition")
 
-    # Per spec "Brace Placement / Exception: Multi-Line
-    # Conditions" — when the for-header spans multiple source
-    # rows the body's opening `{` switches to Allman. Detect
-    # via body.start_row vs node.start_row; emit the verbatim
-    # header text in that case to preserve developer-authored
-    # line breaks (paren-aligned semicolon-separated parts).
-    if body.start_point[0] != node.start_point[0]:
-        header_text = source[
-            node.start_byte : body.start_byte
-        ].decode("utf-8").rstrip()
-        emitter.write_raw_lines(header_text)
-        emitter.newline()
-        emitter.write_indent()
-        _emit_node(emitter, source, body)
-        return
+    # 0.5.0 item 5 — when the source had the for-header
+    # spanning multiple rows, the developer chose to break
+    # init / cond / update onto separate lines (typically
+    # because the single-line form was too long). Earlier
+    # behavior emitted the source TEXT verbatim, which
+    # preserved the developer's source columns even when
+    # surrounding context had shifted the for-statement to
+    # a different block depth — producing the
+    # `for (int x = …;\n    x >= 0;\n    x = …)` staircase
+    # where the continuation cols don't match the
+    # `for (` open paren's `paren_col` for the new context.
+    #
+    # Fix: re-emit the header at the current `paren_col`,
+    # paren-aligning the semicolon-separated parts. The
+    # actual emission is identical to the single-line→too-
+    # wide fallback below (the paren-aligned cascade is the
+    # canonical multi-row for-header shape); just skip the
+    # single-line attempt and go straight to paren-aligned
+    # when the source was already multi-row.
+    source_was_multi_row = (
+        body.start_point[0] != node.start_point[0]
+    )
 
     # Single-row source: build the header inline. After
     # emission, check whether wrapping inside the
@@ -4165,50 +4646,14 @@ def _emit_for_statement(
 
     emitter.write("for (")
     paren_col = emitter.column
-    # Bump tail_reserve while emitting the for header parts so
-    # any binary-expression wrap inside accounts for the
-    # upcoming `) {`. Restored after the closing `)` is written.
-    prev_reserve = emitter.set_tail_reserve(
-        emitter.tail_reserve + 2
-    )
-    try:
-        emit_for_init_section()
-        if condition is not None:
-            emitter.write(" ")
-            _emit_node(emitter, source, condition)
-        emitter.write(";")
-        for index, update in enumerate(updates):
-            if index == 0:
-                emitter.write(" ")
-            else:
-                emitter.write(", ")
-            _emit_node(emitter, source, update)
-    finally:
-        emitter.set_tail_reserve(prev_reserve)
-    emitter.write(")")
 
-    # If the header ended up too wide on a single line — no
-    # inner wrap fired (e.g. no `&&`/`||` for the condition
-    # wrap to break at) but the rendered text still exceeds
-    # `_MAX_LINE` — backtrack and emit a paren-aligned wrap at
-    # the `for (` column. Init/cond/update each get their own
-    # line, separated by `;`-terminated sections. This mirrors
-    # the multi-resource try-with-resources shape.
-    effective_max = _MAX_LINE - emitter.tail_reserve
-    single_line_header = emitter.line_count == header_start[0]
-    header_too_wide = (
-        emitter.last_lines_max_width(header_start[0])
-        > effective_max
-    )
-    if single_line_header and header_too_wide:
-        # `paren_col` was captured during the first-pass write
-        # of `"for ("` above. After `restore(header_start)`,
-        # the indent level is back to what it was at the start
-        # of the for-header, so re-emitting `"for ("` lands the
-        # `(` at the same column — re-using `paren_col` for
-        # the continuation indent is safe.
-        emitter.restore(header_start)
-        emitter.write("for (")
+    def emit_header_paren_aligned() -> None:
+        """Emit init / cond / update with paren-aligned semicolon
+        separators — each clause on its own line, continuation
+        col = `paren_col`. Used both when the single-line
+        attempt overflows AND when the source had the for-
+        header multi-row to begin with (0.5.0 item 5).
+        """
         cont_indent = " " * paren_col
         prev_reserve = emitter.set_tail_reserve(
             emitter.tail_reserve + 2
@@ -4229,7 +4674,59 @@ def _emit_for_statement(
                     _emit_node(emitter, source, update)
         finally:
             emitter.set_tail_reserve(prev_reserve)
+
+    if source_was_multi_row:
+        # Spec "Brace Placement / Exception: Multi-Line
+        # Conditions" — a multi-row `for` header is itself the
+        # signal that triggers Allman brace placement. Preserve
+        # the developer's multi-row layout (re-anchored at the
+        # paren column per item 5) rather than collapsing to
+        # single-line, since collapsing would lose the
+        # Allman-trigger and visually re-pack a header the
+        # developer deliberately spread across lines.
+        emit_header_paren_aligned()
         emitter.write(")")
+    else:
+        # Single-row source: try single-line first, fall to
+        # paren-aligned only if the rendered text overflows
+        # _MAX_LINE.
+        prev_reserve = emitter.set_tail_reserve(
+            emitter.tail_reserve + 2
+        )
+        try:
+            emit_for_init_section()
+            if condition is not None:
+                emitter.write(" ")
+                _emit_node(emitter, source, condition)
+            emitter.write(";")
+            for index, update in enumerate(updates):
+                if index == 0:
+                    emitter.write(" ")
+                else:
+                    emitter.write(", ")
+                _emit_node(emitter, source, update)
+        finally:
+            emitter.set_tail_reserve(prev_reserve)
+        emitter.write(")")
+
+        # If the header ended up too wide on a single line —
+        # no inner wrap fired (e.g. no `&&`/`||` for the
+        # condition wrap to break at) but the rendered text
+        # still exceeds `_MAX_LINE` — backtrack and emit a
+        # paren-aligned wrap at the `for (` column.
+        effective_max = _MAX_LINE - emitter.tail_reserve
+        single_line_header = (
+            emitter.line_count == header_start[0]
+        )
+        header_too_wide = (
+            emitter.last_lines_max_width(header_start[0])
+            > effective_max
+        )
+        if single_line_header and header_too_wide:
+            emitter.restore(header_start)
+            emitter.write("for (")
+            emit_header_paren_aligned()
+            emitter.write(")")
     # Three reasons to switch to Allman brace placement:
     #   (1) the header itself emitted newlines (multi-row
     #       source or wrap inside the header),
@@ -5958,6 +6455,70 @@ def _arg_list_single_line_estimate(
     return "".join(parts)
 
 
+_SEMANTIC_WRAP_ARG_TYPES: Final[frozenset[str]] = frozenset({
+    "lambda_expression",
+    "binary_expression",
+    "method_invocation",
+})
+"""Argument types that opt out of source-preservation when they
+appear as multi-row arguments inside an arg list (0.5.0 item 4).
+
+Each of these has its own wrap engine that can produce a
+clean canonical layout when re-emitted from scratch — keeping
+their source layout via verbatim emit propagates whatever
+column the developer chose (often hand-tuned for the OLD
+indent context) forward through every format pass.
+
+The opt-out is safe under the 0.5.0 no-fallback policy:
+when the wrap engine's output would overflow 80 (e.g. a
+binary expression with a contained long literal), the
+formatter emits at the canonical column anyway and fires
+a `FormatterWarning` advisory; checkstyle's LineLength
+check then surfaces the overflow and the developer must
+manually split the literal. Earlier spikes that included
+binary / method_invocation in the opt-out WITHOUT the
+no-fallback policy failed because the wrap engine had no
+overflow path for long literals — that's no longer a
+blocker.
+"""
+
+
+def _arg_list_has_semantic_multi_row_arg(node: Node) -> bool:
+    """Return True when any arg in `node` is a multi-row
+    construct from `_SEMANTIC_WRAP_ARG_TYPES`. Parenthesized
+    expressions are transparently unwrapped — a multi-row
+    `(a + b + c)` is still a multi-row binary for opt-out
+    purposes.
+    """
+    arg_nodes = [
+        c for c in node.children
+        if c.is_named
+        and c.type not in ("line_comment", "block_comment")
+    ]
+    for arg in arg_nodes:
+        inner = arg
+        while inner.type == "parenthesized_expression":
+            # tree-sitter-java exposes leading `//` / `/* */`
+            # comments as NAMED children of the paren, so a
+            # naive `named[0]` would unwrap to the comment
+            # instead of the actual inner expression. Filter
+            # comments out to find the semantic inner node.
+            named = [
+                c for c in inner.children
+                if c.is_named
+                and c.type not in ("line_comment", "block_comment")
+            ]
+            if not named:
+                break
+            inner = named[0]
+        if (
+            inner.type in _SEMANTIC_WRAP_ARG_TYPES
+            and _node_spans_multiple_rows(inner)
+        ):
+            return True
+    return False
+
+
 def _arg_list_takes_source_preserve_path(
     emitter: Emitter,
     source: bytes,
@@ -6026,6 +6587,18 @@ def _arg_list_takes_source_preserve_path(
         return True
     if _is_inside_csoff_region(source, node):
         return True
+
+    # 0.5.0 item 4 — semantic opt-out. When any arg is a
+    # multi-row lambda / binary / method-chain, decline
+    # source-preservation so the arg re-emits via its own
+    # wrap engine. Re-emission produces columns rooted in
+    # the current emit position rather than echoing
+    # potentially-stale source columns; the lambda body /
+    # binary / chain gets the canonical layout for its
+    # construct type instead of preserving the developer's
+    # (often hand-tuned) source indent.
+    if _arg_list_has_semantic_multi_row_arg(node):
+        return False
 
     src_text = _node_source_text(source, node)
     effective_max = _MAX_LINE - emitter.tail_reserve
@@ -6135,40 +6708,128 @@ def _emit_argument_list(
     # break points appropriate to the new column.
     if _arg_list_takes_source_preserve_path(emitter, source, node):
         src_text = _node_source_text(source, node)
-        # Inverted-indent advisory: if any source continuation
-        # line lands at a column LESS than the current indent
-        # level, the verbatim emit will look visually inverted
-        # against the surrounding context. The formatter can't
-        # fix this on its own — the typical cause is a long
-        # string literal whose author placed it at a low column
-        # to fit 80 chars; rewriting requires splitting the
-        # literal into concatenated chunks. Surface a warning so
-        # the developer knows to consider manual cleanup.
-        current_indent_col = emitter.indent_level * 4
-        for advisory_line in src_text.split("\n")[1:]:
-            advisory_stripped = advisory_line.lstrip()
-            if not advisory_stripped:
-                continue
-            advisory_leading = (
-                len(advisory_line) - len(advisory_stripped)
-            )
-            if advisory_leading < current_indent_col:
-                emitter.warnings.append(FormatterWarning(
-                    line=node.start_point[0] + 1,
-                    column=node.start_point[1] + 1,
-                    message=(
-                        "source-preserved arg list has "
-                        f"continuation at column "
-                        f"{advisory_leading + 1} below the "
-                        f"surrounding indent "
-                        f"({current_indent_col + 1}); consider "
-                        "splitting the contained literal or "
-                        "expression into smaller chunks so the "
-                        "wrap engine can re-indent consistently."
-                    ),
-                ))
+        # 0.5.0 item 4 — context-aware source-preservation
+        # with no-fallback policy.
+        #
+        # Column rule:
+        #   - With governing paren (innermost
+        #     `parenthesized_expression` ancestor — captured by
+        #     `emitter.paren_align_col`): target =
+        #     `paren_align_col + 4`. The `+4` separates the
+        #     continuation from the outer paren's direct
+        #     contents (which themselves start at
+        #     `paren_align_col`).
+        #   - Without governing paren: target = `block + 4`
+        #     (canonical "one indent past the owning
+        #     statement" continuation).
+        #
+        # No-fallback policy: emit at target unconditionally.
+        # Fire an advisory. If the resulting line exceeds 80,
+        # let it overflow — checkstyle's LineLength check
+        # surfaces the overflow and the developer manually
+        # splits the literal. Breaking the propagation cycle
+        # where source-preserved verbatim layouts silently
+        # re-appeared each format pass.
+        #
+        # CSOFF / has_comment cases are handled by the
+        # predicate above — they emit verbatim without
+        # column-remap (semantic columns are part of their
+        # meaning).
+        comments_present = any(
+            c.type in ("line_comment", "block_comment")
+            for c in node.children
+            if c.is_named
+        )
+        if comments_present or _is_inside_csoff_region(
+            source, node
+        ):
+            emitter.write_raw_lines(src_text)
+            return
+        if emitter.paren_align_col is not None:
+            target_col = emitter.paren_align_col + 4
+        else:
+            target_col = emitter.indent_level * 4 + 4
+        lines = src_text.split("\n")
+        # Find the source's first non-empty continuation col.
+        source_first_cont_col = None
+        for line in lines[1:]:
+            if line.lstrip():
+                source_first_cont_col = len(line) - len(
+                    line.lstrip()
+                )
                 break
-        emitter.write_raw_lines(src_text)
+        if source_first_cont_col is None:
+            # No continuation lines to shift.
+            final_lines = lines
+        elif source_first_cont_col >= target_col:
+            # Source is already at or past the canonical target —
+            # developer chose a deeper indent (e.g. wrap-engine
+            # P3 at the inner call's paren_align_col, or a
+            # manually-placed continuation at a deeper col).
+            # Respect that choice; do NOT pull it shallower.
+            # This preserves idempotency: when first-pass output
+            # places continuations at a column deeper than this
+            # rule's target, subsequent passes leave them
+            # untouched.
+            final_lines = lines
+        else:
+            # Shift all continuation lines by the same delta so
+            # internal alignment (paren-aligned operators, dot-
+            # aligned chains within the source-preserved block)
+            # is preserved relative to the new anchor.
+            delta = target_col - source_first_cont_col
+            shifted: list[str] = [lines[0]]
+            for line in lines[1:]:
+                stripped = line.lstrip()
+                if not stripped:
+                    shifted.append("")
+                    continue
+                leading = len(line) - len(stripped)
+                new_leading = max(0, leading + delta)
+                shifted.append(" " * new_leading + stripped)
+            final_lines = shifted
+        # Width-check fires per-line so the advisory matches
+        # what checkstyle's LineLength will actually see on
+        # disk. Only the LAST emitted line receives the
+        # parent's `tail_reserve` chars (`;`, `)`, etc.) —
+        # intermediate finalized lines render verbatim. This
+        # mirrors the per-line accounting in
+        # `_fire_wrap_overflow_advisory`; without it, an
+        # intermediate line at exactly `_MAX_LINE` chars
+        # (≤ 80 on disk) but `> _MAX_LINE - tail_reserve`
+        # would spuriously fire an advisory.
+        first_line_width = emitter.column + len(final_lines[0])
+        if len(final_lines) == 1:
+            # Only one emitted line — it's both the first and
+            # last line, so the parent's `tail_reserve` lands
+            # on it.
+            max_line_width = (
+                first_line_width + emitter.tail_reserve
+            )
+        else:
+            intermediate_widths = [
+                len(ln) for ln in final_lines[1:-1]
+            ]
+            last_line_width = (
+                len(final_lines[-1]) + emitter.tail_reserve
+            )
+            max_line_width = max(
+                [first_line_width, last_line_width]
+                + intermediate_widths
+            )
+        if max_line_width > _MAX_LINE:
+            emitter.warnings.append(FormatterWarning(
+                line=node.start_point[0] + 1,
+                column=node.start_point[1] + 1,
+                message=(
+                    "source-preserved arg list overflows 80 chars "
+                    f"(max line width {max_line_width}). Split "
+                    "the contained literal or expression into "
+                    "smaller chunks so the formatter can re-"
+                    "indent within the line limit."
+                ),
+            ))
+        emitter.write_raw_lines("\n".join(final_lines))
         return
     # Source-preserved first line wouldn't fit and there
     # are no comments — fall through. The wrap engine
@@ -6181,17 +6842,56 @@ def _emit_argument_list(
         _node_spans_multiple_rows(a) for a in args
     )
 
+    # 0.5.0 item 10 — spec C6 extension to method/constructor
+    # call parens, restricted to single-arg calls whose only
+    # argument is itself a `binary_expression`. The call's `(`
+    # becomes a governing paren for the inner binary so its
+    # operator continuations paren-align under the column after
+    # `(`, matching the spec C6 grouping-paren behavior.
+    #
+    # Scope is deliberately narrow: applying this to lambdas,
+    # method chains, or object creations as single args
+    # interacts with `try_priorities`' speculative emits in
+    # ways that break idempotency (a single-arg `.execute(
+    # lambda)` chain whose paren-aligned candidate fires on
+    # the first pass but not the second can re-emit at a
+    # different column). Multi-arg calls keep the existing
+    # P2-greedy / P4 cascade unchanged — spec C6's extension
+    # to call parens applies only when there is a single arg
+    # to anchor.
+    single_arg_binary = (
+        len(args) == 1
+        and args[0].type == "binary_expression"
+    )
+
     def emit_p1() -> None:
         emitter.write("(")
-        for index, arg in enumerate(args):
-            if index > 0:
-                emitter.write(", ")
-            _emit_node(emitter, source, arg)
+        if single_arg_binary:
+            arg_col = emitter.column
+            prev_align = emitter.set_paren_align_col(arg_col)
+            try:
+                _emit_node(emitter, source, args[0])
+            finally:
+                emitter.set_paren_align_col(prev_align)
+        else:
+            for index, arg in enumerate(args):
+                if index > 0:
+                    emitter.write(", ")
+                _emit_node(emitter, source, arg)
         emitter.write(")")
 
     def emit_p4_single_arg() -> None:
         # P4: line-break before the only arg; arg lands at
         # single-indent past the call's statement start.
+        #
+        # Note: item 10's `paren_align_col` set in `emit_p1` is
+        # deliberately NOT mirrored here. P4 re-roots the arg
+        # at `block + 4`, which is its own anchor; setting
+        # `paren_align_col` to the call's `(` column would
+        # break the alignment of the inner binary's
+        # continuations (they would land at
+        # `paren_align_col + 4`, deeper than the arg's first
+        # operand at `block + 4`).
         emitter.write("(")
         emitter.newline()
         emitter.push_indent()
@@ -6287,7 +6987,11 @@ def _emit_argument_list(
     else:
         candidates.append(emit_p2_greedy)
         candidates.append(emit_p4_multi_arg)
+    cascade_start = emitter.line_count
     try_priorities(emitter, candidates)
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "argument list"
+    )
 
 
 def _collect_method_chain(
@@ -6337,6 +7041,35 @@ def _is_method_chain_inner(node: Node) -> bool:
         and obj.start_byte == node.start_byte
         and obj.end_byte == node.end_byte
     )
+
+
+def _chain_segments_share_method_name(
+    source: bytes, segments: list[Node]
+) -> bool:
+    """Return True when every chain segment calls the same
+    method name. Gates `emit_p2_greedy_dot_aligned` (0.5.0 item 2b):
+    same-method chains like `sb.append(a).append(b)…` benefit
+    from horizontal greedy packing because each call is
+    semantically equivalent; mixed-name chains like
+    `.builder().setReader().get()` keep one-per-line P2 because
+    each call is a distinct semantic step worth its own line.
+
+    Requires at least 2 segments — a single-segment "chain" is
+    just a plain call with no wrap candidates beyond P1.
+    """
+    if len(segments) < 2:
+        return False
+    first_name_node = segments[0].child_by_field_name("name")
+    if first_name_node is None:
+        return False
+    first_name = _node_source_text(source, first_name_node)
+    for seg in segments[1:]:
+        name_node = seg.child_by_field_name("name")
+        if name_node is None:
+            return False
+        if _node_source_text(source, name_node) != first_name:
+            return False
+    return True
 
 
 def _emit_method_chain_wrapped(
@@ -6476,15 +7209,38 @@ def _emit_method_chain_wrapped(
             emitter, source, args, column=args_emit_column
         ):
             return True
-        # Lambda body that spans multiple source rows — the
-        # lambda emitter source-preserves the body block, so
-        # those newlines are also the developer's authored
-        # layout rather than wrap fallout.
+        # 0.5.0 item 4 — semantic multi-row args (lambda body,
+        # multi-row binary/chain) opt out of source-preservation
+        # but STILL emit multi-line via their own wrap engines,
+        # which still strands subsequent chain segments. Mirror
+        # the predicate's opt-out so the discriminator's
+        # "will-be-multi-line" answer stays consistent with what
+        # `_emit_argument_list` actually does.
         for child in args.named_children:
             if child.type == "lambda_expression":
                 body = child.child_by_field_name("body")
                 if body is not None and _node_spans_multiple_rows(body):
                     return True
+            inner = child
+            while inner.type == "parenthesized_expression":
+                # Filter comments out — tree-sitter-java exposes
+                # leading `//` / `/* */` as named children, so
+                # `named[0]` could otherwise unwrap to a comment
+                # instead of the inner expression and miss a
+                # multi-row binary / chain / lambda.
+                named = [
+                    c for c in inner.children
+                    if c.is_named
+                    and c.type not in ("line_comment", "block_comment")
+                ]
+                if not named:
+                    break
+                inner = named[0]
+            if (
+                inner.type in _SEMANTIC_WRAP_ARG_TYPES
+                and _node_spans_multiple_rows(inner)
+            ):
+                return True
         return False
 
     def emit_p1() -> None:
@@ -6579,6 +7335,82 @@ def _emit_method_chain_wrapped(
             emitter.write(".")
             emit_segment(seg)
 
+    def emit_p2_greedy_dot_aligned() -> None:
+        # 0.5.0 item 2b: same-method method-chain greedy.
+        # Pack as many `.METHOD(args)` segments per continuation
+        # line as fit. Continuation column = first_dot_col
+        # (same dot-alignment as P2 dot-aligned). Used only when
+        # all segments call the same method name — chains like
+        # `sb.append(a).append(b).append(c)` where each segment
+        # is semantically equivalent and benefit from horizontal
+        # density.
+        #
+        # Mixed-name chains (`.builder().setReader().get()`)
+        # keep P2 one-per-line — each call is distinct and the
+        # vertical layout aids readability.
+        #
+        # Item 8 invariant: after each segment emit, if the
+        # segment's args wrapped multi-line (a nested arg list
+        # that itself wrapped, e.g. `.method(longArg, longArg)`
+        # going to P4), force a break before the next segment —
+        # otherwise the trailing segment would land at the same
+        # column as the wrapped arg's tail, stranding the chain.
+        # `start_line_count` is captured BEFORE the first
+        # segment emit so a multi-row first segment (its arg
+        # list itself wrapping, e.g. `sb.append(longExpression
+        # ThatWraps).append(b)`) also forces the SECOND
+        # segment to break — same anti-stranding behavior as
+        # the per-segment check inside the loop below.
+        # Call site at line ~7430 gates on `head is not None`, so
+        # the headless branch is unreachable here. Asserting
+        # rather than handling keeps the contract explicit: if
+        # the gate is ever relaxed, this assert surfaces the
+        # need to revisit `first_dot_col`'s capture point (it
+        # must be the column of the FIRST `.` in the chain, not
+        # the column after the second segment's args).
+        assert head is not None, (
+            "emit_p2_greedy_dot_aligned requires a non-None "
+            "head; call site gates on this."
+        )
+        start_line_count = emitter.line_count
+        _emit_node(emitter, source, head)
+        first_dot_col = emitter.column
+        emitter.write(".")
+        emit_segment(segments[0])
+        wrap_from = 1
+        prev_segment_multi_row = (
+            emitter.line_count > start_line_count
+        )
+        for seg in segments[wrap_from:]:
+            if prev_segment_multi_row:
+                # Item 8: previous segment's args wrapped — force
+                # break before this segment.
+                emitter.newline()
+                emitter.write(" " * first_dot_col)
+                emitter.write(".")
+                seg_start_line = emitter.line_count
+                emit_segment(seg)
+            else:
+                pack_saved = emitter.snapshot()
+                emitter.write(".")
+                seg_start_line = emitter.line_count
+                emit_segment(seg)
+                pack_ok = (
+                    emitter.last_lines_max_width(pack_saved[0])
+                    <= effective_max
+                    and emitter.line_count == seg_start_line
+                )
+                if not pack_ok:
+                    emitter.restore(pack_saved)
+                    emitter.newline()
+                    emitter.write(" " * first_dot_col)
+                    emitter.write(".")
+                    seg_start_line = emitter.line_count
+                    emit_segment(seg)
+            prev_segment_multi_row = (
+                emitter.line_count > seg_start_line
+            )
+
     # Manual P1 speculation with per-segment newline detection.
     # P1 is "all segments stay on whichever line the head
     # finished on"; if a nested arg-list emit wraps mid-segment
@@ -6600,12 +7432,41 @@ def _emit_method_chain_wrapped(
     if p1_fits:
         return
     emitter.restore(saved)
+
+    # 0.5.0 item 2b: try emit_p2_greedy_dot_aligned BEFORE the
+    # standard P2 (one-per-line dot-aligned) when all chain
+    # segments call the same method name AND the chain has an
+    # explicit receiver. Same-method chains
+    # (`sb.append(a).append(b)…`) benefit from horizontal
+    # density; mixed-name chains (`.builder().setReader().get()`)
+    # keep the one-per-line shape via P2. Headless same-name
+    # chains (`getX().getX().getX()` — extremely unusual) also
+    # keep one-per-line because the canonical motivation
+    # (builder pattern with named receiver) doesn't apply.
+    if (
+        head is not None
+        and _chain_segments_share_method_name(source, segments)
+    ):
+        greedy_saved = emitter.snapshot()
+        emit_p2_greedy_dot_aligned()
+        if emitter.last_lines_max_width(greedy_saved[0]) <= effective_max:
+            return
+        emitter.restore(greedy_saved)
+
     p2_saved = emitter.snapshot()
     emit_p2()
     if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
         return
     emitter.restore(p2_saved)
     emit_p3()
+    # Method-chain wrap site advisory uses the first segment
+    # (or head, if present) as the source position — the
+    # earliest token of the chain is the most useful jump
+    # target for the developer fixing an overflow.
+    advisory_anchor = head if head is not None else segments[0]
+    _fire_wrap_overflow_advisory(
+        emitter, advisory_anchor, p2_saved[0], "method chain"
+    )
 
 
 def _emit_method_invocation(
