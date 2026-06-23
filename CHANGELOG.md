@@ -10,8 +10,9 @@ and this project adheres to
 
 ## [Unreleased]
 
-Toward 0.5.0 — see [ROADMAP.md](ROADMAP.md) for the full
-phased plan. This release expands the formatter from the
+## [0.5.0] - 2026-06-23
+
+Expands the formatter from the
 "control-flow + grouping paren" wrap surface introduced in
 0.4.3 to cover **every place a governing `(` exists**:
 control-flow constructs (item 1), for-statement clause
@@ -32,8 +33,8 @@ the source location to split.
 ### Changed
 
 - **Spec C6 paren-alignment extended to control-flow required
-  parens** (`_emit_parenthesized_expression`, item 1 from the
-  0.5.0 roadmap). 0.4.3 restricted paren-aligned operator
+  parens** (`_emit_parenthesized_expression`, item 1).
+  0.4.3 restricted paren-aligned operator
   continuation to grouping parens (developer-authored `(...)`
   around an expression). 0.5.0 extends the rule to the
   syntactically-required parens of control-flow constructs:
