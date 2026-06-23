@@ -327,11 +327,10 @@ fixture set continues to pass.
   semantically-grouped args), but produced gratuitous
   `Modifier.isStatic(modifiers)`-style wraps when a prior
   format pass had split a single-arg call across two lines:
-  the
-  source's first line is just `(`, trivially fits any
+  the source's first line is just `(`, trivially fits any
   column, so source-preserve fires even though
-  `Modifier.isStatic(modifiers)` (27 chars) would
-  comfortably collapse to single-line at the new column.
+  `Modifier.isStatic(modifiers)` (27 chars) would comfortably
+  collapse to single-line at the new column.
   Fix: before the `first_line_fits` gate, estimate whether
   the full args would fit single-line at the current column.
   The estimator (`_arg_list_single_line_estimate`) walks the
@@ -511,12 +510,11 @@ pure helpers `_estimate_normalize` and
   a deeply-nested boolean assignment containing a chained
   `Boolean.FALSE.equals(...)` call whose outer `(` lands at
   column 32 has a source-preserved arg list whose continuation
-  lines sit at columns 28 and 34. The AST-walk inversion
-  check detects the col-28 continuation < proposed 32 and
-  declines paren-alignment
-  for the outer grouping; `||` and `&&` fall back to the
-  standard `+4` cumulative continuation so the inner
-  source-preserved bytes nest correctly inside the outer
+  lines sit at columns 28 and 34. The AST-walk inversion check
+  detects the col-28 continuation < proposed 32 and declines
+  paren-alignment for the outer grouping; `||` and `&&` fall
+  back to the standard `+4` cumulative continuation so the
+  inner source-preserved bytes nest correctly inside the outer
   operator chain rather than being visually outdented.
   Input == expected is intentional here — like
   fixture 01 above, the regression lock is on
