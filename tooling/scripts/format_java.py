@@ -658,8 +658,12 @@ def _fire_wrap_overflow_advisory(
     site_label: str,
 ) -> None:
     """Fire a `FormatterWarning` when this wrap site's
-    committed emit produced any line wider than
-    `_MAX_LINE - emitter.tail_reserve`.
+    committed emit produced any on-disk line wider than
+    `_MAX_LINE`. Per-line accounting applies: finalized lines
+    are checked at their literal width, while only the
+    in-progress `_current` line gets `+ tail_reserve` added
+    (representing the trailing chars the parent will append
+    after this wrap returns).
 
     Called at the terminal commit point of every wrap-engine
     cascade (binary / ternary / method-chain / arg-list) — the
@@ -1959,6 +1963,15 @@ def _emit_binary_expression(
         # `paren_align_col` if they themselves sit inside
         # grouping parens.
         prev_align = emitter.set_paren_align_col(None)
+        # Reset the shared `paren_inner_wrap` flag before this
+        # candidate's speculative emit so the post-emit check
+        # below reflects ONLY operands emitted under this
+        # candidate. Without the reset, a prior speculative
+        # attempt (e.g. emit_pair_aligned at the same align_col)
+        # could leave the flag True and cause this candidate to
+        # falsely reject. Keep this reset paired with any future
+        # addition of a third candidate that calls the shared
+        # emit_paren_aligned / emit_greedy.
         paren_inner_wrap = False
         try:
             if is_boolean:
