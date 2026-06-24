@@ -3870,6 +3870,14 @@ def _emit_array_creation_expression(
         return
     emitter.write("new ")
     for child in node.named_children:
+        # Spec "Whitespace and Operator Spacing": single space
+        # before the opening `{` of an array initializer that
+        # follows `[]` (or `[N]`) dimensions. `new Type[] { X }`
+        # is canonical; `new Type[]{ X }` is a 0.5.0 bug where
+        # the emitter walked `dimensions` then `array_initializer`
+        # back-to-back without inserting the required separator.
+        if child.type == "array_initializer":
+            emitter.write(" ")
         _emit_node(emitter, source, child)
 
 
