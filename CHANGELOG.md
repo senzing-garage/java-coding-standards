@@ -10,6 +10,70 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-23
+
+Bug-fix release addressing four formatter defects surfaced
+during the 0.5.0 adoption pass across `senzing-commons-java`
+and `sz-sdk-java`. All changes are formatter output fixes;
+no spec changes.
+
+### Fixed
+
+- **Mid-statement line comments dropped in
+  `variable_declarator`.** Comments positioned between `=`
+  and the value RHS (e.g. javadoc `// @highlight region="x"`
+  snippet markers on text-block assignments) were silently
+  dropped by the AST walk, breaking `mvn javadoc:javadoc`
+  under JDK 21 when the unpaired `@end region` closers
+  failed validation. Fix: source-preserve the `= ...` region
+  verbatim when mid-statement comments are detected,
+  matching the 0.5.0 treatment of comments inside arg lists.
+- **Trailing whitespace bypassed `Emitter.newline()`'s
+  `rstrip` in source-preserve paths.** `write_raw_lines`
+  intentionally preserves trailing whitespace for text-block
+  content but had no opt-in for source-preserved CODE.
+  Fix: added `strip_trailing_ws` parameter; all
+  source-preserve-code call sites (conditions, arg lists,
+  formal parameters, non-javadoc block comments) pass `True`.
+- **Array initializer missing space before `{`.** `new
+  Type[]{ X }` produced (instead of canonical
+  `new Type[] { X }`) for some inputs; idempotent on both
+  forms, so the file accumulated mixed styles. Fix: emit
+  a single space before `array_initializer` children of
+  `array_creation_expression`.
+- **Item-8 invariant not enforced for multi-arg arg lists.**
+  Calls like `assertEquals(arg1, longCallThatWraps(...),
+  "msg")` jammed the third argument onto the wrapped second
+  argument's tail line. The 0.5.0 spec described this as
+  "width-gate handles it implicitly" but the gate misses
+  cases where the line happens to fit under 80 chars by
+  coincidence. Fix: explicit
+  "previous-arg-multi-row → break before next arg" check in
+  both `emit_p1` and `emit_p2_greedy`.
+- **Binary positional arg ignored arg-start column.** When
+  a multi-arg call's positional argument was a
+  `binary_expression`, the binary's continuation operators
+  landed at `block + 4` instead of paren-aligning under the
+  argument's first operand column. Fix: set
+  `paren_align_col` to the arg's start column for the
+  duration of a binary-typed positional arg's emit. Narrow
+  to direct `binary_expression` (no paren unwrap) to avoid
+  the idempotency drift that originally narrowed 0.5.0
+  item 10 to single-arg.
+
+### Verification
+
+- 651 formatter tests pass (was 645 at 0.5.0; +6 new
+  fixtures across `comment_preservation/`, `arg_list_wrap/`,
+  `array_initializer/`).
+- `senzing-commons-java` reformat: 2151 / 2151 tests pass,
+  `mvn -Pcheckstyle validate` BUILD SUCCESS, idempotent on
+  2nd pass, zero trailing whitespace in source, array
+  initializers normalized.
+- The sz-sdk-java demo files containing javadoc `@snippet`
+  markers no longer lose their `// @highlight` openers;
+  `mvn javadoc:javadoc` under JDK 21 succeeds.
+
 ## [0.5.0] - 2026-06-23
 
 Expands the formatter from the
