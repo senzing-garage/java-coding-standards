@@ -482,7 +482,7 @@ class Emitter:
         there is just stray bytes the source author left behind
         and the spec's "Trailing Whitespace" rule applies. Such
         callers pass `strip_trailing_ws=True` to apply the same
-        `rstrip(" ")` that `newline()` does on its finalized
+        `rstrip(" \t")` that `newline()` does on its finalized
         lines.
 
         The in-progress line at the END of `text` (the part after
