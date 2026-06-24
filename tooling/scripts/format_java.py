@@ -340,7 +340,7 @@ class Emitter:
         Trailing spaces on the finalized line are stripped before
         commit so emitters need not pre-trim them.
         """
-        self._lines.append(self._current.rstrip(" "))
+        self._lines.append(self._current.rstrip(" \t"))
         self._current = ""
 
     @property
@@ -494,7 +494,7 @@ class Emitter:
         self._current += parts[0]
         for part in parts[1:]:
             if strip_trailing_ws:
-                self._lines.append(self._current.rstrip(" "))
+                self._lines.append(self._current.rstrip(" \t"))
             else:
                 self._lines.append(self._current)
             self._current = part
@@ -525,7 +525,7 @@ class Emitter:
               for files with at least one byte of real content.
         """
         if self._current:
-            self._lines.append(self._current.rstrip(" "))
+            self._lines.append(self._current.rstrip(" \t"))
             self._current = ""
         if not self._lines:
             return b""
@@ -7084,12 +7084,14 @@ def _emit_argument_list(
         emitter.write(")")
         emitter.pop_indent()
 
-    # P1 (single line) is always tried first. The wrap engine
-    # measures actual rendered widths via try_priorities, so a
-    # multi-line arg (lambda body, nested wrapping call) that
-    # blows past 80 chars during P1 emit simply falls through
-    # to the next candidate. Letting P1 try also keeps the
-    # decision deterministic from the AST — earlier code
+    # P1 is the AST-deterministic single-line candidate, but
+    # since 0.5.1 P3 it may emit a multi-row layout when an
+    # intermediate arg wraps multi-row and item-8 forces a
+    # break before subsequent args. try_priorities still
+    # measures actual rendered widths, so a P1 emit that
+    # blows past 80 chars falls through to the next
+    # candidate. Letting P1 try keeps the decision
+    # deterministic from the AST — earlier code
     # short-circuited P1 when any arg's SOURCE was multi-row,
     # which made the decision flip between formatter passes.
     candidates: list[Callable[[], None]] = [emit_p1]

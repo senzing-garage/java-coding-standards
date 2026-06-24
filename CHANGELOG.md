@@ -10,12 +10,12 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-06-23
+## [0.5.1] - 2026-06-24
 
-Bug-fix release addressing four formatter defects surfaced
-during the 0.5.0 adoption pass across `senzing-commons-java`
-and `sz-sdk-java`. All changes are formatter output fixes;
-no spec changes.
+Bug-fix release addressing four formatter defects (five
+code-level fixes) surfaced during the 0.5.0 adoption pass
+across `senzing-commons-java` and `sz-sdk-java`. All changes
+are formatter output fixes; no spec changes.
 
 ### Fixed
 
@@ -64,9 +64,13 @@ no spec changes.
 
 ### Verification
 
-- 651 formatter tests pass (was 645 at 0.5.0; +6 new
+- 656 formatter tests pass (was 645 at 0.5.0; +10 new
   fixtures across `comment_preservation/`, `arg_list_wrap/`,
-  `array_initializer/`).
+  and `array_initializer/`). The first 6 lock the headline
+  fixes; the remaining 4 cover edge cases surfaced during the
+  PR review pass (block-comment between `=` and value,
+  array initializer without `new`, last-arg-multi-row in arg
+  lists, idempotency lock for the P4 paren-aligned shape).
 - `senzing-commons-java` reformat: 2151 / 2151 tests pass,
   `mvn -Pcheckstyle validate` BUILD SUCCESS, idempotent on
   2nd pass, zero trailing whitespace in source, array
