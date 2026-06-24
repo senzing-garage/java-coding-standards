@@ -35,16 +35,17 @@ no spec changes.
   Fix: added `strip_trailing_ws` parameter; all
   source-preserve-code call sites (conditions, arg lists,
   formal parameters, non-javadoc block comments) pass `True`.
-- **Array initializer missing space before `{`.** `new
-  Type[]{ X }` produced (instead of canonical
-  `new Type[] { X }`) for some inputs; idempotent on both
-  forms, so the file accumulated mixed styles. Fix: emit
-  a single space before `array_initializer` children of
+- **Array initializer missing space before `{`.** Produced
+  `new Type[]{ X }` instead of canonical `new Type[] { X }`
+  for some inputs; idempotent on both forms, so the file
+  accumulated mixed styles. Fix: emit a single space before
+  `array_initializer` children of
   `array_creation_expression`.
 - **Item-8 invariant not enforced for multi-arg arg lists.**
-  Calls like `assertEquals(arg1, longCallThatWraps(...),
-  "msg")` jammed the third argument onto the wrapped second
-  argument's tail line. The 0.5.0 spec described this as
+  Calls of the shape
+  `assertEquals(arg1, longCallThatWraps(...), msg)` jammed
+  the third argument onto the wrapped second argument's
+  tail line. The 0.5.0 spec described this as
   "width-gate handles it implicitly" but the gate misses
   cases where the line happens to fit under 80 chars by
   coincidence. Fix: explicit
