@@ -6925,7 +6925,7 @@ def _emit_argument_list(
                     else:
                         emitter.write(", ")
                 operand_start = emitter.line_count
-                _emit_node(emitter, source, arg)
+                _emit_arg_with_optional_paren_align(arg)
                 prev_arg_multi_row = (
                     emitter.line_count > operand_start
                 )
@@ -6951,6 +6951,38 @@ def _emit_argument_list(
         emitter.write(")")
         emitter.pop_indent()
 
+    def _emit_arg_with_optional_paren_align(arg: Node) -> None:
+        # 0.5.1 P4 — when a positional arg is a binary
+        # expression, set `paren_align_col` to the arg's
+        # start column so the binary's continuation operators
+        # paren-align under the arg's first operand instead
+        # of falling back to the `block + 4` cumulative
+        # indent. This produces:
+        #
+        #     assertTrue(cond,
+        #                "msg "
+        #                    + var
+        #                    + " more");
+        #
+        # instead of the 0.5.0 shape:
+        #
+        #     assertTrue(cond,
+        #                "msg "
+        #         + var + " more");      // `+` at col 8
+        #
+        # Narrow to direct binary_expression (no paren unwrap)
+        # to avoid the idempotency drift that originally
+        # narrowed item 10 to single-arg.
+        if arg.type == "binary_expression":
+            arg_col = emitter.column
+            prev_align = emitter.set_paren_align_col(arg_col)
+            try:
+                _emit_node(emitter, source, arg)
+            finally:
+                emitter.set_paren_align_col(prev_align)
+        else:
+            _emit_node(emitter, source, arg)
+
     def emit_p2_greedy() -> None:
         # P2: pack as many args as fit on the call line at
         # the paren-aligned continuation column. Each arg's
@@ -6969,7 +7001,7 @@ def _emit_argument_list(
         for index, arg in enumerate(args):
             if index == 0:
                 operand_start = emitter.line_count
-                _emit_node(emitter, source, arg)
+                _emit_arg_with_optional_paren_align(arg)
                 prev_arg_multi_row = (
                     emitter.line_count > operand_start
                 )
@@ -6987,7 +7019,7 @@ def _emit_argument_list(
                 emitter.newline()
                 emitter.write(" " * cont_col)
                 operand_start = emitter.line_count
-                _emit_node(emitter, source, arg)
+                _emit_arg_with_optional_paren_align(arg)
                 prev_arg_multi_row = (
                     emitter.line_count > operand_start
                 )
@@ -6995,7 +7027,7 @@ def _emit_argument_list(
             saved = emitter.snapshot()
             emitter.write(", ")
             operand_start = emitter.line_count
-            _emit_node(emitter, source, arg)
+            _emit_arg_with_optional_paren_align(arg)
             widths_ok = (
                 emitter.last_lines_max_width(saved[0])
                 <= effective_max
@@ -7028,7 +7060,7 @@ def _emit_argument_list(
                 emitter.newline()
                 emitter.write(" " * cont_col)
                 operand_start = emitter.line_count
-                _emit_node(emitter, source, arg)
+                _emit_arg_with_optional_paren_align(arg)
             prev_arg_multi_row = (
                 emitter.line_count > operand_start
             )
