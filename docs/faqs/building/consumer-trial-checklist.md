@@ -57,7 +57,7 @@ profile.
 
 For consumers that target JDK 17+ for javadoc, run the gate
 under the profile that DOES include snippet markup (typically
-`java-18+`, `java-21`, or unprofiled). Pre-JDK-18 consumers
+`java-18+`, `java-21`, or no profile at all). Pre-JDK-18 consumers
 can use a plain javadoc invocation — the gate is checking
 that the formatter didn't drop tokens, not that the resulting
 javadoc renders correctly under every JDK.
