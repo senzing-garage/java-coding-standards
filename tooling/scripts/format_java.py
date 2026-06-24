@@ -461,38 +461,42 @@ class Emitter:
             m = len(self._current)
         return m
 
-    def write_raw_lines(self, text: str) -> None:
+    def write_raw_lines(
+        self, text: str, *, strip_trailing_ws: bool = False
+    ) -> None:
         """Append text that may contain newlines, preserved verbatim.
 
         Used by leaf emitters for content the formatter must
         reproduce byte-for-byte — text blocks ("Text Blocks /
         Content preservation" spec section) and eventually block
-        comments. Newlines inside `text` finalize each intermediate
-        line WITHOUT stripping trailing whitespace, since that
+        comments. With the default `strip_trailing_ws=False`,
+        newlines inside `text` finalize each intermediate line
+        WITHOUT stripping trailing whitespace, since that
         whitespace is the developer's content (the spec's
         "Normalize spacing or alignment of content is a no-op"
         rule applies to text-block contents).
 
+        Source-preserved CODE (argument-list verbatim preservation,
+        mid-statement-comment preservation, etc.) is not
+        whitespace-significant content — trailing whitespace
+        there is just stray bytes the source author left behind
+        and the spec's "Trailing Whitespace" rule applies. Such
+        callers pass `strip_trailing_ws=True` to apply the same
+        `rstrip(" ")` that `newline()` does on its finalized
+        lines.
+
         The in-progress line at the END of `text` (the part after
         the last newline) is left open so subsequent `write()` /
-        `newline()` calls continue normally. Note: trailing
-        whitespace that the DEVELOPER wrote at the very end of a
-        text block (after the final newline, before any
-        formatter-emitted continuation) will be stripped by the
-        eventual `newline()` / `finish()` — that case doesn't
-        arise in well-formed Java source because every
-        `string_literal` ends with a non-whitespace closing
-        quote token, so the final segment passed here is never a
-        bare-whitespace string. Future emitters that pass other
-        kinds of verbatim multi-line content should guarantee the
-        same invariant.
+        `newline()` calls continue normally.
         """
         parts = text.split("\n")
         # First segment continues the current line.
         self._current += parts[0]
         for part in parts[1:]:
-            # Each intermediate line is verbatim — NO strip.
-            self._lines.append(self._current)
+            if strip_trailing_ws:
+                self._lines.append(self._current.rstrip(" "))
+            else:
+                self._lines.append(self._current)
             self._current = part
 
     def push_indent(self) -> None:
@@ -3398,7 +3402,11 @@ def _emit_comment(
     if text.startswith("/**"):
         _emit_javadoc_block(emitter, source, node, text)
         return
-    emitter.write_raw_lines(text)
+    # Non-javadoc block comments (`/* … */`) are source-preserved
+    # but trailing whitespace inside them is never intentional
+    # alignment (any deliberate ASCII-art alignment would be
+    # inside a CSOFF region with its own preservation path).
+    emitter.write_raw_lines(text, strip_trailing_ws=True)
 
 
 _LINE_COMMENT_DIRECTIVE_PREFIXES: Final[tuple[str, ...]] = (
@@ -3828,7 +3836,9 @@ def _emit_array_initializer(
     re-emits with the normalized spacing.
     """
     if _node_spans_multiple_rows(node):
-        emitter.write_raw_lines(_node_source_text(source, node))
+        emitter.write_raw_lines(
+            _node_source_text(source, node), strip_trailing_ws=True
+        )
         return
     elements = [c for c in node.named_children]
     if not elements:
@@ -3854,7 +3864,9 @@ def _emit_array_creation_expression(
     optionally followed by an `array_initializer`.
     """
     if _node_spans_multiple_rows(node):
-        emitter.write_raw_lines(_node_source_text(source, node))
+        emitter.write_raw_lines(
+            _node_source_text(source, node), strip_trailing_ws=True
+        )
         return
     emitter.write("new ")
     for child in node.named_children:
@@ -3989,7 +4001,9 @@ def _emit_switch_rule(
     more statements. Source-preservation for multi-row source.
     """
     if _node_spans_multiple_rows(node):
-        emitter.write_raw_lines(_node_source_text(source, node))
+        emitter.write_raw_lines(
+            _node_source_text(source, node), strip_trailing_ws=True
+        )
         return
     label = None
     body_children: list[Node] = []
@@ -4206,7 +4220,9 @@ def _emit_synchronized_statement(
         )
     emitter.write("synchronized ")
     if _node_spans_multiple_rows(cond):
-        emitter.write_raw_lines(_node_source_text(source, cond))
+        emitter.write_raw_lines(
+            _node_source_text(source, cond), strip_trailing_ws=True
+        )
         emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, body)
@@ -4818,7 +4834,10 @@ def _emit_while_statement(
     if _node_spans_multiple_rows(condition):
         # Preserve the developer-authored multi-line condition
         # verbatim from source; switch to Allman brace.
-        emitter.write_raw_lines(_node_source_text(source, condition))
+        emitter.write_raw_lines(
+            _node_source_text(source, condition),
+            strip_trailing_ws=True,
+        )
         emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, body)
@@ -6067,7 +6086,9 @@ def _emit_formal_parameters(
     if not force_wrap and _node_spans_multiple_rows(node):
         # Preserve developer-authored multi-line params from
         # source. Includes opening `(` and closing `)`.
-        emitter.write_raw_lines(_node_source_text(source, node))
+        emitter.write_raw_lines(
+            _node_source_text(source, node), strip_trailing_ws=True
+        )
         return
     params = [
         c for c in node.children
@@ -6743,7 +6764,9 @@ def _emit_argument_list(
         if comments_present or _is_inside_csoff_region(
             source, node
         ):
-            emitter.write_raw_lines(src_text)
+            emitter.write_raw_lines(
+                src_text, strip_trailing_ws=True
+            )
             return
         if emitter.paren_align_col is not None:
             target_col = emitter.paren_align_col + 4
@@ -6829,7 +6852,9 @@ def _emit_argument_list(
                     "indent within the line limit."
                 ),
             ))
-        emitter.write_raw_lines("\n".join(final_lines))
+        emitter.write_raw_lines(
+            "\n".join(final_lines), strip_trailing_ws=True
+        )
         return
     # Source-preserved first line wouldn't fit and there
     # are no comments — fall through. The wrap engine
@@ -7648,6 +7673,43 @@ def _emit_variable_declarator(
             break
     if value is None:
         return
+    # 0.5.1: when line_comment / block_comment "extras" sit
+    # between the `=` token and the value RHS (e.g. javadoc
+    # `// @highlight region="..."` snippet markers on
+    # assignment-with-text-block), the wrap engine has no way
+    # to represent comments inline with operator placement,
+    # so source-preserve the entire `= ...` region verbatim.
+    # This matches the 0.5.0 treatment of comments inside
+    # argument lists (`_arg_list_takes_source_preserve_path`).
+    # Without this guard the comments are silently dropped
+    # since `_emit_node(value)` walks only the value subtree
+    # and never visits the extra comment children.
+    equals_token = None
+    for child in node.children:
+        if child.type == "=":
+            equals_token = child
+            break
+    if equals_token is not None:
+        mid_comments = [
+            c for c in node.children
+            if c.type in ("line_comment", "block_comment")
+            and c.start_byte > equals_token.start_byte
+            and c.start_byte < value.start_byte
+        ]
+        if mid_comments:
+            # Emit `= <comments-and-rhs-verbatim-from-source>`.
+            # Verbatim preserves the developer's whitespace
+            # between `=`, the comments, and the value — the
+            # only safe transform when comment placement
+            # carries semantic meaning (snippet markers).
+            emitter.write(" ")
+            verbatim = source[
+                equals_token.start_byte:value.end_byte
+            ].decode("utf-8")
+            emitter.write_raw_lines(
+                verbatim, strip_trailing_ws=True
+            )
+            return
     # Wrap-priority for assignment: prefer the cleanest single-
     # line form over wrapping the value internally. Order:
     #
