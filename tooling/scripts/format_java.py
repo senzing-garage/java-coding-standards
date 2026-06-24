@@ -6907,10 +6907,28 @@ def _emit_argument_list(
             finally:
                 emitter.set_paren_align_col(prev_align)
         else:
+            cont_col = emitter.column
+            prev_arg_multi_row = False
             for index, arg in enumerate(args):
                 if index > 0:
-                    emitter.write(", ")
+                    if prev_arg_multi_row:
+                        # 0.5.1 P3 — item 8 invariant in arg-list
+                        # P1: when the previous arg emitted
+                        # multi-row (a nested call / lambda /
+                        # binary wrapped), break before this arg
+                        # so it doesn't jam onto the wrapped
+                        # construct's tail line. The break lands
+                        # at the call's post-`(` column.
+                        emitter.write(",")
+                        emitter.newline()
+                        emitter.write(" " * cont_col)
+                    else:
+                        emitter.write(", ")
+                operand_start = emitter.line_count
                 _emit_node(emitter, source, arg)
+                prev_arg_multi_row = (
+                    emitter.line_count > operand_start
+                )
         emitter.write(")")
 
     def emit_p4_single_arg() -> None:
@@ -6947,12 +6965,36 @@ def _emit_argument_list(
         emitter.write("(")
         cont_col = emitter.column
         effective_max = _MAX_LINE - emitter.tail_reserve
+        prev_arg_multi_row = False
         for index, arg in enumerate(args):
             if index == 0:
+                operand_start = emitter.line_count
                 _emit_node(emitter, source, arg)
+                prev_arg_multi_row = (
+                    emitter.line_count > operand_start
+                )
+                continue
+            if prev_arg_multi_row:
+                # 0.5.1 P3 — item 8 invariant for arg lists:
+                # the previous arg's emission introduced
+                # newlines (a nested call / lambda / binary
+                # wrapped multi-row), so force break before
+                # this arg. Otherwise the next arg lands at
+                # whatever column the prior arg's wrap tail
+                # ended on, jamming `arg)` onto the same
+                # line as the wrapped construct's closing.
+                emitter.write(",")
+                emitter.newline()
+                emitter.write(" " * cont_col)
+                operand_start = emitter.line_count
+                _emit_node(emitter, source, arg)
+                prev_arg_multi_row = (
+                    emitter.line_count > operand_start
+                )
                 continue
             saved = emitter.snapshot()
             emitter.write(", ")
+            operand_start = emitter.line_count
             _emit_node(emitter, source, arg)
             widths_ok = (
                 emitter.last_lines_max_width(saved[0])
@@ -6985,7 +7027,11 @@ def _emit_argument_list(
                 emitter.write(",")
                 emitter.newline()
                 emitter.write(" " * cont_col)
+                operand_start = emitter.line_count
                 _emit_node(emitter, source, arg)
+            prev_arg_multi_row = (
+                emitter.line_count > operand_start
+            )
         emitter.write(")")
 
     def emit_p4_multi_arg() -> None:
