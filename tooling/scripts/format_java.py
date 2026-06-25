@@ -6897,6 +6897,39 @@ def _emit_argument_list(
         and args[0].type == "binary_expression"
     )
 
+    def _emit_arg_with_optional_paren_align(arg: Node) -> None:
+        # Binary positional arg paren-align: when a positional
+        # arg is a binary expression, set `paren_align_col` to
+        # the arg's start column so the binary's continuation
+        # operators paren-align under the arg's first operand
+        # instead of falling back to the `block + 4`
+        # cumulative indent. This produces:
+        #
+        #     assertTrue(cond,
+        #                "msg "
+        #                    + var
+        #                    + " more");
+        #
+        # instead of:
+        #
+        #     assertTrue(cond,
+        #                "msg "
+        #         + var + " more");      // `+` at col 8
+        #
+        # Narrow to direct binary_expression (no paren unwrap)
+        # to avoid the idempotency drift that originally
+        # narrowed the single-arg call-paren extension to
+        # binary args only.
+        if arg.type == "binary_expression":
+            arg_col = emitter.column
+            prev_align = emitter.set_paren_align_col(arg_col)
+            try:
+                _emit_node(emitter, source, arg)
+            finally:
+                emitter.set_paren_align_col(prev_align)
+        else:
+            _emit_node(emitter, source, arg)
+
     def emit_p1() -> None:
         emitter.write("(")
         if single_arg_binary:
@@ -6912,13 +6945,14 @@ def _emit_argument_list(
             for index, arg in enumerate(args):
                 if index > 0:
                     if prev_arg_multi_row:
-                        # 0.5.1 P3 — item 8 invariant in arg-list
-                        # P1: when the previous arg emitted
+                        # Item 8 invariant in arg-list P1:
+                        # when the previous arg emitted
                         # multi-row (a nested call / lambda /
-                        # binary wrapped), break before this arg
-                        # so it doesn't jam onto the wrapped
-                        # construct's tail line. The break lands
-                        # at the call's post-`(` column.
+                        # binary wrapped), break before this
+                        # arg so it doesn't jam onto the
+                        # wrapped construct's tail line. The
+                        # break lands at the call's post-`(`
+                        # column.
                         emitter.write(",")
                         emitter.newline()
                         emitter.write(" " * cont_col)
@@ -6951,38 +6985,6 @@ def _emit_argument_list(
         emitter.write(")")
         emitter.pop_indent()
 
-    def _emit_arg_with_optional_paren_align(arg: Node) -> None:
-        # 0.5.1 P4 — when a positional arg is a binary
-        # expression, set `paren_align_col` to the arg's
-        # start column so the binary's continuation operators
-        # paren-align under the arg's first operand instead
-        # of falling back to the `block + 4` cumulative
-        # indent. This produces:
-        #
-        #     assertTrue(cond,
-        #                "msg "
-        #                    + var
-        #                    + " more");
-        #
-        # instead of the 0.5.0 shape:
-        #
-        #     assertTrue(cond,
-        #                "msg "
-        #         + var + " more");      // `+` at col 8
-        #
-        # Narrow to direct binary_expression (no paren unwrap)
-        # to avoid the idempotency drift that originally
-        # narrowed item 10 to single-arg.
-        if arg.type == "binary_expression":
-            arg_col = emitter.column
-            prev_align = emitter.set_paren_align_col(arg_col)
-            try:
-                _emit_node(emitter, source, arg)
-            finally:
-                emitter.set_paren_align_col(prev_align)
-        else:
-            _emit_node(emitter, source, arg)
-
     def emit_p2_greedy() -> None:
         # P2: pack as many args as fit on the call line at
         # the paren-aligned continuation column. Each arg's
@@ -7007,14 +7009,14 @@ def _emit_argument_list(
                 )
                 continue
             if prev_arg_multi_row:
-                # 0.5.1 P3 — item 8 invariant for arg lists:
-                # the previous arg's emission introduced
-                # newlines (a nested call / lambda / binary
-                # wrapped multi-row), so force break before
-                # this arg. Otherwise the next arg lands at
-                # whatever column the prior arg's wrap tail
-                # ended on, jamming `arg)` onto the same
-                # line as the wrapped construct's closing.
+                # Item 8 invariant for arg lists: the previous
+                # arg's emission introduced newlines (a nested
+                # call / lambda / binary wrapped multi-row),
+                # so force break before this arg. Otherwise
+                # the next arg lands at whatever column the
+                # prior arg's wrap tail ended on, jamming
+                # `arg)` onto the same line as the wrapped
+                # construct's closing.
                 emitter.write(",")
                 emitter.newline()
                 emitter.write(" " * cont_col)
@@ -7085,9 +7087,9 @@ def _emit_argument_list(
         emitter.pop_indent()
 
     # P1 is the AST-deterministic single-line candidate, but
-    # since 0.5.1 P3 it may emit a multi-row layout when an
-    # intermediate arg wraps multi-row and item-8 forces a
-    # break before subsequent args. try_priorities still
+    # may emit a multi-row layout when an intermediate arg
+    # wraps multi-row and item-8 forces a break before
+    # subsequent args. try_priorities still
     # measures actual rendered widths, so a P1 emit that
     # blows past 80 chars falls through to the next
     # candidate. Letting P1 try keeps the decision
@@ -7761,15 +7763,16 @@ def _emit_variable_declarator(
             break
     if value is None:
         return
-    # 0.5.1: when line_comment / block_comment "extras" sit
-    # between the `=` token and the value RHS (e.g. javadoc
+    # Mid-statement comment preservation: when
+    # line_comment / block_comment "extras" sit between the
+    # `=` token and the value RHS (e.g. javadoc
     # `// @highlight region="..."` snippet markers on
     # assignment-with-text-block), the wrap engine has no way
     # to represent comments inline with operator placement,
     # so source-preserve the entire `= ...` region verbatim.
-    # This matches the 0.5.0 treatment of comments inside
-    # argument lists (`_arg_list_takes_source_preserve_path`).
-    # Without this guard the comments are silently dropped
+    # This matches the treatment of comments inside argument
+    # lists (`_arg_list_takes_source_preserve_path`). Without
+    # this guard the comments are silently dropped
     # since `_emit_node(value)` walks only the value subtree
     # and never visits the extra comment children.
     equals_token = None
