@@ -340,7 +340,7 @@ class Emitter:
         Trailing spaces on the finalized line are stripped before
         commit so emitters need not pre-trim them.
         """
-        self._lines.append(self._current.rstrip(" "))
+        self._lines.append(self._current.rstrip(" \t"))
         self._current = ""
 
     @property
@@ -461,38 +461,42 @@ class Emitter:
             m = len(self._current)
         return m
 
-    def write_raw_lines(self, text: str) -> None:
+    def write_raw_lines(
+        self, text: str, *, strip_trailing_ws: bool = False
+    ) -> None:
         """Append text that may contain newlines, preserved verbatim.
 
         Used by leaf emitters for content the formatter must
         reproduce byte-for-byte — text blocks ("Text Blocks /
         Content preservation" spec section) and eventually block
-        comments. Newlines inside `text` finalize each intermediate
-        line WITHOUT stripping trailing whitespace, since that
+        comments. With the default `strip_trailing_ws=False`,
+        newlines inside `text` finalize each intermediate line
+        WITHOUT stripping trailing whitespace, since that
         whitespace is the developer's content (the spec's
         "Normalize spacing or alignment of content is a no-op"
         rule applies to text-block contents).
 
+        Source-preserved CODE (argument-list verbatim preservation,
+        mid-statement-comment preservation, etc.) is not
+        whitespace-significant content — trailing whitespace
+        there is just stray bytes the source author left behind
+        and the spec's "Trailing Whitespace" rule applies. Such
+        callers pass `strip_trailing_ws=True` to apply the same
+        `rstrip(" \t")` that `newline()` does on its finalized
+        lines.
+
         The in-progress line at the END of `text` (the part after
         the last newline) is left open so subsequent `write()` /
-        `newline()` calls continue normally. Note: trailing
-        whitespace that the DEVELOPER wrote at the very end of a
-        text block (after the final newline, before any
-        formatter-emitted continuation) will be stripped by the
-        eventual `newline()` / `finish()` — that case doesn't
-        arise in well-formed Java source because every
-        `string_literal` ends with a non-whitespace closing
-        quote token, so the final segment passed here is never a
-        bare-whitespace string. Future emitters that pass other
-        kinds of verbatim multi-line content should guarantee the
-        same invariant.
+        `newline()` calls continue normally.
         """
         parts = text.split("\n")
         # First segment continues the current line.
         self._current += parts[0]
         for part in parts[1:]:
-            # Each intermediate line is verbatim — NO strip.
-            self._lines.append(self._current)
+            if strip_trailing_ws:
+                self._lines.append(self._current.rstrip(" \t"))
+            else:
+                self._lines.append(self._current)
             self._current = part
 
     def push_indent(self) -> None:
@@ -521,7 +525,7 @@ class Emitter:
               for files with at least one byte of real content.
         """
         if self._current:
-            self._lines.append(self._current.rstrip(" "))
+            self._lines.append(self._current.rstrip(" \t"))
             self._current = ""
         if not self._lines:
             return b""
@@ -3398,7 +3402,11 @@ def _emit_comment(
     if text.startswith("/**"):
         _emit_javadoc_block(emitter, source, node, text)
         return
-    emitter.write_raw_lines(text)
+    # Non-javadoc block comments (`/* … */`) are source-preserved
+    # but trailing whitespace inside them is never intentional
+    # alignment (any deliberate ASCII-art alignment would be
+    # inside a CSOFF region with its own preservation path).
+    emitter.write_raw_lines(text, strip_trailing_ws=True)
 
 
 _LINE_COMMENT_DIRECTIVE_PREFIXES: Final[tuple[str, ...]] = (
@@ -3828,7 +3836,9 @@ def _emit_array_initializer(
     re-emits with the normalized spacing.
     """
     if _node_spans_multiple_rows(node):
-        emitter.write_raw_lines(_node_source_text(source, node))
+        emitter.write_raw_lines(
+            _node_source_text(source, node), strip_trailing_ws=True
+        )
         return
     elements = [c for c in node.named_children]
     if not elements:
@@ -3854,10 +3864,20 @@ def _emit_array_creation_expression(
     optionally followed by an `array_initializer`.
     """
     if _node_spans_multiple_rows(node):
-        emitter.write_raw_lines(_node_source_text(source, node))
+        emitter.write_raw_lines(
+            _node_source_text(source, node), strip_trailing_ws=True
+        )
         return
     emitter.write("new ")
     for child in node.named_children:
+        # Spec "Whitespace and Operator Spacing": single space
+        # before the opening `{` of an array initializer that
+        # follows `[]` (or `[N]`) dimensions. `new Type[] { X }`
+        # is canonical; `new Type[]{ X }` is a 0.5.0 bug where
+        # the emitter walked `dimensions` then `array_initializer`
+        # back-to-back without inserting the required separator.
+        if child.type == "array_initializer":
+            emitter.write(" ")
         _emit_node(emitter, source, child)
 
 
@@ -3989,7 +4009,9 @@ def _emit_switch_rule(
     more statements. Source-preservation for multi-row source.
     """
     if _node_spans_multiple_rows(node):
-        emitter.write_raw_lines(_node_source_text(source, node))
+        emitter.write_raw_lines(
+            _node_source_text(source, node), strip_trailing_ws=True
+        )
         return
     label = None
     body_children: list[Node] = []
@@ -4206,7 +4228,9 @@ def _emit_synchronized_statement(
         )
     emitter.write("synchronized ")
     if _node_spans_multiple_rows(cond):
-        emitter.write_raw_lines(_node_source_text(source, cond))
+        emitter.write_raw_lines(
+            _node_source_text(source, cond), strip_trailing_ws=True
+        )
         emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, body)
@@ -4818,7 +4842,10 @@ def _emit_while_statement(
     if _node_spans_multiple_rows(condition):
         # Preserve the developer-authored multi-line condition
         # verbatim from source; switch to Allman brace.
-        emitter.write_raw_lines(_node_source_text(source, condition))
+        emitter.write_raw_lines(
+            _node_source_text(source, condition),
+            strip_trailing_ws=True,
+        )
         emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, body)
@@ -6067,7 +6094,9 @@ def _emit_formal_parameters(
     if not force_wrap and _node_spans_multiple_rows(node):
         # Preserve developer-authored multi-line params from
         # source. Includes opening `(` and closing `)`.
-        emitter.write_raw_lines(_node_source_text(source, node))
+        emitter.write_raw_lines(
+            _node_source_text(source, node), strip_trailing_ws=True
+        )
         return
     params = [
         c for c in node.children
@@ -6743,7 +6772,9 @@ def _emit_argument_list(
         if comments_present or _is_inside_csoff_region(
             source, node
         ):
-            emitter.write_raw_lines(src_text)
+            emitter.write_raw_lines(
+                src_text, strip_trailing_ws=True
+            )
             return
         if emitter.paren_align_col is not None:
             target_col = emitter.paren_align_col + 4
@@ -6829,7 +6860,9 @@ def _emit_argument_list(
                     "indent within the line limit."
                 ),
             ))
-        emitter.write_raw_lines("\n".join(final_lines))
+        emitter.write_raw_lines(
+            "\n".join(final_lines), strip_trailing_ws=True
+        )
         return
     # Source-preserved first line wouldn't fit and there
     # are no comments — fall through. The wrap engine
@@ -6864,6 +6897,39 @@ def _emit_argument_list(
         and args[0].type == "binary_expression"
     )
 
+    def _emit_arg_with_optional_paren_align(arg: Node) -> None:
+        # Binary positional arg paren-align: when a positional
+        # arg is a binary expression, set `paren_align_col` to
+        # the arg's start column so the binary's continuation
+        # operators paren-align under the arg's first operand
+        # instead of falling back to the `block + 4`
+        # cumulative indent. This produces:
+        #
+        #     assertTrue(cond,
+        #                "msg "
+        #                    + var
+        #                    + " more");
+        #
+        # instead of:
+        #
+        #     assertTrue(cond,
+        #                "msg "
+        #         + var + " more");      // `+` at col 8
+        #
+        # Narrow to direct binary_expression (no paren unwrap)
+        # to avoid the idempotency drift that originally
+        # narrowed the single-arg call-paren extension to
+        # binary args only.
+        if arg.type == "binary_expression":
+            arg_col = emitter.column
+            prev_align = emitter.set_paren_align_col(arg_col)
+            try:
+                _emit_node(emitter, source, arg)
+            finally:
+                emitter.set_paren_align_col(prev_align)
+        else:
+            _emit_node(emitter, source, arg)
+
     def emit_p1() -> None:
         emitter.write("(")
         if single_arg_binary:
@@ -6874,10 +6940,29 @@ def _emit_argument_list(
             finally:
                 emitter.set_paren_align_col(prev_align)
         else:
+            cont_col = emitter.column
+            prev_arg_multi_row = False
             for index, arg in enumerate(args):
                 if index > 0:
-                    emitter.write(", ")
-                _emit_node(emitter, source, arg)
+                    if prev_arg_multi_row:
+                        # Item 8 invariant in arg-list P1:
+                        # when the previous arg emitted
+                        # multi-row (a nested call / lambda /
+                        # binary wrapped), break before this
+                        # arg so it doesn't jam onto the
+                        # wrapped construct's tail line. The
+                        # break lands at the call's post-`(`
+                        # column.
+                        emitter.write(",")
+                        emitter.newline()
+                        emitter.write(" " * cont_col)
+                    else:
+                        emitter.write(", ")
+                operand_start = emitter.line_count
+                _emit_arg_with_optional_paren_align(arg)
+                prev_arg_multi_row = (
+                    emitter.line_count > operand_start
+                )
         emitter.write(")")
 
     def emit_p4_single_arg() -> None:
@@ -6914,13 +6999,37 @@ def _emit_argument_list(
         emitter.write("(")
         cont_col = emitter.column
         effective_max = _MAX_LINE - emitter.tail_reserve
+        prev_arg_multi_row = False
         for index, arg in enumerate(args):
             if index == 0:
-                _emit_node(emitter, source, arg)
+                operand_start = emitter.line_count
+                _emit_arg_with_optional_paren_align(arg)
+                prev_arg_multi_row = (
+                    emitter.line_count > operand_start
+                )
+                continue
+            if prev_arg_multi_row:
+                # Item 8 invariant for arg lists: the previous
+                # arg's emission introduced newlines (a nested
+                # call / lambda / binary wrapped multi-row),
+                # so force break before this arg. Otherwise
+                # the next arg lands at whatever column the
+                # prior arg's wrap tail ended on, jamming
+                # `arg)` onto the same line as the wrapped
+                # construct's closing.
+                emitter.write(",")
+                emitter.newline()
+                emitter.write(" " * cont_col)
+                operand_start = emitter.line_count
+                _emit_arg_with_optional_paren_align(arg)
+                prev_arg_multi_row = (
+                    emitter.line_count > operand_start
+                )
                 continue
             saved = emitter.snapshot()
             emitter.write(", ")
-            _emit_node(emitter, source, arg)
+            operand_start = emitter.line_count
+            _emit_arg_with_optional_paren_align(arg)
             widths_ok = (
                 emitter.last_lines_max_width(saved[0])
                 <= effective_max
@@ -6952,7 +7061,11 @@ def _emit_argument_list(
                 emitter.write(",")
                 emitter.newline()
                 emitter.write(" " * cont_col)
-                _emit_node(emitter, source, arg)
+                operand_start = emitter.line_count
+                _emit_arg_with_optional_paren_align(arg)
+            prev_arg_multi_row = (
+                emitter.line_count > operand_start
+            )
         emitter.write(")")
 
     def emit_p4_multi_arg() -> None:
@@ -6973,12 +7086,14 @@ def _emit_argument_list(
         emitter.write(")")
         emitter.pop_indent()
 
-    # P1 (single line) is always tried first. The wrap engine
-    # measures actual rendered widths via try_priorities, so a
-    # multi-line arg (lambda body, nested wrapping call) that
-    # blows past 80 chars during P1 emit simply falls through
-    # to the next candidate. Letting P1 try also keeps the
-    # decision deterministic from the AST — earlier code
+    # P1 is the AST-deterministic single-line candidate, but
+    # may emit a multi-row layout when an intermediate arg
+    # wraps multi-row and item-8 forces a break before
+    # subsequent args. try_priorities still
+    # measures actual rendered widths, so a P1 emit that
+    # blows past 80 chars falls through to the next
+    # candidate. Letting P1 try keeps the decision
+    # deterministic from the AST — earlier code
     # short-circuited P1 when any arg's SOURCE was multi-row,
     # which made the decision flip between formatter passes.
     candidates: list[Callable[[], None]] = [emit_p1]
@@ -7648,6 +7763,44 @@ def _emit_variable_declarator(
             break
     if value is None:
         return
+    # Mid-statement comment preservation: when
+    # line_comment / block_comment "extras" sit between the
+    # `=` token and the value RHS (e.g. javadoc
+    # `// @highlight region="..."` snippet markers on
+    # assignment-with-text-block), the wrap engine has no way
+    # to represent comments inline with operator placement,
+    # so source-preserve the entire `= ...` region verbatim.
+    # This matches the treatment of comments inside argument
+    # lists (`_arg_list_takes_source_preserve_path`). Without
+    # this guard the comments are silently dropped
+    # since `_emit_node(value)` walks only the value subtree
+    # and never visits the extra comment children.
+    equals_token = None
+    for child in node.children:
+        if child.type == "=":
+            equals_token = child
+            break
+    if equals_token is not None:
+        mid_comments = [
+            c for c in node.children
+            if c.type in ("line_comment", "block_comment")
+            and c.start_byte > equals_token.start_byte
+            and c.start_byte < value.start_byte
+        ]
+        if mid_comments:
+            # Emit `= <comments-and-rhs-verbatim-from-source>`.
+            # Verbatim preserves the developer's whitespace
+            # between `=`, the comments, and the value — the
+            # only safe transform when comment placement
+            # carries semantic meaning (snippet markers).
+            emitter.write(" ")
+            verbatim = source[
+                equals_token.start_byte:value.end_byte
+            ].decode("utf-8")
+            emitter.write_raw_lines(
+                verbatim, strip_trailing_ws=True
+            )
+            return
     # Wrap-priority for assignment: prefer the cleanest single-
     # line form over wrapping the value internally. Order:
     #
