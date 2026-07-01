@@ -6818,52 +6818,98 @@ def _emit_argument_list(
                 leading = len(line) - len(stripped)
                 new_leading = max(0, leading + delta)
                 shifted.append(" " * new_leading + stripped)
-            final_lines = shifted
-        # Width-check fires per-line so the advisory matches
-        # what checkstyle's LineLength will actually see on
-        # disk. Only the LAST emitted line receives the
-        # parent's `tail_reserve` chars (`;`, `)`, etc.) —
-        # intermediate finalized lines render verbatim. This
-        # mirrors the per-line accounting in
-        # `_fire_wrap_overflow_advisory`; without it, an
-        # intermediate line at exactly `_MAX_LINE` chars
-        # (≤ 80 on disk) but `> _MAX_LINE - tail_reserve`
-        # would spuriously fire an advisory.
-        first_line_width = emitter.column + len(final_lines[0])
-        if len(final_lines) == 1:
-            # Only one emitted line — it's both the first and
-            # last line, so the parent's `tail_reserve` lands
-            # on it.
-            max_line_width = (
-                first_line_width + emitter.tail_reserve
+            # 0.5.2 F — shift-up-overflow guard. When the
+            # shift makes any shifted line exceed 80 chars
+            # (i.e. the source's shallower indent had the
+            # content fitting under 80, but the target
+            # column shift pushes it past), decline
+            # source-preserve entirely so the wrap engine
+            # can pick a layout that fits. Without this
+            # guard, the formatter mechanically shifts
+            # a fitting shallow-indent source into an
+            # overflowing shape and only reports it via
+            # the post-emit advisory — leaving an
+            # unnecessary LineLength violation that the
+            # wrap engine would have avoided with
+            # `emit_p4_multi_arg` (one arg per line).
+            shifted_first_line_width = (
+                emitter.column + len(shifted[0])
             )
-        else:
-            intermediate_widths = [
-                len(ln) for ln in final_lines[1:-1]
-            ]
-            last_line_width = (
-                len(final_lines[-1]) + emitter.tail_reserve
+            if len(shifted) == 1:
+                shifted_max = (
+                    shifted_first_line_width
+                    + emitter.tail_reserve
+                )
+            else:
+                shifted_last_width = (
+                    len(shifted[-1]) + emitter.tail_reserve
+                )
+                shifted_intermediates = [
+                    len(ln) for ln in shifted[1:-1]
+                ]
+                shifted_max = max(
+                    [
+                        shifted_first_line_width,
+                        shifted_last_width,
+                    ]
+                    + shifted_intermediates
+                )
+            if shifted_max > _MAX_LINE:
+                # Signal fall-through to wrap engine.
+                final_lines = None
+            else:
+                final_lines = shifted
+        if final_lines is not None:
+            # Width-check fires per-line so the advisory matches
+            # what checkstyle's LineLength will actually see on
+            # disk. Only the LAST emitted line receives the
+            # parent's `tail_reserve` chars (`;`, `)`, etc.) —
+            # intermediate finalized lines render verbatim. This
+            # mirrors the per-line accounting in
+            # `_fire_wrap_overflow_advisory`; without it, an
+            # intermediate line at exactly `_MAX_LINE` chars
+            # (≤ 80 on disk) but `> _MAX_LINE - tail_reserve`
+            # would spuriously fire an advisory.
+            first_line_width = (
+                emitter.column + len(final_lines[0])
             )
-            max_line_width = max(
-                [first_line_width, last_line_width]
-                + intermediate_widths
+            if len(final_lines) == 1:
+                # Only one emitted line — it's both the first and
+                # last line, so the parent's `tail_reserve` lands
+                # on it.
+                max_line_width = (
+                    first_line_width + emitter.tail_reserve
+                )
+            else:
+                intermediate_widths = [
+                    len(ln) for ln in final_lines[1:-1]
+                ]
+                last_line_width = (
+                    len(final_lines[-1]) + emitter.tail_reserve
+                )
+                max_line_width = max(
+                    [first_line_width, last_line_width]
+                    + intermediate_widths
+                )
+            if max_line_width > _MAX_LINE:
+                emitter.warnings.append(FormatterWarning(
+                    line=node.start_point[0] + 1,
+                    column=node.start_point[1] + 1,
+                    message=(
+                        "source-preserved arg list overflows 80 "
+                        f"chars (max line width {max_line_width}). "
+                        "Split the contained literal or expression "
+                        "into smaller chunks so the formatter can "
+                        "re-indent within the line limit."
+                    ),
+                ))
+            emitter.write_raw_lines(
+                "\n".join(final_lines),
+                strip_trailing_ws=True,
             )
-        if max_line_width > _MAX_LINE:
-            emitter.warnings.append(FormatterWarning(
-                line=node.start_point[0] + 1,
-                column=node.start_point[1] + 1,
-                message=(
-                    "source-preserved arg list overflows 80 chars "
-                    f"(max line width {max_line_width}). Split "
-                    "the contained literal or expression into "
-                    "smaller chunks so the formatter can re-"
-                    "indent within the line limit."
-                ),
-            ))
-        emitter.write_raw_lines(
-            "\n".join(final_lines), strip_trailing_ws=True
-        )
-        return
+            return
+        # Fall through to wrap engine — shift-up would have
+        # overflowed, so let the wrap engine choose a shape.
     # Source-preserved first line wouldn't fit and there
     # are no comments — fall through. The wrap engine
     # below picks a layout that fits at the new column.

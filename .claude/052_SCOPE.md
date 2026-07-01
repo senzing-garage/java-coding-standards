@@ -1,5 +1,46 @@
 # 0.5.2 release scope (planning)
 
+## Status update — 2026-07-01: finding F is shippable
+
+While diagnosing why `ConnectionPoolTest.java:935` came out
+overflowing after a 0.5.1 format pass, discovered a sixth
+defect (finding F) that IS cleanly fixable within the
+0.5.1-style bug-fix pattern:
+
+**Finding F — source-preserve shift-up produces overflow.**
+When the source-preserve path in `_emit_argument_list`
+mechanically shifts a shallow-indent continuation to the
+target column (`paren_align_col + 4` or `block + 4`), the
+resulting shape can overflow 80 chars even though the
+source shape (at its shallower column) fit within 80.
+Before this fix, the mechanical shift ran unconditionally
+and only reported the overflow via the post-emit advisory
+— leaving a preventable LineLength violation on disk.
+
+**Fix:** narrow shift-up-overflow guard in
+`_emit_argument_list`. Compute the max shifted line width
+BEFORE committing to source-preserve; if any shifted line
+would exceed 80 chars, fall through to the wrap engine
+which can pick a fitting layout (typically
+`emit_p4_multi_arg` — each arg on its own line at target
+column). The guard is narrow: it only inspects lines produced by
+the mechanical shift-up (source_first_cont_col < target_col
+AND shifted content overflows). When the source's authored
+column is at or deeper than target_col, the earlier "only
+shift UP" gate short-circuits with `final_lines = lines` —
+the guard is never reached, so developer-chosen deep-indent
+shapes (like `condition_wrap/09`'s long literal at col 28)
+stay preserved verbatim. Source-authored-column overflows
+in that path still ride the advisory only (they need
+manual literal splits, unchanged from 0.5.1).
+
+**Verified:** 656 tests pass; `condition_wrap/09` (deep-
+indent paren-align with long literal, developer-chosen
+deeper column) preserved unchanged.
+
+Findings A-E remain architecturally coupled (see below);
+deferring them to 0.6 stands. F ships alone in 0.5.2.
+
 ## Status update — 2026-06-30 investigation
 
 After investigation of all five findings on branch
