@@ -10,6 +10,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-01
+
+Bug-fix release adding a defensive guard to
+`_emit_argument_list`'s source-preserve path so a mechanical
+shift-up cannot produce an overflow shape the wrap engine
+would have avoided. Narrow, no spec change; findings A–E from
+the 0.5.2 investigation remain deferred to 0.6.
+
 ### Fixed
 
 - **Source-preserve shift-up produced overflow lines.** When
