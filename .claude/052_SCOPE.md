@@ -21,9 +21,11 @@ and only reported the overflow via the post-emit advisory
 `_emit_argument_list`. Compute the max shifted line width
 BEFORE committing to source-preserve; if any shifted line
 would exceed 80 chars, fall through to the wrap engine
-which can pick a fitting layout (typically
-`emit_p4_multi_arg` — each arg on its own line at target
-column). The guard is narrow: it only inspects lines produced by
+cascade (`emit_p1` → `emit_p2_greedy` → `emit_p4_multi_arg`)
+which commits the first candidate that fits (in practice
+`emit_p2_greedy`'s packed paren-aligned shape usually wins
+for multi-arg cases; the P4 one-arg-per-line shape only
+lands when neither prior candidate fits). The guard is narrow: it only inspects lines produced by
 the mechanical shift-up (source_first_cont_col < target_col
 AND shifted content overflows). When the source's authored
 column is at or deeper than target_col, the earlier "only

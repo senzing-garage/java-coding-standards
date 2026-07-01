@@ -23,8 +23,12 @@ and this project adheres to
   preventable LineLength violation on disk. Fix: compute
   the max shifted line width before committing to
   source-preserve; when the shift would overflow, fall
-  through to the wrap engine (typically
-  `emit_p4_multi_arg`, one arg per line at target column).
+  through to the wrap engine cascade (`emit_p1` →
+  `emit_p2_greedy` → `emit_p4_multi_arg`), which commits
+  the first candidate that fits. In practice `emit_p2_greedy`
+  (paren-aligned, packed) wins most multi-arg cases; P4
+  (one arg per line) only lands when neither prior
+  candidate fits.
   The guard is narrow: it only inspects lines produced by
   the mechanical shift-up (source column shallower than
   target). When the source's authored column is at or

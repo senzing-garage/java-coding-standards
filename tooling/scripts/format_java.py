@@ -6548,6 +6548,40 @@ def _arg_list_has_semantic_multi_row_arg(node: Node) -> bool:
     return False
 
 
+def _max_source_preserve_line_width(
+    lines: list[str],
+    prefix_col: int,
+    tail_reserve: int,
+) -> int:
+    """Return the max on-disk width of a source-preserved
+    block, matching the per-line accounting in
+    `_fire_wrap_overflow_advisory`.
+
+    - Line 0 is prefixed by `prefix_col` chars of emit-line
+      context (whatever the emitter already wrote before the
+      arg list) — mirrors `emitter.column + len(lines[0])`.
+    - The LAST line receives `tail_reserve` chars for the
+      parent's trailing tokens (`;`, `)`, etc.).
+    - Intermediate lines render verbatim, no adjustment.
+    - Single-line inputs treat that line as both first AND
+      last, so `prefix_col + len(lines[0]) + tail_reserve`.
+
+    Shared between the 0.5.2 F shift-up-overflow guard and
+    the post-emit overflow advisory in `_emit_argument_list`
+    so both use identical width math.
+    """
+    if not lines:
+        return 0
+    first_width = prefix_col + len(lines[0])
+    if len(lines) == 1:
+        return first_width + tail_reserve
+    last_width = len(lines[-1]) + tail_reserve
+    return max(
+        first_width, last_width,
+        *(len(ln) for ln in lines[1:-1]),
+    )
+
+
 def _arg_list_takes_source_preserve_path(
     emitter: Emitter,
     source: bytes,
@@ -6830,30 +6864,11 @@ def _emit_argument_list(
             # overflowing shape and only reports it via
             # the post-emit advisory — leaving an
             # unnecessary LineLength violation that the
-            # wrap engine would have avoided with
-            # `emit_p4_multi_arg` (one arg per line).
-            shifted_first_line_width = (
-                emitter.column + len(shifted[0])
+            # wrap engine (P1 → P2-greedy → P4) would have
+            # avoided by choosing a fitting candidate.
+            shifted_max = _max_source_preserve_line_width(
+                shifted, emitter.column, emitter.tail_reserve,
             )
-            if len(shifted) == 1:
-                shifted_max = (
-                    shifted_first_line_width
-                    + emitter.tail_reserve
-                )
-            else:
-                shifted_last_width = (
-                    len(shifted[-1]) + emitter.tail_reserve
-                )
-                shifted_intermediates = [
-                    len(ln) for ln in shifted[1:-1]
-                ]
-                shifted_max = max(
-                    [
-                        shifted_first_line_width,
-                        shifted_last_width,
-                    ]
-                    + shifted_intermediates
-                )
             if shifted_max > _MAX_LINE:
                 # Signal fall-through to wrap engine.
                 final_lines = None
@@ -6862,35 +6877,16 @@ def _emit_argument_list(
         if final_lines is not None:
             # Width-check fires per-line so the advisory matches
             # what checkstyle's LineLength will actually see on
-            # disk. Only the LAST emitted line receives the
-            # parent's `tail_reserve` chars (`;`, `)`, etc.) —
-            # intermediate finalized lines render verbatim. This
-            # mirrors the per-line accounting in
+            # disk. Per-line accounting mirrors
             # `_fire_wrap_overflow_advisory`; without it, an
             # intermediate line at exactly `_MAX_LINE` chars
             # (≤ 80 on disk) but `> _MAX_LINE - tail_reserve`
             # would spuriously fire an advisory.
-            first_line_width = (
-                emitter.column + len(final_lines[0])
+            max_line_width = _max_source_preserve_line_width(
+                final_lines,
+                emitter.column,
+                emitter.tail_reserve,
             )
-            if len(final_lines) == 1:
-                # Only one emitted line — it's both the first and
-                # last line, so the parent's `tail_reserve` lands
-                # on it.
-                max_line_width = (
-                    first_line_width + emitter.tail_reserve
-                )
-            else:
-                intermediate_widths = [
-                    len(ln) for ln in final_lines[1:-1]
-                ]
-                last_line_width = (
-                    len(final_lines[-1]) + emitter.tail_reserve
-                )
-                max_line_width = max(
-                    [first_line_width, last_line_width]
-                    + intermediate_widths
-                )
             if max_line_width > _MAX_LINE:
                 emitter.warnings.append(FormatterWarning(
                     line=node.start_point[0] + 1,
