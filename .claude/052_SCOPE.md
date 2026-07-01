@@ -1,5 +1,88 @@
 # 0.5.2 release scope (planning)
 
+## Status update — 2026-06-30 investigation
+
+After investigation of all five findings on branch
+`caceres-0.5.2`, **none has a clean pinpoint fix in the
+0.5.1-style bug-fix pattern.** All five share a common
+architectural constraint: the source-preserve path in
+`_emit_argument_list` preserves already-emitted multi-row
+shapes verbatim (modulo column shift), even when a fresh
+wrap-engine emit would produce a better layout. Fixing
+this properly requires speculatively running the wrap
+engine and comparing shapes — a design change, not a fix.
+
+**Attempted P0 fix** (bifurcated source-preserve column
+rule): distinguish paren-align context from non-paren
+context, restrict "only shift UP" preservation to the
+paren-context case. Broke idempotency on
+`SzInstallLocationsTest.java` because the outer binary's
+shallow-line detection produced different decisions in
+first vs second pass. Reverted.
+
+**Non-bug reclassifications:**
+
+- **P1 (finding C)** — reviewer claimed no advisory fires
+  for the `ConnectionPoolTest.java:112 / :283` overflows.
+  Actually verified: `source-preserved arg list overflows
+  80 chars (max line width 86)` warnings DO fire at lines
+  111 and 282. False finding.
+- **P3 (finding D)** — reviewer claimed no advisory fires
+  for the `JsonUtilitiesExtraTest.java:269` 89-char line.
+  Actually verified: warning at line 268, max width 87
+  fires. False finding for the "silent" claim, but the
+  produced shape IS worse than a fresh format — same
+  architectural issue as P0.
+
+**Remaining findings requiring design work:**
+
+- **P0 (finding A)** — `super(arg, arg, innerCall(arg,` —
+  stale col 28 preserved. Architecture: re-anchor when
+  source's paren column doesn't match emitter's paren
+  column, OR when the shape is verifiably worse than a
+  fresh wrap-engine emit.
+- **P2 (finding B)** — `("dist".equals(installDir...` —
+  same source-preserve-preserves-stale-shape issue.
+- **P3 (finding D)** — shape-worse-than-fresh — same
+  category.
+- **P4 (finding E)** — `result.add(arguments(...))`
+  consecutive inconsistency — different architectural
+  issue (cross-statement smoothing). Confirmed as
+  0.6+ scope.
+
+## What can ship in 0.5.2
+
+At the moment, nothing formatter-side ships cleanly. The
+consumer-side PR #228 already carried an independent
+correctness fix (`ConnectionPool.java:760` retireLimit
+guard) and can merge without a paired standards release.
+
+**Options for the 0.5.2 branch:**
+
+1. **Skip 0.5.2 entirely.** The four architecturally-
+   coupled findings (A, B, D, and half of E) can wait
+   for a 0.6 release that redesigns the source-preserve
+   layer to speculatively-verify-then-commit.
+2. **Ship 0.5.2 with only infrastructure improvements**
+   (docs, verification-plan updates, no code fixes).
+3. **Design and ship the speculative-emit source-
+   preserve architecture** — a larger effort than a
+   patch release should carry.
+
+Recommend (1) or (2). Reserve architectural rework for
+0.6.
+
+## Original planning notes (kept for reference)
+
+The rest of this document is the original scope plan
+before the 2026-06-30 investigation revealed the
+architectural coupling. Findings A-E are documented
+with concrete file:line repros; the priority-order
+recommendation and fix candidates are superseded by the
+investigation results above.
+
+---
+
 Bug-fix release addressing formatter-output alignment defects
 surfaced during the 0.5.1 adoption pass in `senzing-commons-
 java` (PR #228 CI review on consumer commit `91ba830` /
