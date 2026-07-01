@@ -10,6 +10,43 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Source-preserve shift-up produced overflow lines.** When
+  `_emit_argument_list`'s source-preserve path shifted a
+  shallow-indent continuation up to its target column
+  (`paren_align_col + 4` or `block + 4`), the shifted
+  continuation could exceed 80 chars even though the source
+  fit at its authored (shallower) column. The formatter
+  ran the shift unconditionally and only reported the
+  overflow via the post-emit advisory — leaving a
+  preventable LineLength violation on disk. Fix: compute
+  the max shifted line width before committing to
+  source-preserve; when the shift would overflow, fall
+  through to the wrap engine cascade (`emit_p1` →
+  `emit_p2_greedy` → `emit_p4_multi_arg`), which commits
+  the first candidate that fits. In practice `emit_p2_greedy`
+  (paren-aligned, packed) wins most multi-arg cases; P4
+  (one arg per line) only lands when neither prior
+  candidate fits.
+  The guard is narrow: it only inspects lines produced by
+  the mechanical shift-up (source column shallower than
+  target). When the source's authored column is at or
+  deeper than the target column, the earlier "only shift
+  UP" gate short-circuits to preserve the developer's
+  chosen indent verbatim — the guard is never reached, and
+  overflows in that path still ride the advisory (they
+  need manual literal splits, unchanged from 0.5.1).
+
+### Verification
+
+- 657 formatter tests pass (was 656 at 0.5.1; +1 fixture
+  `arg_list_wrap/08_shift_up_overflow_declines_source_preserve`
+  locks the wrap-engine shape produced when the guard
+  declines source-preserve). `condition_wrap/09` (deep-
+  indent paren-align with long literal, developer-chosen
+  deeper column) remains preserved verbatim as expected.
+
 ## [0.5.1] - 2026-06-24
 
 Bug-fix release addressing four formatter defects (five
