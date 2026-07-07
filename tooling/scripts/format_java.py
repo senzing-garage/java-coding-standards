@@ -5542,10 +5542,11 @@ def _emit_enum_declaration(
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if (
-        super_interfaces_node is not None
-        and emitter.last_lines_max_width(saved[0]) > _MAX_LINE
-    ):
+    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+        # When `super_interfaces_node is None`, nothing was
+        # emitted since the snapshot, so this check cannot
+        # trip — matching the unconditional style used in
+        # the sibling `_emit_class_declaration`.
         emitter.restore(saved)
         _emit_class_header_wrapped(
             emitter,

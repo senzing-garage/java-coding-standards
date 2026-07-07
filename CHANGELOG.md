@@ -52,8 +52,14 @@ to `// CSOFF` markers for long-typed enum declarations).
   had no valid formatter output — every manual wrap was
   reflowed back to single line, forcing `// CSOFF`
   suppressions. Now the formatter wraps them
-  automatically. Locked by the new fixture
-  `tests/fixtures/class_header_wrap/07_enum_implements_wrap/`.
+  automatically. Locked by three new fixtures:
+  `tests/fixtures/class_header_wrap/07_enum_implements_wrap/`
+  (top-level P2 shape),
+  `tests/fixtures/class_header_wrap/08_nested_enum_implements_wrap/`
+  (nested enum, `start_col + 4` semantics), and
+  `tests/fixtures/class_header_wrap/09_enum_p3_terminal_single_interface/`
+  (single super-long interface committing at P3-terminal
+  per spec C1 "emit + warn").
 
 ### Adopter action required
 
@@ -74,12 +80,15 @@ Consumers upgrading their submodule pin from 0.5.2 to
 
 ### Verification
 
-- 659 formatter tests pass (was 657 at 0.5.2; +2 fixtures
+- 660 formatter tests pass (was 657 at 0.5.2); +3 fixtures:
   `class_header_wrap/07_enum_implements_wrap` (top-level
-  `PrimaryEnvTestOption`-shaped enum header) and
+  `PrimaryEnvTestOption`-shaped enum header, P2 shape),
   `class_header_wrap/08_nested_enum_implements_wrap`
   (nested enum inside a class, locking the `start_col + 4`
-  continuation column semantics).
+  continuation column semantics), and
+  `class_header_wrap/09_enum_p3_terminal_single_interface`
+  (single super-long interface committing at P3-terminal
+  per spec C1 "emit + warn").
 - Adoption template diff reviewed against maven-checkstyle-
   plugin 3.6.0 parameter docs — `includeTestSourceDirectory`
   is a plugin `<configuration>` parameter, not a system
