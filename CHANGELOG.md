@@ -12,14 +12,14 @@ and this project adheres to
 
 ## [0.5.3] - 2026-07-07
 
-Adoption-template release closing the "test-source
-formatter advisories are toothless" gap. No formatter or
-spec change; a single line added to the shared
-`pom-checkstyle-profile.xml` template that flips
-`maven-checkstyle-plugin`'s `includeTestSourceDirectory`
-from its default `false` to `true`, so `src/test/java` is
-gated by the same 80-char `LineLength` (and other) rules
-that already apply to `src/main/java`.
+Adoption-template + formatter release. Closes the
+"test-source formatter advisories are toothless" gap by
+flipping `maven-checkstyle-plugin`'s
+`includeTestSourceDirectory` to `true` in the shared
+template, then extends the AST formatter to wrap
+enum-header `implements` clauses (previously it only
+wrapped `class` and `interface` headers, forcing adopters
+to `// CSOFF` markers for long-typed enum declarations).
 
 ### Changed
 
@@ -34,6 +34,26 @@ that already apply to `src/main/java`.
   test-source overflows without a forcing function to
   clean them up. This release turns the gate on for all
   consumers on their next `/init-java` run.
+
+### Added
+
+- **Enum-header wrap.** `_emit_enum_declaration` in
+  `format_java.py` now mirrors the class-header
+  snapshot-and-wrap flow: after emitting `[modifiers] enum
+  NAME`, speculatively emit the `implements` clause on the
+  same line; if it overflows 80 chars, restore and delegate
+  to the existing `_emit_class_header_wrapped` helper
+  (which drops the clause to a `start_col + 4` continuation
+  line via the P2/P3 cascade). Fills a formatter gap
+  surfaced during the `senzing-commons-java` 0.5.3
+  adoption: 4 long-typed enum declarations
+  (`ExtendedTestOption`, `EnvTestOption`,
+  `OtherTestOption`, `PrimaryEnvTestOption`) previously
+  had no valid formatter output — every manual wrap was
+  reflowed back to single line, forcing `// CSOFF`
+  suppressions. Now the formatter wraps them
+  automatically. Locked by the new fixture
+  `tests/fixtures/class_header_wrap/07_enum_implements_wrap/`.
 
 ### Adopter action required
 
@@ -54,6 +74,12 @@ Consumers upgrading their submodule pin from 0.5.2 to
 
 ### Verification
 
+- 659 formatter tests pass (was 657 at 0.5.2; +2 fixtures
+  `class_header_wrap/07_enum_implements_wrap` (top-level
+  `PrimaryEnvTestOption`-shaped enum header) and
+  `class_header_wrap/08_nested_enum_implements_wrap`
+  (nested enum inside a class, locking the `start_col + 4`
+  continuation column semantics).
 - Adoption template diff reviewed against maven-checkstyle-
   plugin 3.6.0 parameter docs — `includeTestSourceDirectory`
   is a plugin `<configuration>` parameter, not a system
@@ -64,7 +90,10 @@ Consumers upgrading their submodule pin from 0.5.2 to
   adoption): the flag flips 23 previously-silent
   formatter advisories into hard checkstyle violations
   and drives the manual-cleanup follow-up on the
-  consumer.
+  consumer. The enum-wrap addition eliminates the need
+  for `// CSOFF` markers on the 4 long-typed
+  `CommandLineOption<T, U>`-implementing enum
+  declarations under `src/test/java/com/senzing/cmdline/`.
 
 ## [0.5.2] - 2026-07-01
 
