@@ -5518,13 +5518,44 @@ def _emit_enum_declaration(
             "shape unexpected."
         )
 
+    # Capture the enum declaration's start column so the
+    # implements-wrap continuation indent lands at
+    # `start_col + 4` — mirrors `_emit_class_declaration`.
+    start_col = emitter.column
+
     if modifiers_node is not None:
         _emit_node(emitter, source, modifiers_node)
     emitter.write("enum ")
     _emit_node(emitter, source, name)
+
+    # Try-emit the single-line enum header. If the
+    # `implements ...` clause pushes past 80 chars,
+    # backtrack and wrap. Enums have no `type_parameters`
+    # or `extends` (both refused above), so this only
+    # feeds `super_interfaces_node` to the shared wrap
+    # helper. Long-typed enum headers typically land on
+    # the P2 shape (`implements X, Y` on a single
+    # continuation line at `start_col + 4`); single
+    # interfaces wider than the continuation budget
+    # commit at P3-terminal per spec C1 emit-and-warn.
+    saved = emitter.snapshot()
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
+    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+        # When `super_interfaces_node is None`, nothing was
+        # emitted since the snapshot, so this check cannot
+        # trip — matching the unconditional style used in
+        # the sibling `_emit_class_declaration`.
+        emitter.restore(saved)
+        _emit_class_header_wrapped(
+            emitter,
+            source,
+            None,
+            None,
+            super_interfaces_node,
+            WrapContext.at(start_col),
+        )
     emitter.newline()
     emitter.write_indent()
     emitter.write("{")

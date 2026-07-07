@@ -10,6 +10,100 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-07
+
+Adoption-template + formatter release. Closes the
+"test-source formatter advisories are toothless" gap by
+flipping `maven-checkstyle-plugin`'s
+`includeTestSourceDirectory` to `true` in the shared
+template, then extends the AST formatter to wrap
+enum-header `implements` clauses (previously it only
+wrapped `class` and `interface` headers, forcing adopters
+to `// CSOFF` markers for long-typed enum declarations).
+
+### Changed
+
+- **`adoption/claude-md-templates/pom-checkstyle-profile.xml`:
+  gate `src/test/java` with checkstyle.** Adds
+  `<includeTestSourceDirectory>true</includeTestSourceDirectory>`
+  to the shared checkstyle profile template. Before 0.5.3,
+  the plugin's default (`false`) silently skipped test
+  sources — the formatter's `LineLength` overflow
+  advisories in `src/test/java` printed at format time but
+  never failed a build, so consumers accumulated
+  test-source overflows without a forcing function to
+  clean them up. This release turns the gate on for all
+  consumers on their next `/init-java` run.
+
+### Added
+
+- **Enum-header wrap.** `_emit_enum_declaration` in
+  `format_java.py` now mirrors the class-header
+  snapshot-and-wrap flow: after emitting `[modifiers] enum
+  NAME`, speculatively emit the `implements` clause on the
+  same line; if it overflows 80 chars, restore and delegate
+  to the existing `_emit_class_header_wrapped` helper
+  (which drops the clause to a `start_col + 4` continuation
+  line via the P2/P3 cascade). Fills a formatter gap
+  surfaced during the `senzing-commons-java` 0.5.3
+  adoption: 4 long-typed enum declarations
+  (`ExtendedTestOption`, `EnvTestOption`,
+  `OtherTestOption`, `PrimaryEnvTestOption`) previously
+  had no valid formatter output — every manual wrap was
+  reflowed back to single line, forcing `// CSOFF`
+  suppressions. Now the formatter wraps them
+  automatically. Locked by three new fixtures:
+  `tests/fixtures/class_header_wrap/07_enum_implements_wrap/`
+  (top-level P2 shape),
+  `tests/fixtures/class_header_wrap/08_nested_enum_implements_wrap/`
+  (nested enum, `start_col + 4` semantics), and
+  `tests/fixtures/class_header_wrap/09_enum_p3_terminal_single_interface/`
+  (single super-long interface committing at P3-terminal
+  per spec C1 "emit + warn").
+
+### Adopter action required
+
+Consumers upgrading their submodule pin from 0.5.2 to
+0.5.3 must:
+
+1. Re-run `/init-java` to pick up the updated template.
+   The adoption playbook step 3 wiring will surface the
+   one-line delta and prompt to apply it to the local
+   `pom.xml`.
+2. Run `mvn -Pcheckstyle validate` and resolve any
+   pre-existing test-source overflows: either manual
+   literal splits (semantically no-op re-splits) or
+   project-local `<suppress checks="LineLength"
+   files="..."/>` entries in
+   `checkstyle-suppressions-local.xml` for sites where a
+   split would harm readability more than the overflow.
+
+### Verification
+
+- 660 formatter tests pass (was 657 at 0.5.2); +3 fixtures:
+  `class_header_wrap/07_enum_implements_wrap` (top-level
+  `PrimaryEnvTestOption`-shaped enum header, P2 shape),
+  `class_header_wrap/08_nested_enum_implements_wrap`
+  (nested enum inside a class, locking the `start_col + 4`
+  continuation column semantics), and
+  `class_header_wrap/09_enum_p3_terminal_single_interface`
+  (single super-long interface committing at P3-terminal
+  per spec C1 "emit + warn").
+- Adoption template diff reviewed against maven-checkstyle-
+  plugin 3.6.0 parameter docs — `includeTestSourceDirectory`
+  is a plugin `<configuration>` parameter, not a system
+  property; setting it in `<configuration>` is the
+  documented mechanism.
+- Round-trip tested against `senzing-commons-java`
+  (companion PR #228, consumer-side 0.4.1 → 0.5.3
+  adoption): the flag flips 23 previously-silent
+  formatter advisories into hard checkstyle violations
+  and drives the manual-cleanup follow-up on the
+  consumer. The enum-wrap addition eliminates the need
+  for `// CSOFF` markers on the 4 long-typed
+  `CommandLineOption<T, U>`-implementing enum
+  declarations under `src/test/java/com/senzing/cmdline/`.
+
 ## [0.5.2] - 2026-07-01
 
 Bug-fix release adding a defensive guard to
