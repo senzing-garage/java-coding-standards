@@ -14,6 +14,15 @@
   list. maven-checkstyle-plugin 3.6.0 silently honored only the
   first path, breaking the layered design — the embedded-filter
   approach above replaces it.
+
+  0.5.3 adds <includeTestSourceDirectory>true</...>. Without it
+  maven-checkstyle-plugin defaults to false and silently skips
+  src/test/java — the shared LineLength rule fires on test
+  sources but is ignored at gate time, so formatter advisories
+  in test code stay toothless. Consumers upgrading from 0.5.2
+  must clean up any pre-existing test-source overflows (manual
+  literal splits or project-local <suppress> entries in
+  checkstyle-suppressions-local.xml) before adopting.
 -->
 <profile>
   <id>checkstyle</id>
@@ -29,6 +38,7 @@
           <consoleOutput>true</consoleOutput>
           <failsOnError>true</failsOnError>
           <linkXRef>false</linkXRef>
+          <includeTestSourceDirectory>true</includeTestSourceDirectory>
         </configuration>
         <executions>
           <execution>

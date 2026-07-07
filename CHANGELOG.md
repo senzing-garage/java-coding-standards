@@ -10,6 +10,62 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-07
+
+Adoption-template release closing the "test-source
+formatter advisories are toothless" gap. No formatter or
+spec change; a single line added to the shared
+`pom-checkstyle-profile.xml` template that flips
+`maven-checkstyle-plugin`'s `includeTestSourceDirectory`
+from its default `false` to `true`, so `src/test/java` is
+gated by the same 80-char `LineLength` (and other) rules
+that already apply to `src/main/java`.
+
+### Changed
+
+- **`adoption/claude-md-templates/pom-checkstyle-profile.xml`:
+  gate `src/test/java` with checkstyle.** Adds
+  `<includeTestSourceDirectory>true</includeTestSourceDirectory>`
+  to the shared checkstyle profile template. Before 0.5.3,
+  the plugin's default (`false`) silently skipped test
+  sources — the formatter's `LineLength` overflow
+  advisories in `src/test/java` printed at format time but
+  never failed a build, so consumers accumulated
+  test-source overflows without a forcing function to
+  clean them up. This release turns the gate on for all
+  consumers on their next `/init-java` run.
+
+### Adopter action required
+
+Consumers upgrading their submodule pin from 0.5.2 to
+0.5.3 must:
+
+1. Re-run `/init-java` to pick up the updated template.
+   The adoption playbook step 3 wiring will surface the
+   one-line delta and prompt to apply it to the local
+   `pom.xml`.
+2. Run `mvn -Pcheckstyle validate` and resolve any
+   pre-existing test-source overflows: either manual
+   literal splits (semantically no-op re-splits) or
+   project-local `<suppress checks="LineLength"
+   files="..."/>` entries in
+   `checkstyle-suppressions-local.xml` for sites where a
+   split would harm readability more than the overflow.
+
+### Verification
+
+- Adoption template diff reviewed against maven-checkstyle-
+  plugin 3.6.0 parameter docs — `includeTestSourceDirectory`
+  is a plugin `<configuration>` parameter, not a system
+  property; setting it in `<configuration>` is the
+  documented mechanism.
+- Round-trip tested against `senzing-commons-java`
+  (companion PR #228, consumer-side 0.4.1 → 0.5.3
+  adoption): the flag flips 23 previously-silent
+  formatter advisories into hard checkstyle violations
+  and drives the manual-cleanup follow-up on the
+  consumer.
+
 ## [0.5.2] - 2026-07-01
 
 Bug-fix release adding a defensive guard to
