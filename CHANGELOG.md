@@ -10,6 +10,26 @@ and this project adheres to
 
 ## [Unreleased]
 
+Ongoing 0.6.0 work. See `.claude/060_SCOPE.md` for the full
+release scope. Phased delivery across P0 through P4 (P5
+skipped, not valid Java).
+
+### Added
+
+- **P1 — assignment_expression wrap.** Bare `LHS OP RHS`
+  reassignments (as distinct from `Type LHS = RHS`
+  declarations, which have wrapped at `=` since 0.5.0) now
+  get their own wrap-priority cascade. When the inline
+  form overflows, the formatter breaks before the operator
+  and puts the RHS on a continuation line at
+  `block + 4` — mirroring the existing
+  `_emit_variable_declarator` behavior. Fills the gap
+  identified during the 0.5.3 consumer adoption pass on
+  `senzing-commons-java`: bare `args = new String[] {...};`
+  overflows at deep indent no longer emit silently as
+  81-char LineLength violations. Locked by three new
+  fixtures under `tests/fixtures/assignment_wrap/`.
+
 ## [0.5.3] - 2026-07-07
 
 Adoption-template + formatter release. Closes the

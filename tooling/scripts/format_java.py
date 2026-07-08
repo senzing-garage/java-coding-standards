@@ -4979,6 +4979,28 @@ def _emit_assignment_expression(
     (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`,
     `<<=`, `>>=`, `>>>=`) gets exactly one space on each side.
     Grammar fields: `left`, `operator`, `right`.
+
+    Wrap-priority (parallels `_emit_variable_declarator`):
+
+      (1) Inline single-line: if `LHS OP RHS` fits within the
+          effective line budget (accounting for any trailing
+          tokens the parent will emit via `tail_reserve`),
+          use it.
+      (2) Break-at-operator single-line: if `LHS\\n    OP RHS`
+          at the continuation column fits, use the break form.
+          The RHS renders single-line on the continuation; the
+          LHS gets its own line up through the identifier.
+      (3) Inline with value-wrap: fall back to letting the RHS
+          emit its own wrap (arg-list, binary-wrap, method-
+          chain, etc.). If the resulting shape still overflows,
+          backtrack to the break-at-operator form so the RHS
+          gets more horizontal room at the continuation.
+
+    Introduced in 0.6.0 (P1). Before this the assignment
+    expression emitted `LHS OP RHS` verbatim with no wrap
+    consideration — bare reassignments like
+    `x = new String[]{ … };` at deep indent could silently
+    overflow 80 chars with no advisory.
     """
     left_node = node.child_by_field_name("left")
     right_node = node.child_by_field_name("right")
@@ -5001,7 +5023,72 @@ def _emit_assignment_expression(
             "assignment_expression missing operator — grammar "
             "shape unexpected."
         )
+
+    # Emit LHS on the current line unconditionally — the wrap
+    # is between LHS and RHS (never inside LHS in this emitter;
+    # LHS is typically an identifier / field-access / array-
+    # access that fits on one line).
     _emit_node(emitter, source, left_node)
+
+    effective_max = _MAX_LINE - emitter.tail_reserve
+
+    # Step 1: try inline single-line via speculative emission.
+    # Commit only when RHS stays on one line AND the total
+    # fits within the effective budget.
+    saved = emitter.snapshot()
+    emitter.write(" ")
+    emitter.write(op_text)
+    emitter.write(" ")
+    _emit_node(emitter, source, right_node)
+    inline_fits = (
+        emitter.line_count == saved[0]
+        and emitter.column <= effective_max
+    )
+    if inline_fits:
+        return
+    emitter.restore(saved)
+
+    # Step 2: try break-at-operator with single-line RHS.
+    # Continuation indent is one level deeper than the
+    # surrounding statement — matches the variable_declarator
+    # break-at-`=` shape.
+    p2_saved = emitter.snapshot()
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
+    emitter.write(op_text)
+    emitter.write(" ")
+    _emit_node(emitter, source, right_node)
+    p2_fits = (
+        emitter.line_count == p2_saved[0] + 1
+        and emitter.column <= effective_max
+    )
+    if p2_fits:
+        emitter.pop_indent()
+        return
+    # `restore()` resets `self._indent` to the snapshot's
+    # captured value, so the `push_indent()` above is undone.
+    emitter.restore(p2_saved)
+
+    # Step 3: emit inline and let the RHS handle its own
+    # wrap. Commit unconditionally — no backtrack-to-break
+    # on overflow, because:
+    #
+    #   - Breaking at `=` for a multi-line RHS pushes the
+    #     RHS an extra indent-level deeper without changing
+    #     its max width when the overflow is unfixable
+    #     (long literal, deep-nested multi-line RHS). The
+    #     break form uses one more line for no width gain.
+    #   - Assignment LHS is typically short (bare identifier
+    #     or field access) — the visual benefit of "LHS on
+    #     its own line" is small compared to
+    #     variable_declarator's `TYPE NAME` LHS.
+    #
+    # Single-line-RHS overflow cases (the P1 target — bare
+    # reassignment to a long array literal or method call)
+    # are already caught by Step 2 above, which commits
+    # break-at-`=` when the RHS renders single-line and
+    # fits at the continuation.
     emitter.write(" ")
     emitter.write(op_text)
     emitter.write(" ")
