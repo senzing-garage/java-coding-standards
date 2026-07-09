@@ -1512,6 +1512,96 @@ _BINARY_OP_PRECEDENCE: Final[dict[str, int]] = {
 }
 
 
+_SQL_DDL_KEYWORDS: Final[frozenset[str]] = frozenset({
+    "create", "insert", "update", "delete", "select",
+    "alter", "drop", "with", "merge", "truncate",
+})
+"""SQL keywords that identify a string-concat chain as
+hand-authored SQL DDL, engaging the 0.6.0 SQL-DDL detector
+in `_emit_binary_expression`.
+
+Matched case-insensitively against the first non-whitespace
+token of each string_literal operand's content. A chain with
+at least one operand starting with one of these keywords is
+treated as SQL and emitted one-clause-per-line (emit_p3
+shape) instead of greedy-packed.
+
+Deliberately narrow to reduce false positives — a prose
+string that happens to start with "CREATE a new file"
+would match, but that's rare in practice and the CSOFF
+escape hatch remains available.
+"""
+
+
+def _chain_matches_sql_ddl_pattern(
+    source: bytes,
+    root_op: Node,
+    leftmost_operand: Node,
+    chain: list[tuple[Node, Node]],
+) -> bool:
+    """Return True when a `+` binary chain matches the SQL-DDL
+    pattern eligible for one-clause-per-line preservation
+    (0.6.0 P4).
+
+    Gate:
+      1. Root operator is `+` AND all chain operators are `+`
+         (no mixed operators — same-precedence flattening
+         already ensures this, but check explicitly for
+         defense-in-depth).
+      2. Leftmost operand is a `string_literal`.
+      3. ALL subsequent operands are `string_literal` (pure
+         string-concat chain — no interleaved variables).
+      4. Chain has at least 2 operators (= 3+ string
+         literals). A single `+` between two literals doesn't
+         warrant one-per-line breaks.
+      5. At least ONE literal's content starts with a
+         recognized SQL keyword (see `_SQL_DDL_KEYWORDS`),
+         case-insensitive.
+
+    Motivating example: a hand-authored `CREATE TABLE` split
+    one clause per line. The current binary cascade would
+    greedy-pack the strings — visually unreadable for DDL.
+    Preserving one-per-line requires firing this detector to
+    engage `emit_p3` before the greedy candidates.
+
+    False-positive tolerance: a long prose string that begins
+    with "CREATE a new file..." would match, but is rare and
+    the developer can opt out via `// CSOFF` markers.
+    """
+    if root_op.type != "+":
+        return False
+    if any(op.type != "+" for op, _ in chain):
+        return False
+    if len(chain) < 2:
+        return False
+    if leftmost_operand.type != "string_literal":
+        return False
+    operands = [leftmost_operand] + [operand for _, operand in chain]
+    if any(op.type != "string_literal" for op in operands):
+        return False
+    # Restricted to the LEFTMOST operand — a hand-authored
+    # SQL block invariably opens with the keyword (`CREATE
+    # TABLE ...`, `SELECT ...`, `INSERT INTO ...`). Requiring
+    # the LEFTMOST match keeps common English prose from
+    # triggering the detector when a later operand starts
+    # with an ambiguous word like "with" or "select" (both
+    # SQL keywords AND common English words).
+    text = _node_source_text(source, leftmost_operand)
+    if len(text) < 2 or text[0] != '"':
+        return False
+    content = text[1:-1] if text.endswith('"') else text[1:]
+    stripped = content.lstrip()
+    if not stripped:
+        return False
+    first_token = ""
+    for ch in stripped:
+        if ch.isalpha():
+            first_token += ch
+        else:
+            break
+    return first_token.lower() in _SQL_DDL_KEYWORDS
+
+
 def _chain_matches_pair_aligned_pattern(
     source: bytes,
     root_op: Node,
@@ -1970,6 +2060,30 @@ def _emit_binary_expression(
     is_pair_aligned_candidate = _chain_matches_pair_aligned_pattern(
         source, root_op, leftmost_operand, chain
     )
+    is_sql_ddl_candidate = _chain_matches_sql_ddl_pattern(
+        source, root_op, leftmost_operand, chain
+    )
+
+    # 0.6.0 P4 — SQL DDL detector. When the chain is a
+    # pure-string `+` concatenation and at least one operand
+    # starts with a recognized SQL keyword (CREATE, INSERT,
+    # etc.), emit one-clause-per-line via `emit_p3` BEFORE
+    # trying the greedy/pair-aligned candidates. Preserves
+    # the hand-authored one-per-line DDL layout that greedy
+    # packing would otherwise collapse into an unreadable
+    # jumble. Pre-0.6, the only escape hatch was `// CSOFF`
+    # markers.
+    if is_sql_ddl_candidate:
+        sql_saved = emitter.snapshot()
+        emit_p3()
+        if emitter.last_lines_max_width(sql_saved[0]) <= effective_max:
+            return
+        # If emit_p3 itself overflows (a single clause is
+        # too wide even at block+4), fall through to the
+        # standard cascade — the developer must split that
+        # clause by hand and checkstyle will surface the
+        # overflow.
+        emitter.restore(sql_saved)
 
     # Item 2a — pair-aligned candidate. Tried BEFORE the
     # paren-aligned / greedy candidates when the chain matches

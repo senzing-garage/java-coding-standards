@@ -62,6 +62,28 @@ skipped, not valid Java).
   `arg_list_wrap/09_single_arg_literal_paren_deference`
   fixture (positive — literal at col 18 under an
   enclosing `if (!(...))`).
+- **P4 — SQL DDL detector for string-concat chains.**
+  Adds a heuristic detector to `_emit_binary_expression`
+  that identifies hand-authored SQL DDL as a `+` chain
+  where (a) all operands are `string_literal`, (b) the
+  chain has at least 2 operators, and (c) the LEFTMOST
+  operand's first alphabetic token matches a recognized
+  SQL keyword (`create`, `insert`, `update`, `delete`,
+  `select`, `alter`, `drop`, `with`, `merge`, `truncate`).
+  When the detector fires, the binary emitter picks
+  `emit_p3` (one operator per line at block+4) BEFORE
+  attempting the greedy-pack candidates. Preserves the
+  hand-authored one-clause-per-line SQL layout that greedy
+  packing would otherwise collapse into an unreadable
+  jumble. The pre-0.6 escape hatch (`// CSOFF`/`// CSON`
+  markers) remains available for cases the detector gets
+  wrong. Restricting the keyword match to the LEFTMOST
+  operand keeps common English prose from triggering — a
+  string opening `"The report was..."` doesn't match even
+  if a later operand happens to start with `"with"`. New
+  fixtures: `binary_wrap/04_sql_ddl_create_table`
+  (positive) and `binary_wrap/05_prose_string_not_ddl`
+  (negative — prose greedy-packs as before).
 - **P2 — Q-CHAIN-4 backoff extended to the standard P2
   candidate.** `_emit_method_chain_wrapped`'s `emit_p2`
   (dot-align-under-receiver-`.`) now rejects itself when
