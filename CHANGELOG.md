@@ -62,6 +62,29 @@ skipped, not valid Java).
   `arg_list_wrap/09_single_arg_literal_paren_deference`
   fixture (positive — literal at col 18 under an
   enclosing `if (!(...))`).
+- **P2 — factory-chain P1F "deep dot" candidate.** Adds a
+  new candidate to `_emit_method_chain_wrapped`'s cascade
+  that fires when the chain receiver is a PascalCase
+  identifier (Q-CHAIN-3 factory heuristic) AND the chain
+  has at least 3 segments. Emits head + `.factoryMethod(...)`
+  + `.firstChain(...)` on line 1, aligns subsequent chains
+  to the FIRST CHAIN's `.` column — one chain-alignment
+  step DEEPER than the pre-0.6 P2F shape (which aligned
+  everything to the factory's `.`). Tried BEFORE P2F in
+  the cascade; committed only when both widths fit AND no
+  chain method's args wrapped (Q-CHAIN-4 backoff — an
+  in-args wrap in P1F falls through to P2F for cleaner
+  mixed-alignment avoidance). New helper
+  `_chain_receiver_is_factory` classifies the receiver by
+  the leftmost identifier's case:
+  PascalCase → factory (P1F applies);
+  camelCase / SCREAMING_SNAKE_CASE / `new` / constructor →
+  instance / constructor (P1F skipped, existing cascade
+  applies). Locked by two new fixtures:
+  `method_chain_wrap/18_p1f_factory_deep_dot` (positive)
+  and `method_chain_wrap/19_p1f_factory_backs_off_when_args_wrap`
+  (Q-CHAIN-4 backoff). Existing fixtures 14 and 16 updated
+  to reflect the new P1F preference for factory chains.
 - **P0 — source-preserve fall-through when developer's deep
   indent would overflow.** `_emit_argument_list`'s source-
   preserve path previously preserved developer-authored
