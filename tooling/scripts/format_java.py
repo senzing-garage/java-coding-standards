@@ -253,6 +253,7 @@ class Emitter:
         "_tail_reserve",
         "_paren_align_col",
         "_paren_expr_col",
+        "_arg_list_p4_fired",
         "warnings",
     )
 
@@ -307,6 +308,31 @@ class Emitter:
         # that owns the arg (0.6.0 P0 rule), while ignoring
         # method-call parens for that purpose.
         self._paren_expr_col: int | None = None
+        # 0.6.0: flag set to True inside
+        # `_emit_argument_list`'s P4 candidates
+        # (`emit_p4_multi_arg`, `emit_p4_single_arg_block_indent`)
+        # whenever they fire. Consulted by the binary-expression
+        # wrap engine (`emit_greedy`, `emit_paren_aligned`) to
+        # reject paren-alignment when an operand's emission
+        # cascaded through arg-list P4 (leaf-arg wrap).
+        # Distinguishes "operand wrapped via arg-list P4"
+        # (paren-align rejects → falls to +4-greedy compact
+        # shape) from "operand wrapped via nested
+        # binary/chain/ternary" (paren-align commits, spec C6
+        # behavior preserved). The pre-0.6 `_operand_emitted
+        # _shallow_line` check was tied to arg-list P4's
+        # `block+4` orphan pattern; when arg-list P4's anchor
+        # changes (e.g. to `line-start-col + 4`), the shallow-
+        # line signal misses. This flag is a direct signal
+        # instead of an indirect visual-symptom heuristic.
+        #
+        # Ownership: sites that read the flag do a
+        # save-reset-check-restore cycle around the emission
+        # they care about (see `_emit_binary_expression`).
+        # Sites that set it (arg-list P4 candidates) just set
+        # it to True — they never reset. This gives the read
+        # site full control of scoping.
+        self._arg_list_p4_fired: bool = False
 
     @property
     def column(self) -> int:
@@ -426,13 +452,14 @@ class Emitter:
 
     def snapshot(
         self,
-    ) -> tuple[int, str, int, int, int | None, int | None, int]:
+    ) -> tuple[int, str, int, int, int | None, int | None, bool, int]:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
         tail_reserve, paren_align_col, paren_expr_col,
-        warnings_count)` suitable for `restore()`. The
-        wrap-priority engines use the pattern:
+        arg_list_p4_fired, warnings_count)` suitable for
+        `restore()`. The wrap-priority engines use the
+        pattern:
 
             saved = emitter.snapshot()
             <try emitting in some shape>
@@ -451,6 +478,10 @@ class Emitter:
         removed — otherwise a rejected P1 candidate's warnings
         would linger and produce spurious advisories even when
         the committed P2/P3 layout doesn't trigger them.
+        `arg_list_p4_fired` is included so speculative emits
+        that trigger arg-list P4 rollback cleanly for the
+        outer wrap engine to make its P4-vs-not decision on
+        the eventually-committed candidate.
         """
         return (
             len(self._lines),
@@ -459,12 +490,13 @@ class Emitter:
             self._tail_reserve,
             self._paren_align_col,
             self._paren_expr_col,
+            self._arg_list_p4_fired,
             len(self.warnings),
         )
 
     def restore(
         self,
-        snap: tuple[int, str, int, int, int | None, int | None, int],
+        snap: tuple[int, str, int, int, int | None, int | None, bool, int],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
 
@@ -481,6 +513,7 @@ class Emitter:
             tail_reserve,
             paren_align_col,
             paren_expr_col,
+            arg_list_p4_fired,
             warnings_count,
         ) = snap
         del self._lines[lines_count:]
@@ -489,6 +522,7 @@ class Emitter:
         self._tail_reserve = tail_reserve
         self._paren_align_col = paren_align_col
         self._paren_expr_col = paren_expr_col
+        self._arg_list_p4_fired = arg_list_p4_fired
         del self.warnings[warnings_count:]
 
     def last_lines_max_width(self, since: int) -> int:
@@ -1911,20 +1945,45 @@ def _emit_binary_expression(
         # Caller passes `align_col` directly (captured before
         # clearing the emitter state so a nested grouping paren
         # inside an operand resets cleanly).
+        #
+        # Reject conditions (set `paren_inner_wrap = True`):
+        #   1. Operand emits a "shallow" continuation line —
+        #      leading whitespace < `align_col`. Signals the
+        #      operand's own wrap engine chose an anchor
+        #      shallower than paren-alignment.
+        #   2. Operand's emission fires an arg-list P4
+        #      (leaf-arg wrap). Distinct from operand's own
+        #      binary/chain/ternary wrap: an arg-list P4
+        #      inside a paren-aligned operand produces the
+        #      "5-line ugly" cascade (each op on own line
+        #      PLUS the operand's args broken across
+        #      additional lines). Prefer +4-greedy compact.
         nonlocal paren_inner_wrap
         operand_start = emitter.line_count
+        prev_p4 = emitter._arg_list_p4_fired
+        emitter._arg_list_p4_fired = False
         _emit_node(emitter, source, leftmost_operand)
         if _operand_emitted_shallow_line(operand_start, align_col):
             paren_inner_wrap = True
+        if emitter._arg_list_p4_fired:
+            paren_inner_wrap = True
+        emitter._arg_list_p4_fired = prev_p4 or emitter._arg_list_p4_fired
         for op, operand in chain:
             emitter.newline()
             emitter.write(" " * align_col)
             emitter.write(op.type)
             emitter.write(" ")
             operand_start = emitter.line_count
+            prev_p4 = emitter._arg_list_p4_fired
+            emitter._arg_list_p4_fired = False
             _emit_node(emitter, source, operand)
             if _operand_emitted_shallow_line(operand_start, align_col):
                 paren_inner_wrap = True
+            if emitter._arg_list_p4_fired:
+                paren_inner_wrap = True
+            emitter._arg_list_p4_fired = (
+                prev_p4 or emitter._arg_list_p4_fired
+            )
 
     def emit_p3() -> None:
         # Each operand on its own continuation line at +4
@@ -2020,7 +2079,16 @@ def _emit_binary_expression(
         # re-emit` would falsely signal "operand went
         # multi-row" and force every subsequent operator to
         # break (degenerating into one-per-line output).
+        # 0.6.0: also mark paren_inner_wrap when an operand's
+        # emission fires an arg-list P4 (leaf-arg wrap). See
+        # design note on `Emitter._arg_list_p4_fired`. The
+        # save-reset-check-restore cycle isolates the flag to
+        # each operand's emission scope; the outer `prev_p4`
+        # bubbles the flag up so a P4 that fires deep inside
+        # is still visible to callers of this emit.
         start_line_count = emitter.line_count
+        prev_p4 = emitter._arg_list_p4_fired
+        emitter._arg_list_p4_fired = False
         _emit_node(emitter, source, leftmost_operand)
         prev_operand_multi_row = (
             emitter.line_count > start_line_count
@@ -2029,6 +2097,9 @@ def _emit_binary_expression(
             start_line_count, cont_col
         ):
             paren_inner_wrap = True
+        if emitter._arg_list_p4_fired:
+            paren_inner_wrap = True
+        emitter._arg_list_p4_fired = prev_p4 or emitter._arg_list_p4_fired
         for op, operand in chain:
             if prev_operand_multi_row:
                 # Item 8: force break before this operator.
@@ -2037,6 +2108,8 @@ def _emit_binary_expression(
                 emitter.write(op.type)
                 emitter.write(" ")
                 operand_start_line = emitter.line_count
+                prev_p4 = emitter._arg_list_p4_fired
+                emitter._arg_list_p4_fired = False
                 _emit_node(emitter, source, operand)
             else:
                 # Speculatively pack `" OP operand"` on the
@@ -2046,6 +2119,8 @@ def _emit_binary_expression(
                 emitter.write(op.type)
                 emitter.write(" ")
                 operand_start_line = emitter.line_count
+                prev_p4 = emitter._arg_list_p4_fired
+                emitter._arg_list_p4_fired = False
                 _emit_node(emitter, source, operand)
                 pack_ok = (
                     emitter.last_lines_max_width(pack_saved[0])
@@ -2062,6 +2137,8 @@ def _emit_binary_expression(
                     emitter.write(op.type)
                     emitter.write(" ")
                     operand_start_line = emitter.line_count
+                    prev_p4 = emitter._arg_list_p4_fired
+                    emitter._arg_list_p4_fired = False
                     _emit_node(emitter, source, operand)
             prev_operand_multi_row = (
                 emitter.line_count > operand_start_line
@@ -2070,6 +2147,11 @@ def _emit_binary_expression(
                 operand_start_line, cont_col
             ):
                 paren_inner_wrap = True
+            if emitter._arg_list_p4_fired:
+                paren_inner_wrap = True
+            emitter._arg_list_p4_fired = (
+                prev_p4 or emitter._arg_list_p4_fired
+            )
 
     # Manual P1 speculation with newline-detection (replaces
     # try_priorities for this site because try_priorities
@@ -6923,6 +7005,98 @@ def _arg_list_has_semantic_multi_row_arg(node: Node) -> bool:
     return False
 
 
+def _push_indent_to_col(
+    emitter: "Emitter", target_col: int
+) -> tuple[int, int]:
+    """Bump `emitter._indent` toward `target_col` and return
+    `(push_count, extra_spaces)`.
+
+    `push_count`: number of `push_indent()` calls made. The
+    caller MUST match with `pop_indent()` calls to restore
+    the emitter's indent state.
+    `extra_spaces`: spaces to write in addition to
+    `write_indent()` to reach `target_col` exactly. Non-zero
+    only when `target_col` isn't aligned to the 4-space grid
+    (e.g. paren-aligned to a chain-tail `.` col that isn't
+    a multiple of 4).
+
+    Rationale (0.6.0): arg-list P4 candidates want a
+    continuation anchor derived from `current_line_start_col
+    + 4`, not `block + 4`. But inner emissions (a binary
+    arg's `+`-continuation, a lambda body's block indent)
+    read `_indent` to compute THEIR own indent. Direct
+    space-writing at `target_col` without touching `_indent`
+    leaves those inner emissions computing off the outer
+    block indent, producing shallow orphans.
+
+    This helper bumps `_indent` by `(target_col - 4 *
+    current_indent) // 4` (floored), then reports `extra`
+    for the caller to write directly. For target cols that
+    are multiples of 4 (the common case — statement-top-
+    level, paren-aligned to statement-level parens), `extra
+    == 0`. For irregular cases, `extra` is 1-3 spaces and
+    inner `_indent`-based continuations will be off by up
+    to `extra` cols — an accepted trade-off.
+    """
+    current_indent_col = 4 * emitter._indent
+    delta = target_col - current_indent_col
+    if delta <= 0:
+        return (0, max(0, delta))
+    push_count = delta // 4
+    extra = delta % 4
+    for _ in range(push_count):
+        emitter.push_indent()
+    return (push_count, extra)
+
+
+def _emit_p4_write_target_indent(
+    emitter: "Emitter", push_count: int, extra: int
+) -> None:
+    """Write the leading indent for an arg-list P4 continuation
+    line. `push_count` and `extra` come from
+    `_push_indent_to_col`. Emits `4 * _indent` spaces via
+    `write_indent()`, then `extra` additional spaces to reach
+    the exact target col.
+    """
+    emitter.write_indent()
+    if extra:
+        emitter.write(" " * extra)
+
+
+def _current_line_leading_spaces(emitter: "Emitter") -> int:
+    """Return the count of leading space characters in the
+    emitter's current in-progress line (`_current`).
+
+    Used by `_emit_argument_list`'s P4 candidates
+    (`emit_p4_multi_arg`, `emit_p4_single_arg_block_indent`)
+    to compute their continuation anchor: `line_start_col + 4`
+    where `line_start_col` is the 0-based column of the first
+    non-space character on the current in-progress line.
+
+    Rationale (0.6.0): the pre-0.6 `push_indent + write_indent`
+    approach uses `_indent`-based tracking (in 4-space
+    units) relative to the enclosing block. That produces
+    the correct col for statement-top-level P4 emissions
+    but orphans nested emissions to shallow cols. Consumer
+    trial 2026-07-09 surfaced this as defect 3. The
+    line-start-col + 4 rule keeps nested emissions
+    visually contained inside their enclosing context.
+
+    The binary wrap engine's `paren_inner_wrap` check
+    (which relied on the OLD anchor producing shallow
+    lines to reject paren-align in favor of compact
+    +4-greedy) is now backed by
+    `Emitter._arg_list_p4_fired` — a direct signal that an
+    operand's emission cascaded through arg-list P4 —
+    rather than the indirect shallow-line heuristic.
+    """
+    current = emitter._current
+    stripped = current.lstrip(" ")
+    if not stripped:
+        return len(current)
+    return len(current) - len(stripped)
+
+
 def _max_source_preserve_line_width(
     lines: list[str],
     prefix_col: int,
@@ -7406,35 +7580,44 @@ def _emit_argument_list(
         emitter.write(")")
 
     def emit_p4_single_arg_block_indent() -> None:
-        # P4 block+4 candidate — line-break before the only
-        # arg; the arg lands at "one indent past the call's
-        # statement start" (canonical single-indent
-        # continuation).
+        # P4 "line-start + 4" candidate — line-break before
+        # the only arg; the arg lands at
+        # `current_line_start_col + 4`.
         #
-        # This is the FIRST P4 candidate in the arg-list
-        # cascade so it wins when the arg fits at block+4.
-        # That keeps short args (`.asList(timers)`) at the
-        # shallow, canonical column, avoiding cascades where
-        # a deeper paren-defer shape (see the paren-defer
-        # candidate below) would push the containing wrap
-        # engine's line past `_MAX_LINE - tail_reserve` and
-        # force it to escalate its own shape.
+        # 0.6.0 anchor rule: args continue at "col of first
+        # non-space on the current line + 4", NOT `block + 4`
+        # relative to the enclosing statement. Keeps nested
+        # emissions visually contained inside their
+        # enclosing context.
         #
-        # Note: item 10's `paren_align_col` set in `emit_p1`
-        # for single-arg binary args is deliberately NOT
-        # mirrored here. P4 re-roots the arg at its own
-        # anchor; setting `paren_align_col` to the call's
-        # `(` column would break the alignment of the inner
-        # binary's continuations (they would land at
-        # `paren_align_col + 4`, deeper than the arg's first
-        # operand at `block + 4`).
+        # Uses `_push_indent_to_col` to bump `_indent` so
+        # inner emissions that themselves compute continuation
+        # cols from `_indent` (e.g. binary_expression's
+        # +4-greedy `p2_col = 4 * (indent_level + 1)`) land at
+        # the correct anchor-relative col. When the target
+        # col isn't aligned to the 4-space grid (rare —
+        # paren-align to a receiver whose length isn't a
+        # multiple of 4), we push to the nearest lower
+        # multiple and pad with a few extra spaces; inner
+        # `_indent`-based emissions will be off by up to 3
+        # cols in that edge case, an accepted trade-off.
+        #
+        # Sets `emitter._arg_list_p4_fired = True` so the
+        # binary-expression wrap engine can detect
+        # "operand's emission cascaded through arg-list P4"
+        # and reject paren-align in that case (see 0.6.0
+        # design note on `_arg_list_p4_fired`).
+        emitter._arg_list_p4_fired = True
+        line_start_col = _current_line_leading_spaces(emitter)
+        target_col = line_start_col + 4
         emitter.write("(")
         emitter.newline()
-        emitter.push_indent()
-        emitter.write_indent()
+        push_count, extra = _push_indent_to_col(emitter, target_col)
+        _emit_p4_write_target_indent(emitter, push_count, extra)
         _emit_node(emitter, source, args[0])
         emitter.write(")")
-        emitter.pop_indent()
+        for _ in range(push_count):
+            emitter.pop_indent()
 
     def emit_p4_single_arg_paren_defer() -> None:
         # Paren-defer candidate (0.6.0 Option D). Continuation
@@ -7559,21 +7742,27 @@ def _emit_argument_list(
 
     def emit_p4_multi_arg() -> None:
         # P4 fallback: line-break before the first arg; each
-        # arg on its own line at single-indent (`+4` from the
-        # current indent level). Used when P2 paren-aligned
-        # would overflow on a long arg or — given tail_reserve
-        # — when the last arg + closing tokens would push the
-        # call line past _MAX_LINE.
+        # arg on its own line at "current line's start col
+        # + 4". Uses `_push_indent_to_col` so inner
+        # `_indent`-based emissions (e.g. a binary_expression
+        # arg's p2_col continuation) align relative to the
+        # anchor col rather than the outer block indent.
+        # See `emit_p4_single_arg_block_indent` for the
+        # detailed design note.
+        emitter._arg_list_p4_fired = True
+        line_start_col = _current_line_leading_spaces(emitter)
+        target_col = line_start_col + 4
         emitter.write("(")
-        emitter.push_indent()
+        push_count, extra = _push_indent_to_col(emitter, target_col)
         for index, arg in enumerate(args):
             emitter.newline()
-            emitter.write_indent()
+            _emit_p4_write_target_indent(emitter, push_count, extra)
             _emit_node(emitter, source, arg)
             if index < len(args) - 1:
                 emitter.write(",")
         emitter.write(")")
-        emitter.pop_indent()
+        for _ in range(push_count):
+            emitter.pop_indent()
 
     # P1 is the AST-deterministic single-line candidate, but
     # may emit a multi-row layout when an intermediate arg

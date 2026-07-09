@@ -4,7 +4,7 @@ public class Demo
     {
         sb.append("alpha")
           .append(
-            "beta-and-then-some-more-characters-and-then-finally-the-rest")
+              "beta-and-then-some-more-characters-and-then-finally-the-rest")
           .append("gamma").append(third);
     }
 }

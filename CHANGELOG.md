@@ -26,6 +26,62 @@ JLS §8.9.
 
 ### Additional fixes surfaced by consumer trial
 
+- **Nested arg-list P4 anchor changed from `block+4` to
+  `line-start-col + 4`.** `_emit_argument_list`'s
+  `emit_p4_multi_arg` and `emit_p4_single_arg_block_indent`
+  previously anchored to `block + 4` (indent + 4 relative
+  to the outer statement's block). That produced visually
+  correct output for statement-top-level P4 emissions
+  (where line-start equals block indent), but ORPHANED
+  nested emissions when the outer context had its own
+  continuation indent (chain-tail, nested-paren-aligned
+  outer arg-list): a `SzRecordKeys.of(\n    avoidances)`
+  inside `engine.findPath(<paren-aligned args at col 60>)`
+  landed `avoidances` at col 25 — 35 columns LEFT of the
+  enclosing paren. The new anchor is
+  `line-start-col + 4` where `line-start-col` is the col
+  of the first non-space char on the current in-progress
+  line. Under the new rule, nested emissions land at
+  `col 64` — visually contained inside the outer paren.
+  For statement-top-level P4 emissions the two rules
+  coincide, so most fixtures are unchanged; only nested
+  cases shift.
+  
+  Anchor implementation: `_push_indent_to_col` bumps
+  `_indent` to match the target col in 4-space grid units
+  (with an `extra` remainder for non-mult-of-4 anchors
+  like chain-tail `.` cols). This lets inner emissions
+  that read `_indent` (e.g. a binary_expression arg's
+  `+`-continuation `p2_col`) compute the correct
+  anchor-relative col rather than the outer-block-relative
+  col.
+- **`Emitter._arg_list_p4_fired` flag replaces the
+  `_operand_emitted_shallow_line` heuristic in binary
+  wrap's `paren_inner_wrap` check.** The pre-0.6
+  `_operand_emitted_shallow_line` check detected "operand's
+  emission has a line with leading whitespace <
+  align_col" — which was a good proxy for "arg-list P4
+  wrapped a leaf arg" under the OLD `block+4` anchor.
+  Under the new `line-start-col + 4` anchor, arg-list P4
+  emissions no longer produce shallow lines (they're at
+  contained cols). The shallow-line signal misses,
+  causing binary paren-aligned to commit ugly 5-line
+  cascades where +4-greedy compact would have committed
+  under OLD. Direct signal `_arg_list_p4_fired` is set
+  to True inside the P4 candidates and checked via
+  save-reset-check-restore in `emit_greedy` and
+  `emit_paren_aligned` — a precise signal for "operand's
+  emission cascaded through arg-list P4" (as opposed to
+  operand's own binary/chain/ternary wrap). Preserves
+  `arg_list_wrap/03`'s compact 2-line shape while enabling
+  defect 3's fix. Locked by new fixtures
+  `arg_list_wrap/12_defect_3_nested_paren_contained`
+  (nested fits inline) and
+  `arg_list_wrap/13_defect_3_nested_wrap_paren_aligned`
+  (nested wraps at outer-paren + 4). Fixture
+  `method_chain_wrap/17_same_method_greedy_item8_inner_wrap`
+  expected shape updated (literal shifts from col 13 to
+  col 15 per the new chain-tail anchor).
 - **Multi-interface `implements` clause collapse on class
   headers.** `_emit_extends_implements_p2_p3` previously
   had only P2 (both clauses on one line) and P3 (each
