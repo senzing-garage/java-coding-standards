@@ -7771,24 +7771,65 @@ def _emit_method_chain_wrapped(
                 emitter.write(".")
                 emit_seg_strict(seg)
 
+    # 0.6.0 P2 Q-CHAIN-4 backoff signal. Set to True when any
+    # chain segment's emit inside emit_p2 introduces newlines
+    # that are NOT from a legitimately multi-line source
+    # (multi-row lambda body, multi-row text block, source-
+    # preserved arg list). Consulted at the try_priorities
+    # commit-check to reject P2 even if widths fit — Q-CHAIN-4
+    # says "back off to a shallower tier when a chain method's
+    # own args wrap." The shape produced when P2 emits but a
+    # chain method's args wrap mid-emit is visually confused
+    # (dot-align chain col + deeper args col mixed) — cleaner
+    # to fall through to P4F block+4 (emit_p3) so args AND
+    # chain-tail land at a consistent shallower indent.
+    p2_segment_wrapped = [False]
+
     def emit_p2() -> None:
+        p2_segment_wrapped[0] = False
+
+        def emit_seg_track_wrap(seg: Node) -> None:
+            before = emitter.line_count
+            name_node = seg.child_by_field_name("name")
+            name_text = (
+                _node_source_text(source, name_node)
+                if name_node is not None
+                else ""
+            )
+            args_emit_column = emitter.column + len(name_text)
+            emit_segment(seg)
+            if emitter.line_count > before:
+                # Newlines introduced. Only flag as
+                # wrap-engine-driven (worth backing off) when
+                # the args aren't legitimately multi-line in
+                # source (lambda body / text block / developer-
+                # authored source-preserved layout). Reuses the
+                # same discriminator emit_p1 uses so P2's
+                # backoff decision matches P1's newline-based
+                # rejection.
+                legit = _segment_emit_is_legitimately_multi_line(
+                    seg, args_emit_column
+                )
+                if not legit:
+                    p2_segment_wrapped[0] = True
+
         if head is not None:
             _emit_node(emitter, source, head)
             first_dot_col = emitter.column
             emitter.write(".")
-            emit_segment(segments[0])
+            emit_seg_track_wrap(segments[0])
             wrap_from = 1
         else:
-            emit_segment(segments[0])
+            emit_seg_track_wrap(segments[0])
             first_dot_col = emitter.column
             emitter.write(".")
-            emit_segment(segments[1])
+            emit_seg_track_wrap(segments[1])
             wrap_from = 2
         for seg in segments[wrap_from:]:
             emitter.newline()
             emitter.write(" " * first_dot_col)
             emitter.write(".")
-            emit_segment(seg)
+            emit_seg_track_wrap(seg)
 
     # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
     # cascade. When the entire method chain is wrapped in a
@@ -8104,7 +8145,12 @@ def _emit_method_chain_wrapped(
 
     p2_saved = emitter.snapshot()
     emit_p2()
-    if emitter.last_lines_max_width(p2_saved[0]) <= effective_max:
+    p2_fits = (
+        emitter.last_lines_max_width(p2_saved[0])
+        <= effective_max
+        and not p2_segment_wrapped[0]
+    )
+    if p2_fits:
         return
     emitter.restore(p2_saved)
     emit_p3()

@@ -62,6 +62,28 @@ skipped, not valid Java).
   `arg_list_wrap/09_single_arg_literal_paren_deference`
   fixture (positive — literal at col 18 under an
   enclosing `if (!(...))`).
+- **P2 — Q-CHAIN-4 backoff extended to the standard P2
+  candidate.** `_emit_method_chain_wrapped`'s `emit_p2`
+  (dot-align-under-receiver-`.`) now rejects itself when
+  any chain segment's args wrap mid-emit — matching the
+  Q-CHAIN-4 backoff already implemented for P1F and P3F in
+  Phases 4a/4b. Reuses the existing
+  `_segment_emit_is_legitimately_multi_line` helper so
+  intentionally-multi-row args (lambda bodies, text blocks,
+  developer-authored source-preserved arg lists) don't
+  trigger backoff. When P2 backs off, the chain falls
+  through to `emit_p3` (block+4). Cleaner than the
+  pre-0.6-Phase-4c "mixed alignment" shape (dot-align chain
+  col + deep paren-align args col). Fixture updates driven
+  by this rule:
+    - `method_chain_wrap/11_chain_with_wrap_engine_rewrapped_args`
+      previously locked the mixed shape; new expected is
+      all-block+4.
+    - `method_chain_wrap/19_p1f_factory_backs_off_when_args_wrap`
+      previously stopped at P2F; new expected falls further
+      through to P4F since P2F now also backs off. The
+      fixture now demonstrates the full P1F → P2F → P4F
+      cascade.
 - **P2 — outer-parenthesized-expression chain cascade
   (P3F / P2C).** Adds a new candidate to
   `_emit_method_chain_wrapped` that fires when the whole
