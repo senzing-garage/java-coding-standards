@@ -6,7 +6,9 @@ public class Demo
                      java.util.Set<String> avoidances,
                      java.util.Set<String> requiredSources)
     {
-        String result = engine.findPath(startKey, endKey, degrees,
+        String result = engine.findPath(startKey,
+                                        endKey,
+                                        degrees,
                                         SzRecordKeys.of(avoidances),
                                         requiredSources);
     }

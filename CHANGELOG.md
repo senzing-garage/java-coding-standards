@@ -26,6 +26,37 @@ JLS §8.9.
 
 ### Additional fixes surfaced by consumer trial
 
+- **P2 method-call arg-list re-tightened to two-line strict;
+  new P3 paren-aligned one-per-line candidate added.** Per
+  spec "Method Call Arguments / Priority 2 — Two-line,
+  paren-aligned, comma-packed": P2 must fit "on exactly two
+  lines" (call line + one continuation line). The pre-0.6
+  `emit_p2_greedy` allowed N-line packed shapes, violating
+  the spec. 0.6.0 enforces the two-line invariant via
+  `p2_line_count <= 1` check on the emitted lines, and
+  cascades to a new `emit_p3_paren_one_per_line` candidate
+  when P2 doesn't fit. Multi-arg cascade for
+  `_emit_argument_list` refactored from `try_priorities` to
+  manual snapshot/restore since P2's line-count constraint
+  can't be expressed as a pure width check. New cascade:
+  P1 inline → P2 two-line packed → P3 paren-aligned
+  one-per-line → P4 block+4 one-per-line (spec C1 emit-and-
+  warn fallback). Fixture updates driven by this rule:
+  `arg_list_wrap/08_shift_up_overflow_declines_source_preserve`
+  (was 3-line greedy, now 6-arg one-per-line P3) and
+  `arg_list_wrap/12_defect_3_nested_paren_contained`
+  (was 3-line greedy, now 5-arg one-per-line P3).
+- **Arg-list `emit_p2_greedy` also rejects pack when the
+  packed arg's emission cascades through arg-list P4** (a
+  packed arg like `this.getEntityId(reallyLongIdent)` that
+  wraps its own inner arg produced the "split call on
+  same line as previous arg" shape). Same detection
+  mechanism as binary's `paren_inner_wrap` — checks
+  `Emitter._arg_list_p4_fired` transition around each
+  operand emit. Prefers break-then-inline over
+  pack-then-inner-wrap when both take the same total line
+  count. Directly surfaced by the consumer trial's
+  `SzEngineGraphTest.java:702` `Arguments.of(...)` shape.
 - **Nested arg-list P4 anchor changed from `block+4` to
   `line-start-col + 4`.** `_emit_argument_list`'s
   `emit_p4_multi_arg` and `emit_p4_single_arg_block_indent`

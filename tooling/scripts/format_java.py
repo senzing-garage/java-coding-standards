@@ -7658,20 +7658,37 @@ def _emit_argument_list(
             emitter.pop_indent()
 
     def emit_p2_greedy() -> None:
-        # P2: pack as many args as fit on the call line at
-        # the paren-aligned continuation column. Each arg's
-        # placement is decided by speculatively emitting it
-        # via `_emit_node` (which may itself trigger wrap
-        # engines on nested constructs) and measuring the
-        # rendered widths. Using rendered widths rather than
-        # source-text bytes keeps the decision deterministic
-        # from the AST — the same AST produces the same wrap
-        # regardless of input layout, which is what makes the
-        # formatter idempotent.
+        # P2: two-line paren-aligned comma-packed. Per spec
+        # "Method Call Arguments / Priority 2": break on a
+        # comma as late as possible (pack as many args as fit
+        # on the call line) and continue the rest on a
+        # SINGLE continuation line aligned to the first
+        # column after `(`.
+        #
+        # The two-line constraint distinguishes P2 from P3
+        # (paren-aligned one-per-line): P2 must fit the
+        # ENTIRE arg list on the call line + one continuation
+        # line, otherwise the wrap engine escalates to P3
+        # (each arg on its own line). This is what the spec
+        # calls out in "Method Call Arguments" as the "two-
+        # line comma-packed form ... fits on exactly two
+        # lines." A pre-0.6 bug allowed N-line packed shapes;
+        # 0.6.0 tightens to two-line strict.
+        #
+        # If P2 would spill onto a third line, `try_priorities`
+        # sees the emission failed the two-line invariant via
+        # `p2_committed_lines > 2` and falls through to
+        # `emit_p3_paren_one_per_line`.
         emitter.write("(")
         cont_col = emitter.column
         effective_max = _MAX_LINE - emitter.tail_reserve
         prev_arg_multi_row = False
+        # Start-of-P2 line count for the two-line check. P2
+        # is committed only if `emitter.line_count -
+        # p2_start_line_count <= 1` (== 0 → all inline on
+        # the call line, == 1 → one continuation line, > 1
+        # → three or more lines, rejected).
+        p2_start_line_count = emitter.line_count
         for index, arg in enumerate(args):
             if index == 0:
                 operand_start = emitter.line_count
@@ -7701,6 +7718,8 @@ def _emit_argument_list(
             saved = emitter.snapshot()
             emitter.write(", ")
             operand_start = emitter.line_count
+            prev_p4 = emitter._arg_list_p4_fired
+            emitter._arg_list_p4_fired = False
             _emit_arg_with_optional_paren_align(arg)
             widths_ok = (
                 emitter.last_lines_max_width(saved[0])
@@ -7728,16 +7747,56 @@ def _emit_argument_list(
                     widths_ok
                     and emitter.column < effective_max
                 )
-            if not widths_ok:
+            # 0.6.0: reject the packed emission when the
+            # arg's own emission cascaded through arg-list
+            # P4 (leaf-arg wrap) — packing `arg1, deepCall(`
+            # then wrapping deepCall's args produces the
+            # "split call on same line as previous arg"
+            # shape (line 1 has `arg1, deepCall(`, line 2
+            # has `<indent>innerArg)`). Same line count as
+            # break-before-then-inline-emit, but the latter
+            # is cleaner. Same detection mechanism as
+            # binary emit's `paren_inner_wrap` — see
+            # `Emitter._arg_list_p4_fired`.
+            arg_wrapped_via_p4 = emitter._arg_list_p4_fired
+            emitter._arg_list_p4_fired = prev_p4 or arg_wrapped_via_p4
+            if not widths_ok or arg_wrapped_via_p4:
                 emitter.restore(saved)
+                emitter._arg_list_p4_fired = prev_p4
                 emitter.write(",")
                 emitter.newline()
                 emitter.write(" " * cont_col)
                 operand_start = emitter.line_count
                 _emit_arg_with_optional_paren_align(arg)
+                emitter._arg_list_p4_fired = (
+                    prev_p4 or emitter._arg_list_p4_fired
+                )
             prev_arg_multi_row = (
                 emitter.line_count > operand_start
             )
+        emitter.write(")")
+
+    def emit_p3_paren_one_per_line() -> None:
+        # P3: paren-aligned, one argument per line. Per spec
+        # "Method Call Arguments / Priority 3": each arg on
+        # its own line, all args left-aligned to the first
+        # column after `(`. Fires when P2's two-line packed
+        # shape can't accommodate the arg list.
+        #
+        # Distinct from P4 (block+4 one-per-line, which
+        # anchors relative to the CALL LINE'S start, not
+        # relative to `(`): P3 wins when args fit at the
+        # deeper paren-align col; P4 is the fallback when
+        # any arg's own width exceeds what fits at
+        # paren-align.
+        emitter.write("(")
+        cont_col = emitter.column
+        for index, arg in enumerate(args):
+            if index > 0:
+                emitter.write(",")
+                emitter.newline()
+                emitter.write(" " * cont_col)
+            _emit_arg_with_optional_paren_align(arg)
         emitter.write(")")
 
     def emit_p4_multi_arg() -> None:
@@ -7774,23 +7833,72 @@ def _emit_argument_list(
     # deterministic from the AST — earlier code
     # short-circuited P1 when any arg's SOURCE was multi-row,
     # which made the decision flip between formatter passes.
-    candidates: list[Callable[[], None]] = [emit_p1]
-    if len(args) == 1:
-        # 0.6.0: two P4 candidates for single-arg. Block+4
-        # tries first — wins when the arg fits at the shallow
-        # canonical col. Paren-defer is LAST (spec C1
-        # emit-and-warn fallback) — commits when both cols
-        # overflow (canary literal, Case 5 long identifier),
-        # putting the arg at the semantically-correct
-        # paren-aligned column so overflow is at least
-        # meaningfully placed under its enclosing group.
-        candidates.append(emit_p4_single_arg_block_indent)
-        candidates.append(emit_p4_single_arg_paren_defer)
-    else:
-        candidates.append(emit_p2_greedy)
-        candidates.append(emit_p4_multi_arg)
     cascade_start = emitter.line_count
-    try_priorities(emitter, candidates)
+    if len(args) == 1:
+        # Single-arg cascade uses try_priorities (both P4
+        # candidates are width-only): P1 inline → P4 block+4
+        # → P4 paren-defer (last-committed).
+        candidates: list[Callable[[], None]] = [
+            emit_p1,
+            emit_p4_single_arg_block_indent,
+            emit_p4_single_arg_paren_defer,
+        ]
+        try_priorities(emitter, candidates)
+    else:
+        # Multi-arg cascade — manual snapshot/restore because
+        # P2's two-line constraint (per spec "Method Call
+        # Arguments / Priority 2 — Two-line, paren-aligned,
+        # comma-packed") cannot be expressed as a pure
+        # width check inside `try_priorities`. The cascade:
+        #
+        #   - P1 (inline all): every operand on the call line.
+        #   - P2 (two-line packed): args pack onto call line
+        #     + one continuation line. Fits ONLY when the
+        #     entire arg list needs at most one continuation
+        #     line. If P2 would spill to a third line,
+        #     reject.
+        #   - P3 (paren-aligned one-per-line): each arg on
+        #     its own line at the paren-align column.
+        #   - P4 (block+4 one-per-line): each arg on its own
+        #     line at the line-start-col + 4 anchor. Spec
+        #     C1 emit-and-warn fallback.
+        initial = emitter.snapshot()
+        effective_max = _MAX_LINE - emitter.tail_reserve
+        # P1.
+        emit_p1()
+        if emitter.last_lines_max_width(initial[0]) <= effective_max:
+            _fire_wrap_overflow_advisory(
+                emitter, node, cascade_start, "argument list"
+            )
+            return
+        emitter.restore(initial)
+        # P2 (two-line packed).
+        p2_snap = emitter.snapshot()
+        emit_p2_greedy()
+        p2_line_count = emitter.line_count - p2_snap[0]
+        p2_fits = (
+            emitter.last_lines_max_width(p2_snap[0])
+            <= effective_max
+            and p2_line_count <= 1
+        )
+        if p2_fits:
+            _fire_wrap_overflow_advisory(
+                emitter, node, cascade_start, "argument list"
+            )
+            return
+        emitter.restore(p2_snap)
+        # P3 (paren-aligned one-per-line).
+        p3_snap = emitter.snapshot()
+        emit_p3_paren_one_per_line()
+        if emitter.last_lines_max_width(p3_snap[0]) <= effective_max:
+            _fire_wrap_overflow_advisory(
+                emitter, node, cascade_start, "argument list"
+            )
+            return
+        emitter.restore(p3_snap)
+        # P4 (block+4 one-per-line) — spec C1 fallback,
+        # commits unconditionally.
+        emit_p4_multi_arg()
     _fire_wrap_overflow_advisory(
         emitter, node, cascade_start, "argument list"
     )
