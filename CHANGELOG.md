@@ -29,6 +29,56 @@ skipped, not valid Java).
   overflows at deep indent no longer emit silently as
   81-char LineLength violations. Locked by three new
   fixtures under `tests/fixtures/assignment_wrap/`.
+- **P0 — `emit_p4_single_arg` two-candidate cascade with
+  paren-deference.** `_emit_argument_list`'s single-arg P4
+  fallback splits into two candidates in
+  `try_priorities`' order: block+4 first, paren-defer
+  second. Block+4 wins when the arg fits at the canonical
+  single-indent col (short identifier / short method call
+  / anything that comfortably fits); paren-defer wins as
+  the spec C1 emit-and-warn fallback when neither col
+  fits, placing the arg at `paren_expr_col + 3` — one `+4`
+  step past the innermost enclosing
+  `parenthesized_expression`'s `(`. That means:
+    - **Long literal that can't be split** (canary
+      `condition_wrap/09`): both cols overflow →
+      paren-defer wins → literal at "col of enclosing `(`
+      + 4", semantically aligned under its group.
+    - **Long identifier that overflows at every col**
+      (Case 5): same — paren-defer wins for the same
+      semantic-alignment reason. Checkstyle catches the
+      overflow and prompts the developer to rename.
+    - **Short arg that fits at block+4** (e.g.
+      `.asList(timers)` nested in a binary chain):
+      block+4 wins as the first fitting candidate,
+      preserving pre-0.6 shape and not destabilizing outer
+      wraps.
+  New `Emitter._paren_expr_col` slot is set only by
+  `_emit_parenthesized_expression` — never by item 10's
+  extension for single-arg binary args — so the deference
+  rule discriminates grouping/control-flow parens from
+  method-call parens. Locked by `condition_wrap/09`
+  (positive canary — literal at col 24) and the new
+  `arg_list_wrap/09_single_arg_literal_paren_deference`
+  fixture (positive — literal at col 18 under an
+  enclosing `if (!(...))`).
+- **P0 — source-preserve fall-through when developer's deep
+  indent would overflow.** `_emit_argument_list`'s source-
+  preserve path previously preserved developer-authored
+  continuation columns verbatim whenever they were at or
+  past the target col (`paren_align_col + 4`) — a rule
+  meant to preserve idempotency for wrap-engine output.
+  Under 0.6.0, when the preserved shape still exceeds 80
+  chars, the source-preserve path declines and falls
+  through to the wrap engine, so the wrap engine's
+  paren-aligned candidate emits at the correct enclosing
+  paren instead of locking a stale developer column. This
+  is what makes `condition_wrap/09`'s 68-char literal move
+  from developer's arbitrary col 28 to the paren-aligned
+  col 24 (via the paren-deference rule above). Idempotency
+  holds: wrap-engine output at column X re-enters this
+  branch on the next pass with `source_first_cont_col = X`
+  and emits the same shape.
 
 ## [0.5.3] - 2026-07-07
 

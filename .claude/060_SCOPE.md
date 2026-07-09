@@ -193,23 +193,63 @@ any enclosing paren — this is a bug):
                             "a quite long string literal that the developer placed at a low column"))));
 ```
 
-DESIRED (0.6 — literal at col 36, paren-aligned under its
-enclosing `equals(`. Still overflows because the literal
-itself is 68 chars, but the paren-alignment is now
-semantically correct. Fixing the overflow requires the
-developer to split the literal by hand — that's their job,
-not the formatter's):
+DESIRED (0.6 — literal at col 24, one `+4` step past the
+enclosing `(!Boolean.FALSE.equals(...))` grouping paren at
+col 20. The `emit_p4_single_arg` P4 fallback in
+`_emit_argument_list` engages a paren-deference rule when the
+arg is a literal AND an enclosing `parenthesized_expression`
+set `paren_expr_col`: continue at `paren_expr_col + 3`
+(= "col of enclosing `(` + 4"). Still overflows because the
+literal itself is 68 chars, but the placement is now
+semantically meaningful — the literal reads as "content of
+that grouping paren." Fixing the overflow requires the
+developer to split the literal by hand):
 ```java
         somewhatLongFlagName = (somewhatLongFlagName
             || (result.containsKey("key")
                 && (!Boolean.FALSE.equals(
-                                    "a quite long string literal that the developer placed at a low column"))));
+                       "a quite long string literal that the developer placed at a low column"))));
 ```
 
 Resolution of Q1c drove this update — see "Open questions
 — RESOLVED" section below. `condition_wrap/09`'s
-`expected.java` must be UPDATED as part of P0 to lock the
-correct shape (col 36), not preserved as-is.
+`expected.java` was UPDATED as part of P0 to lock the col 24
+shape.
+
+**Two-candidate cascade selects the shape.** `emit_p4_single_arg`
+splits into two `try_priorities` candidates:
+
+1. **Block+4** (tried first) — canonical single-indent
+   continuation past the call's statement start. Wins when
+   the arg fits at the shallow col.
+2. **Paren-defer** (tried last, spec C1 emit-and-warn
+   fallback) — `paren_expr_col + 3` when a
+   `parenthesized_expression` is active, otherwise mirrors
+   block+4. Commits when NO earlier candidate fit, so it
+   catches the cases where every column overflows.
+
+Behavior by arg category under this cascade:
+
+- **Long literals that can't be split** (canary): both cols
+  overflow → paren-defer wins → literal at "col of
+  enclosing `(` + 4", semantically aligned under its group.
+- **Long identifiers that overflow everywhere** (Case 5 in
+  the 2026-07-08 walkthrough): same — paren-defer wins for
+  the same reason. Checkstyle reports the overflow and the
+  developer renames the identifier.
+- **Args that fit at block+4** (short identifiers / short
+  method-call names / anything comfortably under 80): block+4
+  wins as the first fitting candidate. This preserves
+  pre-0.6 behavior for cases like `.asList(timers)` nested
+  inside a binary chain (`arg_list_wrap/03`), avoiding a
+  cascade that would push the outer binary from P2 to P3.
+
+The 0.5.x source-preserve shift-up rule remains: a subsequent
+format pass that sees a block+4-emitted arg inside an
+enclosing group will normalize to paren-align on the way
+back through the source-preserve gate. That's a legitimate
+convergence step — the paren-aligned shape then stays stable
+on the third pass and onward.
 
 **Approach.** Speculatively emit both candidates (source-
 preserved AND fresh wrap-engine cascade), compare per-line

@@ -252,6 +252,7 @@ class Emitter:
         "_indent",
         "_tail_reserve",
         "_paren_align_col",
+        "_paren_expr_col",
         "warnings",
     )
 
@@ -285,7 +286,27 @@ class Emitter:
         # `None` means no enclosing grouping paren is in scope;
         # wrap candidates use the standard cumulative `+4` indent
         # in that case.
+        #
+        # `_paren_align_col` serves dual duty (dating from 0.5.0
+        # item 10, the spec C6 extension to method/constructor
+        # call parens): it is ALSO set by `_emit_argument_list`'s
+        # single-arg binary-expression case so the inner binary
+        # can paren-align to the call's `(`. Anchors that need to
+        # discriminate grouping parens from method-call parens
+        # (e.g. `emit_p4_single_arg`'s 0.6.0 paren-deference rule)
+        # consult `_paren_expr_col` instead, which is set ONLY by
+        # `_emit_parenthesized_expression`.
         self._paren_align_col: int | None = None
+        # Column immediately after the opening `(` of the
+        # innermost enclosing `parenthesized_expression`. Distinct
+        # from `_paren_align_col`: this field is set ONLY by
+        # `_emit_parenthesized_expression` — never by the item 10
+        # extension inside `_emit_argument_list`. Consulted by
+        # `emit_p4_single_arg`'s single-arg P4 fallback so the
+        # continuation column can defer to the grouping paren
+        # that owns the arg (0.6.0 P0 rule), while ignoring
+        # method-call parens for that purpose.
+        self._paren_expr_col: int | None = None
 
     @property
     def column(self) -> int:
@@ -372,6 +393,28 @@ class Emitter:
         """
         return self._paren_align_col
 
+    @property
+    def paren_expr_col(self) -> int | None:
+        """The column immediately after the innermost enclosing
+        `parenthesized_expression`'s `(`, or `None`.
+
+        Set ONLY by `_emit_parenthesized_expression`. Unlike
+        `paren_align_col` (which item 10 also sets from
+        `_emit_argument_list`'s single-arg binary path), this
+        field discriminates grouping/control-flow parens from
+        method-call parens — used by `emit_p4_single_arg`'s
+        0.6.0 paren-deference rule.
+        """
+        return self._paren_expr_col
+
+    def set_paren_expr_col(self, value: int | None) -> int | None:
+        """Set `paren_expr_col` and return the previous value.
+        Pair with a try/finally so nested emits restore cleanly.
+        """
+        previous = self._paren_expr_col
+        self._paren_expr_col = value
+        return previous
+
     def set_paren_align_col(self, value: int | None) -> int | None:
         """Set `paren_align_col` and return the previous value
         so the caller can restore it via the symmetric call.
@@ -381,13 +424,15 @@ class Emitter:
         self._paren_align_col = value
         return previous
 
-    def snapshot(self) -> tuple[int, str, int, int, int | None, int]:
+    def snapshot(
+        self,
+    ) -> tuple[int, str, int, int, int | None, int | None, int]:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
-        tail_reserve, paren_align_col, warnings_count)` suitable
-        for `restore()`. The wrap-priority engines use the
-        pattern:
+        tail_reserve, paren_align_col, paren_expr_col,
+        warnings_count)` suitable for `restore()`. The
+        wrap-priority engines use the pattern:
 
             saved = emitter.snapshot()
             <try emitting in some shape>
@@ -413,18 +458,19 @@ class Emitter:
             self._indent,
             self._tail_reserve,
             self._paren_align_col,
+            self._paren_expr_col,
             len(self.warnings),
         )
 
     def restore(
         self,
-        snap: tuple[int, str, int, int, int | None, int],
+        snap: tuple[int, str, int, int, int | None, int | None, int],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
 
         Truncates the lines and warnings lists back to their
         captured lengths and resets the current line, indent,
-        tail reserve, and paren-align column. Any text emitted
+        tail reserve, and paren-align columns. Any text emitted
         — and any warnings appended — after the snapshot are
         discarded.
         """
@@ -434,6 +480,7 @@ class Emitter:
             indent,
             tail_reserve,
             paren_align_col,
+            paren_expr_col,
             warnings_count,
         ) = snap
         del self._lines[lines_count:]
@@ -441,6 +488,7 @@ class Emitter:
         self._indent = indent
         self._tail_reserve = tail_reserve
         self._paren_align_col = paren_align_col
+        self._paren_expr_col = paren_expr_col
         del self.warnings[warnings_count:]
 
     def last_lines_max_width(self, since: int) -> int:
@@ -2143,6 +2191,14 @@ def _emit_parenthesized_expression(
         emitter, source, inner, emitter.column
     )
     prev_paren_align: int | None = None
+    # `paren_expr_col` tracks the SAME column but is set here
+    # unconditionally so `emit_p4_single_arg`'s paren-deference
+    # rule sees the grouping paren even when
+    # `_inner_would_invert_paren_align` declined the spec C6
+    # binary-continuation alignment. Item 10's setting of
+    # `paren_align_col` from `_emit_argument_list` never touches
+    # `paren_expr_col`.
+    prev_paren_expr = emitter.set_paren_expr_col(emitter.column)
     if apply_paren_align:
         prev_paren_align = emitter.set_paren_align_col(emitter.column)
     try:
@@ -2151,6 +2207,7 @@ def _emit_parenthesized_expression(
         emitter.set_tail_reserve(prev_reserve)
         if apply_paren_align:
             emitter.set_paren_align_col(prev_paren_align)
+        emitter.set_paren_expr_col(prev_paren_expr)
     emitter.write(")")
 
 
@@ -6954,7 +7011,30 @@ def _emit_argument_list(
             # places continuations at a column deeper than this
             # rule's target, subsequent passes leave them
             # untouched.
-            final_lines = lines
+            #
+            # 0.6.0 P0 spike (Q1c): when the developer-chosen
+            # deeper indent still overflows 80 chars at the
+            # target emission position, decline preservation and
+            # fall through to the wrap engine. The wrap engine's
+            # paren-aligned candidate (P1 / P2-greedy / P4)
+            # emits at the CORRECT enclosing paren column;
+            # source-preserving an overflowing developer-authored
+            # column locks the wrong shape indefinitely because
+            # per-pass width math never rewrites it. Idempotency
+            # holds because wrap-engine output at column X
+            # re-enters this branch on the next pass with
+            # `source_first_cont_col = X`; if wrap-engine's own
+            # output overflows (long literals that can't be
+            # split), we fall through again and re-emit the same
+            # shape.
+            prospective_max = _max_source_preserve_line_width(
+                lines, emitter.column, emitter.tail_reserve,
+            )
+            if prospective_max > _MAX_LINE:
+                # Signal fall-through to wrap engine.
+                final_lines = None
+            else:
+                final_lines = lines
         else:
             # Shift all continuation lines by the same delta so
             # internal alignment (paren-aligned operators, dot-
@@ -7125,16 +7205,27 @@ def _emit_argument_list(
                 )
         emitter.write(")")
 
-    def emit_p4_single_arg() -> None:
-        # P4: line-break before the only arg; arg lands at
-        # single-indent past the call's statement start.
+    def emit_p4_single_arg_block_indent() -> None:
+        # P4 block+4 candidate — line-break before the only
+        # arg; the arg lands at "one indent past the call's
+        # statement start" (canonical single-indent
+        # continuation).
         #
-        # Note: item 10's `paren_align_col` set in `emit_p1` is
-        # deliberately NOT mirrored here. P4 re-roots the arg
-        # at `block + 4`, which is its own anchor; setting
-        # `paren_align_col` to the call's `(` column would
-        # break the alignment of the inner binary's
-        # continuations (they would land at
+        # This is the FIRST P4 candidate in the arg-list
+        # cascade so it wins when the arg fits at block+4.
+        # That keeps short args (`.asList(timers)`) at the
+        # shallow, canonical column, avoiding cascades where
+        # a deeper paren-defer shape (see the paren-defer
+        # candidate below) would push the containing wrap
+        # engine's line past `_MAX_LINE - tail_reserve` and
+        # force it to escalate its own shape.
+        #
+        # Note: item 10's `paren_align_col` set in `emit_p1`
+        # for single-arg binary args is deliberately NOT
+        # mirrored here. P4 re-roots the arg at its own
+        # anchor; setting `paren_align_col` to the call's
+        # `(` column would break the alignment of the inner
+        # binary's continuations (they would land at
         # `paren_align_col + 4`, deeper than the arg's first
         # operand at `block + 4`).
         emitter.write("(")
@@ -7144,6 +7235,44 @@ def _emit_argument_list(
         _emit_node(emitter, source, args[0])
         emitter.write(")")
         emitter.pop_indent()
+
+    def emit_p4_single_arg_paren_defer() -> None:
+        # Paren-defer candidate (0.6.0 Option D). Continuation
+        # column = `paren_expr_col + 3` (= "col of enclosing
+        # `(` + 4"), when a `parenthesized_expression`
+        # (grouping OR control-flow) set `paren_expr_col`.
+        # Without an enclosing group, mirrors block+4.
+        #
+        # This candidate is the LAST in the arg-list cascade so
+        # `try_priorities`' spec C1 emit-and-warn fallback
+        # commits it when NO earlier candidate fit. That gives
+        # us the right behavior for the canary (literal that
+        # can't be split — both block+4 and paren-defer
+        # overflow, paren-defer wins as last) and for Case 5
+        # long identifiers (identifier too long to fit at any
+        # column — paren-defer wins for the semantic-alignment
+        # reason). Short args that fit at block+4 win block+4
+        # earlier in the cascade, so we don't destabilize outer
+        # emissions that expect the shallower shape (e.g. the
+        # `arg_list_wrap/03` binary chain's `.asList(timers)`).
+        #
+        # `paren_expr_col` is set ONLY by
+        # `_emit_parenthesized_expression` — never by item 10's
+        # extension in `emit_p1`. That discrimination is what
+        # keeps this rule tied to grouping/control-flow parens
+        # rather than method-call parens.
+        emitter.write("(")
+        emitter.newline()
+        if emitter.paren_expr_col is not None:
+            emitter.write(" " * (emitter.paren_expr_col + 3))
+            _emit_node(emitter, source, args[0])
+            emitter.write(")")
+        else:
+            emitter.push_indent()
+            emitter.write_indent()
+            _emit_node(emitter, source, args[0])
+            emitter.write(")")
+            emitter.pop_indent()
 
     def emit_p2_greedy() -> None:
         # P2: pack as many args as fit on the call line at
@@ -7258,7 +7387,16 @@ def _emit_argument_list(
     # which made the decision flip between formatter passes.
     candidates: list[Callable[[], None]] = [emit_p1]
     if len(args) == 1:
-        candidates.append(emit_p4_single_arg)
+        # 0.6.0: two P4 candidates for single-arg. Block+4
+        # tries first — wins when the arg fits at the shallow
+        # canonical col. Paren-defer is LAST (spec C1
+        # emit-and-warn fallback) — commits when both cols
+        # overflow (canary literal, Case 5 long identifier),
+        # putting the arg at the semantically-correct
+        # paren-aligned column so overflow is at least
+        # meaningfully placed under its enclosing group.
+        candidates.append(emit_p4_single_arg_block_indent)
+        candidates.append(emit_p4_single_arg_paren_defer)
     else:
         candidates.append(emit_p2_greedy)
         candidates.append(emit_p4_multi_arg)

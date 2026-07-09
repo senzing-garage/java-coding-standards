@@ -6,6 +6,6 @@ public class Demo
         somewhatLongFlagName = (somewhatLongFlagName
             || (result.containsKey("key")
                 && (!Boolean.FALSE.equals(
-                            "a quite long string literal that the developer placed at a low column"))));
+                       "a quite long string literal that the developer placed at a low column"))));
     }
 }
