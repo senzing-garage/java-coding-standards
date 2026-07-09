@@ -1245,9 +1245,67 @@ def _emit_extends_implements_p2_p3(
         emitter.write(cont_indent)
         _emit_node(emitter, source, superclass_node)
     if has_implements:
+        p3_impl_saved = emitter.snapshot()
         emitter.newline()
         emitter.write(cont_indent)
         _emit_node(emitter, source, super_interfaces_node)
+        if emitter.last_lines_max_width(p3_impl_saved[0]) > _MAX_LINE:
+            # P4: implements clause still overflows on its own
+            # line (a class implementing 3+ long-named interfaces
+            # exceeds 80 chars even after breaking `implements`
+            # onto its own continuation line). Break each
+            # interface onto its own line, paren-aligned under
+            # the first interface's column
+            # (`cont_indent + len("implements ")`), matching the
+            # shape a developer would author by hand.
+            #
+            # 0.6.0 P0 consumer trial surfaced this on
+            # `DataMartReportsServices.java` — 4 interfaces
+            # totaling 138 chars collapsed into a 142-char P3
+            # line. This P4 tier drops each interface to its
+            # own line.
+            emitter.restore(p3_impl_saved)
+            _emit_super_interfaces_broken(
+                emitter, source, super_interfaces_node, cont_indent
+            )
+
+
+def _emit_super_interfaces_broken(
+    emitter: Emitter,
+    source: bytes,
+    super_interfaces_node: Node,
+    cont_indent: str,
+) -> None:
+    """Emit `implements X, Y, Z, W` with each interface on its own
+    continuation line. First interface stays on the `implements`
+    line; subsequent interfaces align under the first interface's
+    column (paren-align to `implements `).
+
+    Called as the P4 fallback in
+    `_emit_extends_implements_p2_p3` when the P3 single-line
+    implements clause overflows 80 chars.
+    """
+    type_list = None
+    for c in super_interfaces_node.named_children:
+        if c.type == "type_list":
+            type_list = c
+            break
+    if type_list is None:
+        raise NotImplementedError(
+            "super_interfaces missing 'type_list' child — "
+            "grammar shape unexpected."
+        )
+    types = list(type_list.named_children)
+    emitter.newline()
+    emitter.write(cont_indent)
+    emitter.write("implements ")
+    align_col = emitter.column
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.write(",")
+            emitter.newline()
+            emitter.write(" " * align_col)
+        _emit_node(emitter, source, t)
 
 
 def _emit_class_header_wrapped(
@@ -5203,26 +5261,55 @@ def _emit_assignment_expression(
 
     effective_max = _MAX_LINE - emitter.tail_reserve
 
-    # Step 1: try inline single-line via speculative emission.
-    # Commit only when RHS stays on one line AND the total
-    # fits within the effective budget.
+    # Step 1: try inline emission. Commit when every line
+    # (including the LHS + op + RHS-start line AND any lines
+    # the RHS's own wrap engine produced internally) fits
+    # under `effective_max`.
+    #
+    # This admits shapes like:
+    #     this.env = MyFactory.newBuilder()
+    #                         .step1(a)
+    #                         .step2(b);
+    # where the RHS is a method chain that itself wraps
+    # multi-line — the first line (`this.env = MyFactory.new
+    # Builder()`) fits under 80, and each chain continuation
+    # emitted by the chain wrap engine also fits. Breaking at
+    # `=` in this case would just add a redundant newline.
+    #
+    # Fall through to Step 2 (break-at-`=`) only when the
+    # inline shape produces at least one line past
+    # `effective_max` — typically because the LHS + op +
+    # RHS-start is itself too wide (a long cast + call, e.g.
+    # `this.proxyEnvironment = (SzEnvironment) Reflection
+    # Utilities.restrictedProxy(` at 88 chars from the 0.6.0
+    # consumer trial). In those cases Step 2's break-at-`=`
+    # shortens the first line to just `<LHS>`.
     saved = emitter.snapshot()
     emitter.write(" ")
     emitter.write(op_text)
     emitter.write(" ")
     _emit_node(emitter, source, right_node)
     inline_fits = (
-        emitter.line_count == saved[0]
-        and emitter.column <= effective_max
+        emitter.last_lines_max_width(saved[0]) <= effective_max
     )
     if inline_fits:
         return
     emitter.restore(saved)
 
-    # Step 2: try break-at-operator with single-line RHS.
+    # Step 2: try break-at-operator with the RHS at block+4.
     # Continuation indent is one level deeper than the
     # surrounding statement — matches the variable_declarator
-    # break-at-`=` shape.
+    # break-at-`=` shape. The RHS is allowed to wrap
+    # internally (nested arg-list / binary chain / method
+    # chain that itself wraps) as long as every line stays
+    # under `effective_max`. Requiring the RHS to fit on a
+    # single line is too strict — a cast-and-call RHS like
+    # `(Type) obj.method(a, b)` may fit on line 2 with args
+    # at block+4 even if the inline shape overflows. The
+    # 0.6.0 consumer trial surfaced this at
+    # `SzReplicator.java:994` (a ~88-char assignment_expression
+    # committed inline because Step 2 rejected a multi-row
+    # RHS whose max-line-width was actually 71).
     p2_saved = emitter.snapshot()
     emitter.newline()
     emitter.push_indent()
@@ -5231,8 +5318,7 @@ def _emit_assignment_expression(
     emitter.write(" ")
     _emit_node(emitter, source, right_node)
     p2_fits = (
-        emitter.line_count == p2_saved[0] + 1
-        and emitter.column <= effective_max
+        emitter.last_lines_max_width(p2_saved[0]) <= effective_max
     )
     if p2_fits:
         emitter.pop_indent()

@@ -10,6 +10,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [Unreleased]
+
 ## [0.6.0] - 2026-07-09
 
 Formatter release covering all five in-scope items from
@@ -22,17 +24,59 @@ DDL detector. P5 (enum type_parameters / `permits`)
 remains a JLS-refusal since neither is legal Java per
 JLS §8.9.
 
+### Additional fixes surfaced by consumer trial
+
+- **Multi-interface `implements` clause collapse on class
+  headers.** `_emit_extends_implements_p2_p3` previously
+  had only P2 (both clauses on one line) and P3 (each
+  clause on its own line) tiers. When the P3 `implements`
+  line itself still exceeded 80 chars (a class implementing
+  3+ long-named interfaces), the formatter committed a
+  single-line P3 output that violated LineLength. Adds a
+  P4 tier (`_emit_super_interfaces_broken`) that keeps the
+  first interface on the `implements` line and breaks
+  subsequent interfaces onto their own lines paren-aligned
+  under the first interface's column. Locked by
+  `class_header_wrap/10_p4_multi_interface_implements`.
+  Consumer trial surfaced this on
+  `data-mart-replicator/DataMartReportsServices.java`
+  (4 interfaces, 142-char P3 line dropped to a multi-line
+  paren-aligned shape).
+- **P1 assignment_expression Step 1 / Step 2 fit-check
+  loosened to per-line widths.** Both Step 1 (inline) and
+  Step 2 (break-at-`=`) previously required the RHS to
+  emit on a single line — Step 2 would reject any RHS that
+  itself wrapped internally (e.g. a cast + call whose
+  arg-list wraps to multi-line), even when every RHS line
+  fit under `effective_max`. Consequence: assignments
+  committed inline (Step 3) with 88-char line-1 shapes like
+  `this.proxyEnvironment = (Type) obj.method(` — no
+  break-at-`=` fallback fired. Both steps now use
+  `last_lines_max_width(saved[0]) <= effective_max`,
+  admitting RHS internal wraps. Locked by
+  `assignment_wrap/04_break_at_op_when_rhs_wraps_multi_line`.
+  Consumer trial surfaced this on
+  `data-mart-replicator/SzReplicator.java:994, 1193`.
+
 ### Verification
 
-- 672 pytest passing (`tooling/scripts/tests/`).
-- Consumer trial on `senzing-commons-java` — 10 files
-  reformatted with legitimate P1/P0 improvements
-  (cleaner break-at-`=` shapes, paren-defer for stranded
-  literals, factory-chain deep-dot); `mvn -Pcheckstyle
-  validate` reports 0 violations, BUILD SUCCESS.
+- 674 pytest passing (`tooling/scripts/tests/`).
+- Consumer trial across 3 repos:
+  - `senzing-commons-java` — 4 files reformatted with the
+    intended P0/P1F/P3F/P4-SQL-DDL improvements;
+    `mvn -Pcheckstyle validate` BUILD SUCCESS with 0
+    violations.
+  - `sz-sdk-java` — 32 files reformatted; the two remaining
+    formatter warnings are legitimate unsplittable literals
+    (advisory-not-bug).
+  - `data-mart-replicator` (first-time adoption) — 234
+    files reformatted; both defects surfaced during trial
+    fixed above; remaining ~150 over-80 lines are
+    unsplittable string literals in assertion messages or
+    source-preserved trailing comments (author-side work,
+    not formatter defects).
 - Idempotency verified on all new fixtures via the
-  standard pytest golden-file suite (each fixture's
-  `expected.java` re-formats to itself).
+  standard pytest golden-file suite.
 
 ### Added
 
