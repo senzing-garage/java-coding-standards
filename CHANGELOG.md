@@ -62,6 +62,24 @@ skipped, not valid Java).
   `arg_list_wrap/09_single_arg_literal_paren_deference`
   fixture (positive — literal at col 18 under an
   enclosing `if (!(...))`).
+- **P3 — Cross-statement smoothing** (motivating example) is
+  achieved naturally by the P0 source-preserve fall-through
+  and the emit_p4_single_arg two-candidate cascade added in
+  Phase 2/3. The scope-doc motivating example — three
+  sibling `result.add(arguments(...))` calls in
+  `JsonUtilitiesTest.java:3057-3062` that in 0.5.3 got
+  three different wrap shapes because source-preserve
+  echoed pre-existing developer layouts — now converges to
+  a consistent paren-aligned shape across all three because
+  each individual statement's wrap engine independently
+  picks the same canonical layout. No non-local
+  cross-statement machinery required. Locked by
+  `arg_list_wrap/11_sibling_calls_paren_align_naturally`.
+  If future consumer trials surface cases where sibling
+  statements STILL diverge post-Phase-2/3, the non-local
+  cross-statement smoothing described in
+  `.claude/060_SCOPE.md` P3 will need to be built — but no
+  such case is known today.
 - **P4 — SQL DDL detector for string-concat chains.**
   Adds a heuristic detector to `_emit_binary_expression`
   that identifies hand-authored SQL DDL as a `+` chain

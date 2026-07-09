@@ -678,6 +678,22 @@ on the 0.6 list; ships last in the phasing so it has the
 settled P0/P1/P2 base to build on and the widest verification
 window.
 
+**UPDATE 2026-07-09 — achieved by Phase 2/3.** The motivating
+example above is now handled correctly WITHOUT non-local
+cross-statement machinery. Phase 2/3's source-preserve
+fall-through (declines the source-preserve gate when the
+developer-authored shape would still overflow at target col)
+combined with the emit_p4_single_arg two-candidate cascade
+causes each of the three sibling `result.add(arguments(...))`
+calls to independently pick the same canonical paren-aligned
+shape — the local wrap engines converge naturally on the
+same layout when they see structurally-similar inputs at
+similar contexts. Locked by
+`arg_list_wrap/11_sibling_calls_paren_align_naturally`. The
+non-local architecture described in this section is deferred
+unless / until a consumer trial surfaces a case that ISN'T
+handled by the local convergence.
+
 ---
 
 ## P4 — SQL DDL one-clause-per-line detector
