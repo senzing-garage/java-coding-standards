@@ -10,9 +10,29 @@ and this project adheres to
 
 ## [Unreleased]
 
-Ongoing 0.6.0 work. See `.claude/060_SCOPE.md` for the full
-release scope. Phased delivery across P0 through P4 (P5
-skipped, not valid Java).
+## [0.6.0] - 2026-07-09
+
+Formatter release covering all five in-scope items from
+`.claude/060_SCOPE.md`: P0 source-preserve rework,
+P1 assignment_expression wrap, P2 method-chain cascade
+(five factory tiers, four constructor tiers, Q-CHAIN-1
+through Q-CHAIN-5 resolutions), P3 cross-statement
+smoothing (achieved by P0's local convergence), and P4 SQL
+DDL detector. P5 (enum type_parameters / `permits`)
+remains a JLS-refusal since neither is legal Java per
+JLS §8.9.
+
+### Verification
+
+- 672 pytest passing (`tooling/scripts/tests/`).
+- Consumer trial on `senzing-commons-java` — 10 files
+  reformatted with legitimate P1/P0 improvements
+  (cleaner break-at-`=` shapes, paren-defer for stranded
+  literals, factory-chain deep-dot); `mvn -Pcheckstyle
+  validate` reports 0 violations, BUILD SUCCESS.
+- Idempotency verified on all new fixtures via the
+  standard pytest golden-file suite (each fixture's
+  `expected.java` re-formats to itself).
 
 ### Added
 
