@@ -62,6 +62,31 @@ skipped, not valid Java).
   `arg_list_wrap/09_single_arg_literal_paren_deference`
   fixture (positive — literal at col 18 under an
   enclosing `if (!(...))`).
+- **P2 — outer-parenthesized-expression chain cascade
+  (P3F / P2C).** Adds a new candidate to
+  `_emit_method_chain_wrapped` that fires when the whole
+  chain is wrapped in an enclosing
+  `parenthesized_expression` (checked via
+  `Emitter._paren_expr_col`, added in the P0 phase). Chain-
+  tail segments land at `paren_expr_col + 4` per
+  Q-CHAIN-1's resolution (consistent with the
+  enum/class-header wrap convention). Shape by receiver
+  kind:
+    - **Factory / instance** (head is identifier /
+      field-access): `head.segments[0]` stays on line 1;
+      `segments[1:]` each on their own continuation line
+      at `paren_expr_col + 4`. Locked by
+      `method_chain_wrap/20_p3f_factory_paren_indent` and
+      `method_chain_wrap/21_p3f_instance_paren_indent`.
+    - **Constructor** (head is
+      `object_creation_expression`): head alone on line 1;
+      ALL segments break to continuation lines. Locked by
+      `method_chain_wrap/22_p2c_constructor_paren_indent`.
+  Tried BEFORE the standard P2 (block+4-agnostic dot-align)
+  because paren-indent is preferred inside a grouping paren
+  per Q-CHAIN-5. Falls through to P2 if widths overflow OR
+  Q-CHAIN-4 backoff triggers (a chain segment's args
+  wrapped mid-emit).
 - **P2 — factory-chain P1F "deep dot" candidate.** Adds a
   new candidate to `_emit_method_chain_wrapped`'s cascade
   that fires when the chain receiver is a PascalCase

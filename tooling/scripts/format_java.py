@@ -7790,6 +7790,78 @@ def _emit_method_chain_wrapped(
             emitter.write(".")
             emit_segment(seg)
 
+    # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
+    # cascade. When the entire method chain is wrapped in a
+    # `parenthesized_expression` (grouping paren, e.g.
+    # `(SomeFactory.newBuilder(args).chain1().chain2())`),
+    # the chain-tail segments align at `paren_expr_col + 4`
+    # per Q-CHAIN-1 (= "col of enclosing `(` + 5",
+    # consistent with the enum/class-header wrap convention
+    # used in 0.5.3).
+    #
+    # Shape by receiver kind:
+    #   - Factory / instance (head is an identifier or field
+    #     access): head + `.` + segments[0] stays on line 1;
+    #     segments[1:] each on their own continuation line
+    #     at `paren_expr_col + 4`.
+    #   - Constructor (head is `object_creation_expression`):
+    #     head alone on line 1; ALL segments break to
+    #     continuation lines at `paren_expr_col + 4`. This
+    #     matches the P2C example in the scope doc (all
+    #     chain methods on their own line).
+    #
+    # Q-CHAIN-4 backoff also applies: if any segment's emit
+    # in P3F introduces mid-args wrap, reject P3F even if
+    # widths fit; fall through to P4F (block+4).
+    p3f_segment_wrapped = [False]
+
+    def emit_p3f_paren_indent() -> None:
+        # 0.6.0 P3F/P2C outer-parenthesized chain candidate.
+        # Requires `paren_expr_col` set by an enclosing
+        # `_emit_parenthesized_expression`. Called after the
+        # cascade dispatcher checks `emitter.paren_expr_col
+        # is not None`.
+        assert emitter.paren_expr_col is not None, (
+            "emit_p3f_paren_indent requires paren_expr_col set; "
+            "call site gates on this."
+        )
+        p3f_segment_wrapped[0] = False
+        tail_col = emitter.paren_expr_col + 4
+
+        def emit_seg_track_wrap(seg: Node) -> None:
+            before = emitter.line_count
+            emit_segment(seg)
+            if emitter.line_count > before:
+                p3f_segment_wrapped[0] = True
+
+        is_constructor = (
+            head is not None
+            and head.type == "object_creation_expression"
+        )
+        if head is not None:
+            _emit_node(emitter, source, head)
+            if is_constructor:
+                # Constructor P2C: all chain segments break to
+                # continuation lines. Line 1 is just `head`
+                # (= `new SomeClass(args)`).
+                wrap_from = 0
+            else:
+                # Factory / instance P3F: segments[0] stays on
+                # line 1 with head; segments[1:] break.
+                emitter.write(".")
+                emit_seg_track_wrap(segments[0])
+                wrap_from = 1
+        else:
+            # Headless chain — treat first segment as
+            # "receiver-equivalent"; break rest.
+            emit_seg_track_wrap(segments[0])
+            wrap_from = 1
+        for seg in segments[wrap_from:]:
+            emitter.newline()
+            emitter.write(" " * tail_col)
+            emitter.write(".")
+            emit_seg_track_wrap(seg)
+
     # 0.6.0 P1F Q-CHAIN-4 backoff signal — set to True when any
     # segment's emit inside `emit_p1f_factory` introduced
     # newlines (its args had to wrap, or it contained a nested
@@ -8008,6 +8080,27 @@ def _emit_method_chain_wrapped(
         if p1f_fits:
             return
         emitter.restore(p1f_saved)
+
+    # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
+    # cascade. Fires when the whole chain is wrapped in a
+    # grouping paren (paren_expr_col set). Tried BEFORE the
+    # standard P2 (block+4-agnostic dot-align) because the
+    # paren-indent shape is preferred when we're inside a
+    # grouping paren — Q-CHAIN-5 confirms outer-paren-indent
+    # + 4 for the chain-tail. Falls through to P2 if the
+    # paren-indent shape overflows or Q-CHAIN-4 backoff
+    # triggers.
+    if emitter.paren_expr_col is not None:
+        p3f_saved = emitter.snapshot()
+        emit_p3f_paren_indent()
+        p3f_fits = (
+            emitter.last_lines_max_width(p3f_saved[0])
+            <= effective_max
+            and not p3f_segment_wrapped[0]
+        )
+        if p3f_fits:
+            return
+        emitter.restore(p3f_saved)
 
     p2_saved = emitter.snapshot()
     emit_p2()
