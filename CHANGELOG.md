@@ -10,7 +10,29 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [Unreleased]
+- **Arg-list multi-arg cascade rejects P1 mixed-shape commit when
+  arg's emission cascades through arg-list P4.** Consumer trial
+  surfaced sites where P1's item-8 break-before-subsequent-args
+  invariant produced the "arg 0 packed on call line with own args
+  wrapped at line-start+4, args 1+ paren-aligned" mixed shape —
+  `SzFlagTest.java:551` in sz-sdk-java. Adds a save-reset-check-
+  restore cycle around `emit_p1` and rejects the commit when
+  `Emitter._arg_list_p4_fired` transitions False→True during the
+  emit. Falls through to P2 (which already rejects on P4) and
+  ultimately P3 (paren-aligned one-per-line) — the spec-compliant
+  shape.
+- **Arg-list P3 rejects when arg 0 (packed with `(`) fires P4.**
+  P3 packs arg 0 with the opening `(`; if arg 0's own emission
+  cascades through arg-list P4, its anchor derives from the OUTER
+  line's leading spaces (potentially much shallower than cont_col)
+  — same deep-orphan pathology as P1. Tracks arg 0's P4 firing
+  via a closure-scoped `[False]` list (distinguishes from args
+  1+ firing P4 at deeper paren-align cols, which is spec-
+  compliant and shouldn't reject). Fall-through to P4 (block+4
+  one-per-line) produces the compact spec-compliant shape.
+  Fixture `arg_list_wrap/04_item8_prev_arg_multi_row_breaks_next`
+  updated: pre-0.6 emitted the mixed shape; now emits P3
+  paren-aligned one-per-line.
 
 ## [0.6.0] - 2026-07-09
 

@@ -7776,6 +7776,14 @@ def _emit_argument_list(
             )
         emitter.write(")")
 
+    # Closure-shared out-parameter: emit_p3 records whether
+    # its ARG 0 emission caused arg-list P4 to fire. The
+    # multi-arg cascade reads this to distinguish "arg 0
+    # packed with `(` fires P4 (defect-3 pathology — shallow
+    # anchor from outer line's leading spaces)" from "args 1+
+    # fire P4 at deeper paren-align cols (spec-compliant)".
+    p3_arg0_fired_p4 = [False]
+
     def emit_p3_paren_one_per_line() -> None:
         # P3: paren-aligned, one argument per line. Per spec
         # "Method Call Arguments / Priority 3": each arg on
@@ -7796,7 +7804,23 @@ def _emit_argument_list(
                 emitter.write(",")
                 emitter.newline()
                 emitter.write(" " * cont_col)
+            if index == 0:
+                # 0.6.0 defect-3 detection: track whether arg 0's
+                # emission cascades through arg-list P4. Arg 0 is
+                # packed with `(` on the caller's line, so its
+                # P4 anchor derives from the OUTER line's leading
+                # spaces — potentially much shallower than
+                # `cont_col`. The cascade uses this signal to
+                # fall to P4 (block+4 one-per-line) in that case.
+                saved_p4 = emitter._arg_list_p4_fired
+                emitter._arg_list_p4_fired = False
             _emit_arg_with_optional_paren_align(arg)
+            if index == 0:
+                if emitter._arg_list_p4_fired:
+                    p3_arg0_fired_p4[0] = True
+                emitter._arg_list_p4_fired = (
+                    saved_p4 or emitter._arg_list_p4_fired
+                )
         emitter.write(")")
 
     def emit_p4_multi_arg() -> None:
@@ -7864,14 +7888,46 @@ def _emit_argument_list(
         #     C1 emit-and-warn fallback.
         initial = emitter.snapshot()
         effective_max = _MAX_LINE - emitter.tail_reserve
-        # P1.
+        # P1. Reset the arg-list-P4 flag before the speculative
+        # emit so the post-emit check detects only P4 firings
+        # caused by THIS emit_p1(), not sticky True from a prior
+        # statement's leftover state. The pre-existing value is
+        # captured in `prev_p4` and restored on rollback or
+        # OR-merged forward on commit — matching the ownership
+        # rule for the flag ("readers save-reset-check-restore").
+        #
+        # 0.6.0 defect-3 fix: reject P1's mixed-shape commit
+        # when any arg's own emission cascaded through arg-list
+        # P4. Without this check, P1's item-8 break-before-arg
+        # invariant (used when a previous arg wrapped multi-row)
+        # produces the "arg1 packed on call line with own args
+        # wrapped at line-start+4, args2+ paren-aligned" mixed
+        # shape — see `SzFlagTest.java:551` in the 0.6.0
+        # consumer trial audit. Falling through to P2/P3
+        # produces the spec-compliant paren-aligned shape.
+        #
+        # Note: this catches only arg-list-P4 firings, NOT
+        # source-preserve or chain/binary wraps. Pre-existing
+        # bad source that source-preserve echoes may still
+        # produce a mixed shape; adopters upgrading from
+        # 0.5.x should manually re-flow those sites (or the
+        # width opt-out will catch them when the developer
+        # collapses the wrap).
+        prev_p4 = emitter._arg_list_p4_fired
+        emitter._arg_list_p4_fired = False
         emit_p1()
-        if emitter.last_lines_max_width(initial[0]) <= effective_max:
+        p1_p4_fired = emitter._arg_list_p4_fired
+        if (
+            emitter.last_lines_max_width(initial[0]) <= effective_max
+            and not p1_p4_fired
+        ):
+            emitter._arg_list_p4_fired = prev_p4 or p1_p4_fired
             _fire_wrap_overflow_advisory(
                 emitter, node, cascade_start, "argument list"
             )
             return
         emitter.restore(initial)
+        emitter._arg_list_p4_fired = prev_p4
         # P2 (two-line packed).
         p2_snap = emitter.snapshot()
         emit_p2_greedy()
@@ -7888,9 +7944,26 @@ def _emit_argument_list(
             return
         emitter.restore(p2_snap)
         # P3 (paren-aligned one-per-line).
+        # 0.6.0 defect-3 fix (extends the P1 reject): P3 packs
+        # arg 0 with the opening `(`. If arg 0's own emission
+        # cascades through arg-list P4, its anchor derives from
+        # the OUTER line's leading spaces (shallow) rather than
+        # `cont_col` — same "deep-orphan" shape P1 produces.
+        # Reject P3 in that specific case; args 1+ firing P4
+        # is fine because each is on its own line at cont_col
+        # (P4 anchor = cont_col + 4, deeper than cont_col).
+        #
+        # Falling through hits P4 (block+4 one-per-line), which
+        # puts arg 0 on its own line at line-start + 4 where
+        # the anchor is well-defined and inner nesting stays
+        # visually contained inside the enclosing context.
         p3_snap = emitter.snapshot()
+        p3_arg0_fired_p4[0] = False
         emit_p3_paren_one_per_line()
-        if emitter.last_lines_max_width(p3_snap[0]) <= effective_max:
+        if (
+            emitter.last_lines_max_width(p3_snap[0]) <= effective_max
+            and not p3_arg0_fired_p4[0]
+        ):
             _fire_wrap_overflow_advisory(
                 emitter, node, cascade_start, "argument list"
             )
