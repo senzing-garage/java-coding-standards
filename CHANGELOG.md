@@ -10,6 +10,23 @@ and this project adheres to
 
 ## [Unreleased]
 
+- **Line-comment reflow switched from greedy to balanced fill.**
+  Per `feedback_comment_reflow`: "pack first line tight OR balance
+  breaks; never orphan 1-3 words on a continuation". Pre-0.6 the
+  reflow of an overlong `// ` comment packed line 1 to the hard
+  `max_content` cap and let the remainder trickle onto line 2 —
+  which frequently produced a 1-3 word orphan tail when the total
+  content only slightly exceeded a single line's budget.
+  `_emit_reflowed_line_comment` now runs greedy once to determine
+  the minimum line count `N`, then rebuilds with a soft target =
+  `total_content / N` per line so the N lines are roughly-balanced.
+  Idempotent: each rebuilt line still parses as an individual
+  `line_comment` node that (on its own) fits under 80. Fixtures
+  `line_comment_reflow/02_overlong_comment_reflows` and
+  `line_comment_reflow/05_paragraph_each_line_individually` updated
+  to reflect the new balanced output; new fixture
+  `line_comment_reflow/10_balanced_reflow_avoids_orphan` locks the
+  anti-orphan behavior.
 - **Arg-list P4 (block+4 one-per-line) now sets `paren_align_col`
   for binary_expression args.** Previously `emit_p4_multi_arg`
   called `_emit_node` directly, bypassing item-10's

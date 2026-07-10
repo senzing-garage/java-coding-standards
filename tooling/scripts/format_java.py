@@ -3747,7 +3747,7 @@ def _is_directive_line_comment(text: str) -> bool:
 def _emit_reflowed_line_comment(
     emitter: Emitter, text: str,
 ) -> None:
-    """Greedy-reflow an overlong `// ` comment into multiple
+    """Balance-reflow an overlong `// ` comment into multiple
     `// `-prefixed lines at the current indent.
 
     Continuations sit at the same column as the original
@@ -3756,6 +3756,25 @@ def _emit_reflowed_line_comment(
     re-parses as a sequence of `line_comment` nodes — that's
     what makes Phase D idempotent: pass 2 sees N individual
     short line comments, none of which trigger reflow.
+
+    0.6.0: balanced fill replaces the pre-0.6 greedy fill.
+    Greedy packed line 1 to `max_content` and left the
+    remainder on line 2, which produced 1-3 word orphans when
+    total content only slightly exceeded the per-line budget
+    (per `feedback_comment_reflow`: "pack first line tight
+    OR balance breaks; never orphan 1-3 words on a
+    continuation"). Balanced fill:
+
+      1. Runs greedy first to determine minimum line count `N`.
+      2. Computes a soft `target` = total_content / N.
+      3. Rebuilds greedily but breaks at word boundary once a
+         line reaches `target`, so line lengths are
+         roughly-equal across the N lines. Falls back to the
+         hard `max_content` cap when the target would produce
+         a line over the width limit; falls back to greedy
+         output if the rebuild produces more than N lines
+         (shouldn't happen for well-formed input, but the
+         guard preserves idempotency).
     """
     indent_col = emitter.column
     # Strip leading `// ` or `//` to get the content words.
@@ -3779,20 +3798,53 @@ def _emit_reflowed_line_comment(
         # overflow.
         emitter.write(text)
         return
-    lines: list[str] = []
+    # Pass 1: greedy to find minimum line count. An individual
+    # word longer than the per-line budget would loop forever
+    # if we tried to "fit" it; the spec C1 emit-and-warn
+    # behavior is to emit such words on their own line and
+    # accept the overflow.
+    greedy: list[str] = []
     current = words[0]
-    # An individual word longer than the per-line budget
-    # would loop forever if we tried to "fit" it; the spec
-    # C1 emit-and-warn behavior is to emit such words on
-    # their own line and accept the overflow.
     for word in words[1:]:
         candidate = current + " " + word
         if len(candidate) <= max_content:
             current = candidate
         else:
-            lines.append(current)
+            greedy.append(current)
             current = word
-    lines.append(current)
+    greedy.append(current)
+
+    lines = greedy
+    if len(greedy) > 1:
+        # Pass 2: rebuild with soft target = total_content / N
+        # so line widths are approximately balanced. Total
+        # content excludes newline chars — just the words +
+        # separating spaces on each line, then summed.
+        total_content = sum(len(ln) for ln in greedy)
+        target = (total_content + len(greedy) - 1) // len(greedy)
+        rebuilt: list[str] = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = current + " " + word
+            over_hard_cap = len(candidate) > max_content
+            over_soft_target = len(candidate) > target
+            can_still_break = len(rebuilt) + 1 < len(greedy)
+            if over_hard_cap or (over_soft_target and can_still_break):
+                rebuilt.append(current)
+                current = word
+            else:
+                current = candidate
+        rebuilt.append(current)
+        # Guard: rebuild must not produce more lines than
+        # greedy (defense against rounding / edge cases).
+        # Also guard against any rebuilt line exceeding the
+        # hard cap — target-driven fill could exceed if a
+        # single word straddles a target boundary.
+        if (
+            len(rebuilt) <= len(greedy)
+            and all(len(ln) <= max_content for ln in rebuilt)
+        ):
+            lines = rebuilt
 
     indent_str = " " * indent_col
     emitter.write(prefix + lines[0])
