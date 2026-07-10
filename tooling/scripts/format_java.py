@@ -5397,9 +5397,20 @@ def _emit_assignment_expression(
     # is between LHS and RHS (never inside LHS in this emitter;
     # LHS is typically an identifier / field-access / array-
     # access that fits on one line).
+    cascade_start = emitter.line_count
     _emit_node(emitter, source, left_node)
 
     effective_max = _MAX_LINE - emitter.tail_reserve
+
+    def emit_inline_rhs() -> None:
+        # Shared inline emission for Step 1 and Step 3 — both
+        # emit `" OP RHS"` continuing the LHS line. Kept as a
+        # closure so the two steps stay byte-identical
+        # regardless of future op-text or spacing changes.
+        emitter.write(" ")
+        emitter.write(op_text)
+        emitter.write(" ")
+        _emit_node(emitter, source, right_node)
 
     # Step 1: try inline emission. Commit when every line
     # (including the LHS + op + RHS-start line AND any lines
@@ -5425,10 +5436,7 @@ def _emit_assignment_expression(
     # consumer trial). In those cases Step 2's break-at-`=`
     # shortens the first line to just `<LHS>`.
     saved = emitter.snapshot()
-    emitter.write(" ")
-    emitter.write(op_text)
-    emitter.write(" ")
-    _emit_node(emitter, source, right_node)
+    emit_inline_rhs()
     inline_fits = (
         emitter.last_lines_max_width(saved[0]) <= effective_max
     )
@@ -5467,29 +5475,54 @@ def _emit_assignment_expression(
     # captured value, so the `push_indent()` above is undone.
     emitter.restore(p2_saved)
 
-    # Step 3: emit inline and let the RHS handle its own
-    # wrap. Commit unconditionally — no backtrack-to-break
-    # on overflow, because:
+    # Step 3: inline + backtrack-on-overflow. Mirrors
+    # `_emit_variable_declarator`'s canonical pattern
+    # (see its Step 3 for the fuzz-harness rationale that
+    # justifies the backtrack). Emit inline first; if any
+    # line overflows, restore and commit break-at-`=`
+    # unconditionally — even if the break form also
+    # overflows, because:
     #
-    #   - Breaking at `=` for a multi-line RHS pushes the
-    #     RHS an extra indent-level deeper without changing
-    #     its max width when the overflow is unfixable
-    #     (long literal, deep-nested multi-line RHS). The
-    #     break form uses one more line for no width gain.
-    #   - Assignment LHS is typically short (bare identifier
-    #     or field access) — the visual benefit of "LHS on
-    #     its own line" is small compared to
-    #     variable_declarator's `TYPE NAME` LHS.
-    #
-    # Single-line-RHS overflow cases (the P1 target — bare
-    # reassignment to a long array literal or method call)
-    # are already caught by Step 2 above, which commits
-    # break-at-`=` when the RHS renders single-line and
-    # fits at the continuation.
-    emitter.write(" ")
+    #   - Consistency with `variable_declarator`: a
+    #     `Type x = <long RHS>;` and its bare-reassignment
+    #     twin `x = <same long RHS>;` should format
+    #     identically (both break at `=`) rather than
+    #     diverging on whether the LHS carries a type.
+    #   - Idempotency: an earlier inline-unconditional
+    #     variant was fuzz-flagged in the sibling
+    #     construct — a multi-line source RHS collapsed
+    #     to a long single line on pass 1, then broke at
+    #     `=` on pass 2 once the value was single-line.
+    #     Committing break-at-`=` when inline overflows
+    #     converges both passes to the same shape.
+    saved = emitter.snapshot()
+    emit_inline_rhs()
+    inline_overflow = (
+        emitter.last_lines_max_width(saved[0]) > _MAX_LINE
+        or emitter.column + emitter.tail_reserve > _MAX_LINE
+    )
+    if not inline_overflow:
+        _fire_wrap_overflow_advisory(
+            emitter, node, cascade_start, "assignment"
+        )
+        return
+    emitter.restore(saved)
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
     emitter.write(op_text)
     emitter.write(" ")
     _emit_node(emitter, source, right_node)
+    emitter.pop_indent()
+    # Spec C1 emit-and-warn: the break-at-`=` shape may itself
+    # overflow when the RHS is genuinely unsplittable (long
+    # literal or single-token identifier). Fire the advisory so
+    # checkstyle-adjacent tooling and adopters get a first-class
+    # signal to hand-split the value — matches every other C1
+    # emit-and-warn site (arg-list, binary, chain, ternary).
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "assignment"
+    )
 
 
 def _emit_try_with_resources_statement(
@@ -9112,6 +9145,7 @@ def _emit_variable_declarator(
             break
     if value is None:
         return
+    cascade_start = emitter.line_count
     # Mid-statement comment preservation: when
     # line_comment / block_comment "extras" sit between the
     # `=` token and the value RHS (e.g. javadoc
@@ -9219,6 +9253,9 @@ def _emit_variable_declarator(
         or emitter.column + 1 > _MAX_LINE
     )
     if not inline_overflow:
+        _fire_wrap_overflow_advisory(
+            emitter, node, cascade_start, "variable declarator"
+        )
         return
     # Backtrack and emit break-at-`=` even though the value
     # itself will wrap on the continuation line.
@@ -9229,6 +9266,14 @@ def _emit_variable_declarator(
     emitter.write("= ")
     _emit_node(emitter, source, value)
     emitter.pop_indent()
+    # Spec C1 emit-and-warn: the break-at-`=` shape may still
+    # overflow when the value is a single unsplittable token
+    # (long identifier / literal). Fire the advisory so
+    # adopters get a first-class signal to hand-split the
+    # value, matching every other C1 emit-and-warn site.
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "variable declarator"
+    )
 
 
 # Maps tree-sitter-java node type to its emitter. Adding a new

@@ -12,422 +12,181 @@ and this project adheres to
 
 ## [0.6.0] - 2026-07-10
 
-- **Chain-cascade block-lambda body indent (defect-5, Option A).**
-  When a block-body lambda sits on a chain-continuation line
-  (`.method(param -> {` at chain-align col), body statements
-  now indent to `arrow_line_leading + 4` (rounded up to the
-  4-space grid) rather than the outer statement's block
-  indent — closing `}` at the arrow-line leading col so it
-  visually reconnects with the segment that opened the block.
-  Site: `data-mart-replicator/EntityDelta.java:1131, 2101`
-  where the pre-0.6 layout put body statements at col 12
-  (method-body indent) while the chain-continuation dots sat
-  at col 14 — body was LEFT of the dots.
+Formatting release. Applies stricter line-length compliance
+across method-call arg lists, method chains, assignment
+statements, SQL DDL string concatenation, class headers,
+lambda bodies inside method chains, and javadoc `<pre>`
+blocks; introduces a first-class overflow advisory at every
+wrap site so adopters see actionable warnings for shapes
+the formatter cannot split without a source-level change.
 
-  Narrowed to fire ONLY when the leftmost non-space char on
-  the arrow's in-progress line is `.` (chain-continuation
-  segment). Packed-arrow cases (e.g. `.execute(() -> {`
-  inline on a paren-aligned line) fall through to standard
-  `_emit_block`, preserving the pre-0.6 body indent and
-  keeping surrounding source-preserve / paren-align width
-  math idempotent.
+### Method-call argument lists
 
-  Locked by new fixture
-  `method_chain_wrap/23_lambda_body_indent_chain_cascade`.
-- **Line-comment reflow switched from greedy to balanced fill.**
-  Per `feedback_comment_reflow`: "pack first line tight OR balance
-  breaks; never orphan 1-3 words on a continuation". Pre-0.6 the
-  reflow of an overlong `// ` comment packed line 1 to the hard
-  `max_content` cap and let the remainder trickle onto line 2 —
-  which frequently produced a 1-3 word orphan tail when the total
-  content only slightly exceeded a single line's budget.
-  `_emit_reflowed_line_comment` now runs greedy once to determine
-  the minimum line count `N`, then rebuilds with a soft target =
-  `total_content / N` per line so the N lines are roughly-balanced.
-  Idempotent: each rebuilt line still parses as an individual
-  `line_comment` node that (on its own) fits under 80. Fixtures
-  `line_comment_reflow/02_overlong_comment_reflows` and
-  `line_comment_reflow/05_paragraph_each_line_individually` updated
-  to reflect the new balanced output; new fixture
-  `line_comment_reflow/10_balanced_reflow_avoids_orphan` locks the
-  anti-orphan behavior.
-- **Arg-list P4 (block+4 one-per-line) now sets `paren_align_col`
-  for binary_expression args.** Previously `emit_p4_multi_arg`
-  called `_emit_node` directly, bypassing item-10's
-  `_emit_arg_with_optional_paren_align` helper that sets
-  `paren_align_col` = arg's start col for binary args. Under P4,
-  a `binary_expression` positional arg (e.g. a `||` chain used as
-  arg 0 of `assertTrue`) therefore saw `paren_align_col = None`
-  and fell through the boolean-chain cascade to `emit_p2` (leftmost-
-  break + rest on one continuation line), which could pack
-  multiple `||` operands on that continuation line and then let
-  the LAST operand's inner call arg-list wrap internally —
-  producing the "wrap inside `matches(` instead of at `||`
-  boundary" pathology surfaced by
-  `data-mart-replicator/BuildInfoTest.java:51-55` in the 0.6.0
-  consumer trial. Now `emit_p4_multi_arg` uses the same helper,
-  so binary args get paren-aligned each-`||`-on-own-line under P4
-  just like they already did under P1/P2/P3. Locked by new
-  fixture `binary_wrap/06_boolean_chain_paren_align_under_p4`.
-- **Javadoc `<pre>` block preservation extended to HTML-escaped
-  variants.** `_emit_javadoc_block`'s `<pre>` region detector
-  now matches `&lt;pre&gt;` / `&lt;/pre&gt;` in addition to the
-  raw `<pre>` / `</pre>` tags. Consumer trial surfaced ASCII
-  class diagrams inside escaped `<pre>` blocks being reflowed
-  as prose (data loss), because the diagram lives inside another
-  HTML tag (`<h2>Class Diagram</h2> <pre>...</pre>`) that forces
-  the `<` chars to be escaped. Locked by new fixture
-  `javadoc_reflow/07_escaped_pre_block_preserved`.
-- **Arg-list multi-arg cascade rejects P1 mixed-shape commit when
-  arg's emission cascades through arg-list P4.** Consumer trial
-  surfaced sites where P1's item-8 break-before-subsequent-args
-  invariant produced the "arg 0 packed on call line with own args
-  wrapped at line-start+4, args 1+ paren-aligned" mixed shape —
-  `SzFlagTest.java:551` in sz-sdk-java. Adds a save-reset-check-
-  restore cycle around `emit_p1` and rejects the commit when
-  `Emitter._arg_list_p4_fired` transitions False→True during the
-  emit. Falls through to P2 (which already rejects on P4) and
-  ultimately P3 (paren-aligned one-per-line) — the spec-compliant
-  shape.
-- **Arg-list P3 rejects when arg 0 (packed with `(`) fires P4.**
-  P3 packs arg 0 with the opening `(`; if arg 0's own emission
-  cascades through arg-list P4, its anchor derives from the OUTER
-  line's leading spaces (potentially much shallower than cont_col)
-  — same deep-orphan pathology as P1. Tracks arg 0's P4 firing
-  via a closure-scoped `[False]` list (distinguishes from args
-  1+ firing P4 at deeper paren-align cols, which is spec-
-  compliant and shouldn't reject). Fall-through to P4 (block+4
-  one-per-line) produces the compact spec-compliant shape.
-  Fixture `arg_list_wrap/04_item8_prev_arg_multi_row_breaks_next`
-  updated: pre-0.6 emitted the mixed shape; now emits P3
-  paren-aligned one-per-line.
+- **Two-line paren-aligned packing is strictly two lines.**
+  When a call's argument list needs to wrap, the "pack as
+  many args as fit on the call line, break at a comma, put
+  the rest on one continuation line aligned to the column
+  after `(`" shape now applies only when the entire list
+  fits on exactly two lines. Longer packed shapes (three or
+  more lines with mixed pack-and-break decisions) are no
+  longer produced.
+- **New paren-aligned one-per-line candidate.** When
+  two-line packing does not fit, the formatter emits each
+  argument on its own line aligned to the column after
+  `(` — the classic `foo(a,\n    b,\n    c)` shape. This
+  runs after two-line packing and before the block+4
+  one-per-line fallback.
+- **Block+4 one-per-line fallback.** When paren-alignment
+  itself does not fit, arguments break onto their own lines
+  at one indent level past the current line's start column.
+- **Nested wraps stay visually contained.** When a nested
+  call inside a wrapped argument list overflows and needs
+  its own wrap, its continuation column is anchored to the
+  current line's leading column plus one indent — no longer
+  falling back to the outer method's block indent, which
+  previously produced "deep orphan" shapes where an inner
+  argument wrapped ~40 columns to the left of the call that
+  opened it.
+- **Boolean chains inside argument lists paren-align each
+  operator.** A `||` or `&&` chain used as a positional
+  argument now emits with each operator on its own line
+  aligned to the argument's start column, rather than
+  packing multiple operators on one continuation line and
+  wrapping inside the last operand's method call.
 
-Formatter release covering all five in-scope items from
-`.claude/060_SCOPE.md`: P0 source-preserve rework,
-P1 assignment_expression wrap, P2 method-chain cascade
-(five factory tiers, four constructor tiers, Q-CHAIN-1
-through Q-CHAIN-5 resolutions), P3 cross-statement
-smoothing (achieved by P0's local convergence), and P4 SQL
-DDL detector. P5 (enum type_parameters / `permits`)
-remains a JLS-refusal since neither is legal Java per
-JLS §8.9.
+### Bare `x = value` assignments
 
-### Additional fixes surfaced by consumer trial
+- **Bare reassignments (`x = value`, no type on the left)
+  now wrap at `=` just like `Type x = value` declarations
+  do.** When the inline form would exceed 80 chars, the
+  formatter breaks the line at `=` and emits the value on
+  a continuation line indented one level past the
+  statement start. Previously, bare assignments emitted
+  inline unconditionally, silently producing over-limit
+  lines.
+- **Backtrack-on-overflow.** If the inline shape overflows,
+  the formatter backtracks and commits the break-at-`=`
+  shape unconditionally — matching the behavior for
+  variable declarations so a pair of otherwise identical
+  right-hand sides formats the same regardless of whether
+  a type appears on the left.
 
-- **P2 method-call arg-list re-tightened to two-line strict;
-  new P3 paren-aligned one-per-line candidate added.** Per
-  spec "Method Call Arguments / Priority 2 — Two-line,
-  paren-aligned, comma-packed": P2 must fit "on exactly two
-  lines" (call line + one continuation line). The pre-0.6
-  `emit_p2_greedy` allowed N-line packed shapes, violating
-  the spec. 0.6.0 enforces the two-line invariant via
-  `p2_line_count <= 1` check on the emitted lines, and
-  cascades to a new `emit_p3_paren_one_per_line` candidate
-  when P2 doesn't fit. Multi-arg cascade for
-  `_emit_argument_list` refactored from `try_priorities` to
-  manual snapshot/restore since P2's line-count constraint
-  can't be expressed as a pure width check. New cascade:
-  P1 inline → P2 two-line packed → P3 paren-aligned
-  one-per-line → P4 block+4 one-per-line (spec C1 emit-and-
-  warn fallback). Fixture updates driven by this rule:
-  `arg_list_wrap/08_shift_up_overflow_declines_source_preserve`
-  (was 3-line greedy, now 6-arg one-per-line P3) and
-  `arg_list_wrap/12_defect_3_nested_paren_contained`
-  (was 3-line greedy, now 5-arg one-per-line P3).
-- **Arg-list `emit_p2_greedy` also rejects pack when the
-  packed arg's emission cascades through arg-list P4** (a
-  packed arg like `this.getEntityId(reallyLongIdent)` that
-  wraps its own inner arg produced the "split call on
-  same line as previous arg" shape). Same detection
-  mechanism as binary's `paren_inner_wrap` — checks
-  `Emitter._arg_list_p4_fired` transition around each
-  operand emit. Prefers break-then-inline over
-  pack-then-inner-wrap when both take the same total line
-  count. Directly surfaced by the consumer trial's
-  `SzEngineGraphTest.java:702` `Arguments.of(...)` shape.
-- **Nested arg-list P4 anchor changed from `block+4` to
-  `line-start-col + 4`.** `_emit_argument_list`'s
-  `emit_p4_multi_arg` and `emit_p4_single_arg_block_indent`
-  previously anchored to `block + 4` (indent + 4 relative
-  to the outer statement's block). That produced visually
-  correct output for statement-top-level P4 emissions
-  (where line-start equals block indent), but ORPHANED
-  nested emissions when the outer context had its own
-  continuation indent (chain-tail, nested-paren-aligned
-  outer arg-list): a `SzRecordKeys.of(\n    avoidances)`
-  inside `engine.findPath(<paren-aligned args at col 60>)`
-  landed `avoidances` at col 25 — 35 columns LEFT of the
-  enclosing paren. The new anchor is
-  `line-start-col + 4` where `line-start-col` is the col
-  of the first non-space char on the current in-progress
-  line. Under the new rule, nested emissions land at
-  `col 64` — visually contained inside the outer paren.
-  For statement-top-level P4 emissions the two rules
-  coincide, so most fixtures are unchanged; only nested
-  cases shift.
-  
-  Anchor implementation: `_push_indent_to_col` bumps
-  `_indent` to match the target col in 4-space grid units
-  (with an `extra` remainder for non-mult-of-4 anchors
-  like chain-tail `.` cols). This lets inner emissions
-  that read `_indent` (e.g. a binary_expression arg's
-  `+`-continuation `p2_col`) compute the correct
-  anchor-relative col rather than the outer-block-relative
-  col.
-- **`Emitter._arg_list_p4_fired` flag replaces the
-  `_operand_emitted_shallow_line` heuristic in binary
-  wrap's `paren_inner_wrap` check.** The pre-0.6
-  `_operand_emitted_shallow_line` check detected "operand's
-  emission has a line with leading whitespace <
-  align_col" — which was a good proxy for "arg-list P4
-  wrapped a leaf arg" under the OLD `block+4` anchor.
-  Under the new `line-start-col + 4` anchor, arg-list P4
-  emissions no longer produce shallow lines (they're at
-  contained cols). The shallow-line signal misses,
-  causing binary paren-aligned to commit ugly 5-line
-  cascades where +4-greedy compact would have committed
-  under OLD. Direct signal `_arg_list_p4_fired` is set
-  to True inside the P4 candidates and checked via
-  save-reset-check-restore in `emit_greedy` and
-  `emit_paren_aligned` — a precise signal for "operand's
-  emission cascaded through arg-list P4" (as opposed to
-  operand's own binary/chain/ternary wrap). Preserves
-  `arg_list_wrap/03`'s compact 2-line shape while enabling
-  defect 3's fix. Locked by new fixtures
-  `arg_list_wrap/12_defect_3_nested_paren_contained`
-  (nested fits inline) and
-  `arg_list_wrap/13_defect_3_nested_wrap_paren_aligned`
-  (nested wraps at outer-paren + 4). Fixture
-  `method_chain_wrap/17_same_method_greedy_item8_inner_wrap`
-  expected shape updated (literal shifts from col 13 to
-  col 15 per the new chain-tail anchor).
-- **Multi-interface `implements` clause collapse on class
-  headers.** `_emit_extends_implements_p2_p3` previously
-  had only P2 (both clauses on one line) and P3 (each
-  clause on its own line) tiers. When the P3 `implements`
-  line itself still exceeded 80 chars (a class implementing
-  3+ long-named interfaces), the formatter committed a
-  single-line P3 output that violated LineLength. Adds a
-  P4 tier (`_emit_super_interfaces_broken`) that keeps the
-  first interface on the `implements` line and breaks
-  subsequent interfaces onto their own lines paren-aligned
-  under the first interface's column. Locked by
-  `class_header_wrap/10_p4_multi_interface_implements`.
-  Consumer trial surfaced this on
-  `data-mart-replicator/DataMartReportsServices.java`
-  (4 interfaces, 142-char P3 line dropped to a multi-line
-  paren-aligned shape).
-- **P1 assignment_expression Step 1 / Step 2 fit-check
-  loosened to per-line widths.** Both Step 1 (inline) and
-  Step 2 (break-at-`=`) previously required the RHS to
-  emit on a single line — Step 2 would reject any RHS that
-  itself wrapped internally (e.g. a cast + call whose
-  arg-list wraps to multi-line), even when every RHS line
-  fit under `effective_max`. Consequence: assignments
-  committed inline (Step 3) with 88-char line-1 shapes like
-  `this.proxyEnvironment = (Type) obj.method(` — no
-  break-at-`=` fallback fired. Both steps now use
-  `last_lines_max_width(saved[0]) <= effective_max`,
-  admitting RHS internal wraps. Locked by
-  `assignment_wrap/04_break_at_op_when_rhs_wraps_multi_line`.
-  Consumer trial surfaced this on
-  `data-mart-replicator/SzReplicator.java:994, 1193`.
+### Method chains
 
-### Verification
+- **Multi-segment chain wrapping now covers factory,
+  constructor, and instance shapes explicitly.**
+  - **Factory chains** (`SomeFactory.method(args)…`):
+    when the whole chain does not fit inline, the head
+    plus first segment stay on the call line and
+    subsequent segments align under the first segment's
+    `.`. If that shape does not fit, the chain falls
+    back to a paren-indented one-per-line form with all
+    segments on their own line one indent past the
+    receiver's start column, and finally to a block+4
+    one-per-line form.
+  - **Constructor chains** (`new SomeType(args)…`):
+    head plus first segment on the call line, remaining
+    segments dot-aligned under the first segment. Falls
+    back to paren-indent and block+4 forms in the same
+    way.
+  - **Instance chains** (`someInstance.method(args)…`):
+    keep the existing dot-aligned tier when the receiver
+    fits on the call line.
+- **Chain-tail argument wraps re-anchor.** When the final
+  chain segment's argument list itself needs to wrap, the
+  paren-align base is the chain-continuation column, not
+  the outer block indent — keeping the tail argument's
+  wraps contained inside the chain's visual band.
 
-- 674 pytest passing (`tooling/scripts/tests/`).
-- Consumer trial across 3 repos:
-  - `senzing-commons-java` — 4 files reformatted with the
-    intended P0/P1F/P3F/P4-SQL-DDL improvements;
-    `mvn -Pcheckstyle validate` BUILD SUCCESS with 0
-    violations.
-  - `sz-sdk-java` — 32 files reformatted; the two remaining
-    formatter warnings are legitimate unsplittable literals
-    (advisory-not-bug).
-  - `data-mart-replicator` (first-time adoption) — 234
-    files reformatted; both defects surfaced during trial
-    fixed above; remaining ~150 over-80 lines are
-    unsplittable string literals in assertion messages or
-    source-preserved trailing comments (author-side work,
-    not formatter defects).
-- Idempotency verified on all new fixtures via the
-  standard pytest golden-file suite.
+### SQL DDL string concatenation
 
-### Added
+- **`+`-concatenated string chains starting with a SQL
+  keyword emit one fragment per line.** When the leftmost
+  string operand of a `+` chain begins with one of the
+  common DDL/DML keywords (`CREATE`, `INSERT`, `UPDATE`,
+  `DELETE`, `SELECT`, `ALTER`, `DROP`, `TRUNCATE`, etc.),
+  each subsequent `+ "…"` fragment is placed on its own
+  continuation line. This preserves the hand-authored
+  one-clause-per-line layout that greedy packing
+  previously collapsed into an unreadable single wrapped
+  block.
 
-- **P1 — assignment_expression wrap.** Bare `LHS OP RHS`
-  reassignments (as distinct from `Type LHS = RHS`
-  declarations, which have wrapped at `=` since 0.5.0) now
-  get their own wrap-priority cascade. When the inline
-  form overflows, the formatter breaks before the operator
-  and puts the RHS on a continuation line at
-  `block + 4` — mirroring the existing
-  `_emit_variable_declarator` behavior. Fills the gap
-  identified during the 0.5.3 consumer adoption pass on
-  `senzing-commons-java`: bare `args = new String[] {...};`
-  overflows at deep indent no longer emit silently as
-  81-char LineLength violations. Locked by three new
-  fixtures under `tests/fixtures/assignment_wrap/`.
-- **P0 — `emit_p4_single_arg` two-candidate cascade with
-  paren-deference.** `_emit_argument_list`'s single-arg P4
-  fallback splits into two candidates in
-  `try_priorities`' order: block+4 first, paren-defer
-  second. Block+4 wins when the arg fits at the canonical
-  single-indent col (short identifier / short method call
-  / anything that comfortably fits); paren-defer wins as
-  the spec C1 emit-and-warn fallback when neither col
-  fits, placing the arg at `paren_expr_col + 3` — one `+4`
-  step past the innermost enclosing
-  `parenthesized_expression`'s `(`. That means:
-    - **Long literal that can't be split** (canary
-      `condition_wrap/09`): both cols overflow →
-      paren-defer wins → literal at "col of enclosing `(`
-      + 4", semantically aligned under its group.
-    - **Long identifier that overflows at every col**
-      (Case 5): same — paren-defer wins for the same
-      semantic-alignment reason. Checkstyle catches the
-      overflow and prompts the developer to rename.
-    - **Short arg that fits at block+4** (e.g.
-      `.asList(timers)` nested in a binary chain):
-      block+4 wins as the first fitting candidate,
-      preserving pre-0.6 shape and not destabilizing outer
-      wraps.
-  New `Emitter._paren_expr_col` slot is set only by
-  `_emit_parenthesized_expression` — never by item 10's
-  extension for single-arg binary args — so the deference
-  rule discriminates grouping/control-flow parens from
-  method-call parens. Locked by `condition_wrap/09`
-  (positive canary — literal at col 24) and the new
-  `arg_list_wrap/09_single_arg_literal_paren_deference`
-  fixture (positive — literal at col 18 under an
-  enclosing `if (!(...))`).
-- **P3 — Cross-statement smoothing** (motivating example) is
-  achieved naturally by the P0 source-preserve fall-through
-  and the emit_p4_single_arg two-candidate cascade added in
-  Phase 2/3. The scope-doc motivating example — three
-  sibling `result.add(arguments(...))` calls in
-  `JsonUtilitiesTest.java:3057-3062` that in 0.5.3 got
-  three different wrap shapes because source-preserve
-  echoed pre-existing developer layouts — now converges to
-  a consistent paren-aligned shape across all three because
-  each individual statement's wrap engine independently
-  picks the same canonical layout. No non-local
-  cross-statement machinery required. Locked by
-  `arg_list_wrap/11_sibling_calls_paren_align_naturally`.
-  If future consumer trials surface cases where sibling
-  statements STILL diverge post-Phase-2/3, the non-local
-  cross-statement smoothing described in
-  `.claude/060_SCOPE.md` P3 will need to be built — but no
-  such case is known today.
-- **P4 — SQL DDL detector for string-concat chains.**
-  Adds a heuristic detector to `_emit_binary_expression`
-  that identifies hand-authored SQL DDL as a `+` chain
-  where (a) all operands are `string_literal`, (b) the
-  chain has at least 2 operators, and (c) the LEFTMOST
-  operand's first alphabetic token matches a recognized
-  SQL keyword (`create`, `insert`, `update`, `delete`,
-  `select`, `alter`, `drop`, `with`, `merge`, `truncate`).
-  When the detector fires, the binary emitter picks
-  `emit_p3` (one operator per line at block+4) BEFORE
-  attempting the greedy-pack candidates. Preserves the
-  hand-authored one-clause-per-line SQL layout that greedy
-  packing would otherwise collapse into an unreadable
-  jumble. The pre-0.6 escape hatch (`// CSOFF`/`// CSON`
-  markers) remains available for cases the detector gets
-  wrong. Restricting the keyword match to the LEFTMOST
-  operand keeps common English prose from triggering — a
-  string opening `"The report was..."` doesn't match even
-  if a later operand happens to start with `"with"`. New
-  fixtures: `binary_wrap/04_sql_ddl_create_table`
-  (positive) and `binary_wrap/05_prose_string_not_ddl`
-  (negative — prose greedy-packs as before).
-- **P2 — Q-CHAIN-4 backoff extended to the standard P2
-  candidate.** `_emit_method_chain_wrapped`'s `emit_p2`
-  (dot-align-under-receiver-`.`) now rejects itself when
-  any chain segment's args wrap mid-emit — matching the
-  Q-CHAIN-4 backoff already implemented for P1F and P3F in
-  Phases 4a/4b. Reuses the existing
-  `_segment_emit_is_legitimately_multi_line` helper so
-  intentionally-multi-row args (lambda bodies, text blocks,
-  developer-authored source-preserved arg lists) don't
-  trigger backoff. When P2 backs off, the chain falls
-  through to `emit_p3` (block+4). Cleaner than the
-  pre-0.6-Phase-4c "mixed alignment" shape (dot-align chain
-  col + deep paren-align args col). Fixture updates driven
-  by this rule:
-    - `method_chain_wrap/11_chain_with_wrap_engine_rewrapped_args`
-      previously locked the mixed shape; new expected is
-      all-block+4.
-    - `method_chain_wrap/19_p1f_factory_backs_off_when_args_wrap`
-      previously stopped at P2F; new expected falls further
-      through to P4F since P2F now also backs off. The
-      fixture now demonstrates the full P1F → P2F → P4F
-      cascade.
-- **P2 — outer-parenthesized-expression chain cascade
-  (P3F / P2C).** Adds a new candidate to
-  `_emit_method_chain_wrapped` that fires when the whole
-  chain is wrapped in an enclosing
-  `parenthesized_expression` (checked via
-  `Emitter._paren_expr_col`, added in the P0 phase). Chain-
-  tail segments land at `paren_expr_col + 4` per
-  Q-CHAIN-1's resolution (consistent with the
-  enum/class-header wrap convention). Shape by receiver
-  kind:
-    - **Factory / instance** (head is identifier /
-      field-access): `head.segments[0]` stays on line 1;
-      `segments[1:]` each on their own continuation line
-      at `paren_expr_col + 4`. Locked by
-      `method_chain_wrap/20_p3f_factory_paren_indent` and
-      `method_chain_wrap/21_p3f_instance_paren_indent`.
-    - **Constructor** (head is
-      `object_creation_expression`): head alone on line 1;
-      ALL segments break to continuation lines. Locked by
-      `method_chain_wrap/22_p2c_constructor_paren_indent`.
-  Tried BEFORE the standard P2 (block+4-agnostic dot-align)
-  because paren-indent is preferred inside a grouping paren
-  per Q-CHAIN-5. Falls through to P2 if widths overflow OR
-  Q-CHAIN-4 backoff triggers (a chain segment's args
-  wrapped mid-emit).
-- **P2 — factory-chain P1F "deep dot" candidate.** Adds a
-  new candidate to `_emit_method_chain_wrapped`'s cascade
-  that fires when the chain receiver is a PascalCase
-  identifier (Q-CHAIN-3 factory heuristic) AND the chain
-  has at least 3 segments. Emits head + `.factoryMethod(...)`
-  + `.firstChain(...)` on line 1, aligns subsequent chains
-  to the FIRST CHAIN's `.` column — one chain-alignment
-  step DEEPER than the pre-0.6 P2F shape (which aligned
-  everything to the factory's `.`). Tried BEFORE P2F in
-  the cascade; committed only when both widths fit AND no
-  chain method's args wrapped (Q-CHAIN-4 backoff — an
-  in-args wrap in P1F falls through to P2F for cleaner
-  mixed-alignment avoidance). New helper
-  `_chain_receiver_is_factory` classifies the receiver by
-  the leftmost identifier's case:
-  PascalCase → factory (P1F applies);
-  camelCase / SCREAMING_SNAKE_CASE / `new` / constructor →
-  instance / constructor (P1F skipped, existing cascade
-  applies). Locked by two new fixtures:
-  `method_chain_wrap/18_p1f_factory_deep_dot` (positive)
-  and `method_chain_wrap/19_p1f_factory_backs_off_when_args_wrap`
-  (Q-CHAIN-4 backoff). Existing fixtures 14 and 16 updated
-  to reflect the new P1F preference for factory chains.
-- **P0 — source-preserve fall-through when developer's deep
-  indent would overflow.** `_emit_argument_list`'s source-
-  preserve path previously preserved developer-authored
-  continuation columns verbatim whenever they were at or
-  past the target col (`paren_align_col + 4`) — a rule
-  meant to preserve idempotency for wrap-engine output.
-  Under 0.6.0, when the preserved shape still exceeds 80
-  chars, the source-preserve path declines and falls
-  through to the wrap engine, so the wrap engine's
-  paren-aligned candidate emits at the correct enclosing
-  paren instead of locking a stale developer column. This
-  is what makes `condition_wrap/09`'s 68-char literal move
-  from developer's arbitrary col 28 to the paren-aligned
-  col 24 (via the paren-deference rule above). Idempotency
-  holds: wrap-engine output at column X re-enters this
-  branch on the next pass with `source_first_cont_col = X`
-  and emits the same shape.
+### Class headers with multiple interfaces
+
+- **`implements A, B, C, …` wraps cleanly when the clause
+  exceeds 80 chars.** The first interface stays on the
+  `implements` line; subsequent interfaces break to their
+  own lines aligned under the first interface's start
+  column. Previously the formatter emitted the whole
+  clause on a single line even when it overflowed.
+
+### Lambda bodies inside method chains
+
+- **Block-body lambdas on a chain-continuation line indent
+  their body under the arrow.** A shape like
+  `.forEach(x -> { body })` sitting at a chain-continuation
+  column now indents body statements to one indent level
+  past that column, with the closing `}` aligned back at
+  the chain-continuation column. Body statements no longer
+  drop to the outer statement's block indent (which would
+  place them visually to the left of the chain-continuation
+  dots).
+
+### Javadoc `<pre>` blocks
+
+- **`<pre>` block interior preserved verbatim.** Javadoc
+  reflow (which fills paragraph lines to near 80 chars)
+  now recognises both the raw `<pre>` and the HTML-escaped
+  `&lt;pre&gt;` forms (used when `<pre>` sits inside
+  another HTML element and must be escaped). Content
+  between `<pre>` and `</pre>` — including ASCII class
+  diagrams with box-drawing characters and column-aligned
+  layouts — is emitted unchanged.
+
+### Line-comment reflow
+
+- **Balanced fill replaces greedy fill.** When an overlong
+  `//` comment needs to reflow across multiple lines, the
+  content is distributed roughly evenly across the target
+  line count rather than packed to the maximum width on
+  line 1 with a short remainder on line 2. This eliminates
+  the 1-3 word orphan tail that greedy fill produced when
+  total content only slightly exceeded a single line's
+  budget.
+
+### Source preservation
+
+- **Author-authored multi-line argument lists that would
+  overflow at their remapped column now fall through to
+  the wrap engine.** Previously the formatter would echo
+  the source's continuation columns verbatim, producing
+  the same overflow the source already had. Now, when the
+  developer's continuation column would still push a line
+  past 80 chars at the new emission position, the
+  formatter picks its own wrap layout instead of locking
+  the stale column.
+
+### Overflow advisory (`FormatterWarning`)
+
+- **Every wrap site fires a `FormatterWarning` when its
+  terminal shape still overflows 80 chars.** Sites
+  covered: argument list, binary expression, method
+  chain, ternary expression, `=` assignment, variable
+  declarator. The advisory names the wrap site, reports
+  the maximum on-disk line width, and points at the
+  starting line/column of the overflowing construct.
+  `format_file.py` surfaces the advisory to stderr so
+  adopters see a first-class signal that a source-level
+  edit (splitting a literal, renaming a long identifier,
+  restructuring an expression) is required — the
+  formatter cannot resolve it automatically.
+
+### Enum `permits` / type parameters (P5)
+
+- No change; `enum` type parameters and `permits` clauses
+  remain unsupported by the formatter because neither is
+  legal Java (JLS §8.9). Sources with these constructs
+  raise a `NotImplementedError` from the dispatcher.
 
 ## [0.5.3] - 2026-07-07
 

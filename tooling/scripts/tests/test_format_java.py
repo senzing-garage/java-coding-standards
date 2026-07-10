@@ -3884,6 +3884,66 @@ class TestFormatterWarnings:
         positions = [(w.line, w.column) for w in warnings]
         assert len(positions) == len(set(positions))
 
+    def test_warning_for_assignment_expression_overflow(self) -> None:
+        # 0.6.0: `_emit_assignment_expression` mirrors
+        # `_emit_variable_declarator`'s Step 3 backtrack pattern
+        # and fires the C1 emit-and-warn advisory when the
+        # committed break-at-`=` shape still overflows because
+        # the RHS is unsplittable (long literal). The input
+        # below is a bare re-assignment (`args = new String[]
+        # { ... }`) at deep indent — inline overflows, break-
+        # at-`=` also overflows because the array literal can't
+        # be split by the formatter, so the advisory fires.
+        src = (
+            b"public class A {\n"
+            b"    void m() {\n"
+            b"        String[] args = null;\n"
+            b"        try {\n"
+            b"            for (int i = 0; i < 10; i++) {\n"
+            b"                args = new String[] "
+            b'{ "--port", "9080", "--interface", "localhost" };\n'
+            b"            }\n"
+            b"        } catch (Exception e) { }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        assert len(warnings) >= 1
+        sites = [w.message for w in warnings]
+        assert any(
+            "assignment wrap could not fit" in m for m in sites
+        )
+
+    def test_warning_for_variable_declarator_overflow(self) -> None:
+        # 0.6.0: `_emit_variable_declarator` fires the C1
+        # emit-and-warn advisory when its break-at-`=` shape
+        # still overflows (matches assignment_expression's
+        # sibling behavior). The input is a
+        # variable_declarator at deep indent whose RHS is a
+        # single unsplittable literal.
+        src = (
+            b"public class A {\n"
+            b"    void m() {\n"
+            b"        if (true) {\n"
+            b"            if (true) {\n"
+            b"                String s "
+            b'= "a quite long string literal that the developer '
+            b'placed at a low column";\n'
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        format_java.format_source(src, warnings_out=warnings)
+        assert len(warnings) >= 1
+        sites = [w.message for w in warnings]
+        assert any(
+            "variable declarator wrap could not fit" in m
+            for m in sites
+        )
+
     def test_warning_omits_when_warnings_out_is_none(self) -> None:
         # API contract: when caller doesn't supply
         # `warnings_out`, format_source still emits formatted

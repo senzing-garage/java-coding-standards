@@ -8,7 +8,8 @@ public class Demo
                  i < 10;
                  i++)
             {
-                args = new String[] { "--port", "9080", "--interface", "localhost" };
+                args
+                    = new String[] { "--port", "9080", "--interface", "localhost" };
             }
         } catch (Exception e) {
         }
