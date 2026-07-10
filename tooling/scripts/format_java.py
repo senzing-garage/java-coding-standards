@@ -7838,6 +7838,19 @@ def _emit_argument_list(
         # anchor col rather than the outer block indent.
         # See `emit_p4_single_arg_block_indent` for the
         # detailed design note.
+        #
+        # Uses `_emit_arg_with_optional_paren_align` (the item-10
+        # helper) rather than a bare `_emit_node` so that a
+        # `binary_expression` arg (e.g. `a || b || c` as a
+        # positional arg) sees `paren_align_col` = arg's start
+        # col. Without this, the binary's cascade falls to the
+        # +4 fallback (`emit_p2` boolean-leftmost-break) which
+        # can pack multiple `||` operands on a single line and
+        # then let the LAST operand's inner call arg-list wrap
+        # internally — producing the "wrap inside `matches(`
+        # instead of at `||`" pathology surfaced by
+        # `data-mart-replicator/BuildInfoTest.java:51-55` in the
+        # 0.6.0 consumer trial.
         emitter._arg_list_p4_fired = True
         line_start_col = _current_line_leading_spaces(emitter)
         target_col = line_start_col + 4
@@ -7846,7 +7859,7 @@ def _emit_argument_list(
         for index, arg in enumerate(args):
             emitter.newline()
             _emit_p4_write_target_indent(emitter, push_count, extra)
-            _emit_node(emitter, source, arg)
+            _emit_arg_with_optional_paren_align(arg)
             if index < len(args) - 1:
                 emitter.write(",")
         emitter.write(")")

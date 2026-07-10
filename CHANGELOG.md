@@ -10,6 +10,24 @@ and this project adheres to
 
 ## [Unreleased]
 
+- **Arg-list P4 (block+4 one-per-line) now sets `paren_align_col`
+  for binary_expression args.** Previously `emit_p4_multi_arg`
+  called `_emit_node` directly, bypassing item-10's
+  `_emit_arg_with_optional_paren_align` helper that sets
+  `paren_align_col` = arg's start col for binary args. Under P4,
+  a `binary_expression` positional arg (e.g. a `||` chain used as
+  arg 0 of `assertTrue`) therefore saw `paren_align_col = None`
+  and fell through the boolean-chain cascade to `emit_p2` (leftmost-
+  break + rest on one continuation line), which could pack
+  multiple `||` operands on that continuation line and then let
+  the LAST operand's inner call arg-list wrap internally —
+  producing the "wrap inside `matches(` instead of at `||`
+  boundary" pathology surfaced by
+  `data-mart-replicator/BuildInfoTest.java:51-55` in the 0.6.0
+  consumer trial. Now `emit_p4_multi_arg` uses the same helper,
+  so binary args get paren-aligned each-`||`-on-own-line under P4
+  just like they already did under P1/P2/P3. Locked by new
+  fixture `binary_wrap/06_boolean_chain_paren_align_under_p4`.
 - **Javadoc `<pre>` block preservation extended to HTML-escaped
   variants.** `_emit_javadoc_block`'s `<pre>` region detector
   now matches `&lt;pre&gt;` / `&lt;/pre&gt;` in addition to the
