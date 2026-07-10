@@ -10,6 +10,28 @@ and this project adheres to
 
 ## [Unreleased]
 
+- **Chain-cascade block-lambda body indent (defect-5, Option A).**
+  When a block-body lambda sits on a chain-continuation line
+  (`.method(param -> {` at chain-align col), body statements
+  now indent to `arrow_line_leading + 4` (rounded up to the
+  4-space grid) rather than the outer statement's block
+  indent — closing `}` at the arrow-line leading col so it
+  visually reconnects with the segment that opened the block.
+  Site: `data-mart-replicator/EntityDelta.java:1131, 2101`
+  where the pre-0.6 layout put body statements at col 12
+  (method-body indent) while the chain-continuation dots sat
+  at col 14 — body was LEFT of the dots.
+
+  Narrowed to fire ONLY when the leftmost non-space char on
+  the arrow's in-progress line is `.` (chain-continuation
+  segment). Packed-arrow cases (e.g. `.execute(() -> {`
+  inline on a paren-aligned line) fall through to standard
+  `_emit_block`, preserving the pre-0.6 body indent and
+  keeping surrounding source-preserve / paren-align width
+  math idempotent.
+
+  Locked by new fixture
+  `method_chain_wrap/23_lambda_body_indent_chain_cascade`.
 - **Line-comment reflow switched from greedy to balanced fill.**
   Per `feedback_comment_reflow`: "pack first line tight OR balance
   breaks; never orphan 1-3 words on a continuation". Pre-0.6 the

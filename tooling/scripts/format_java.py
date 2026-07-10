@@ -5712,6 +5712,23 @@ def _emit_lambda_expression(
     rule from spec B5, including breaking before `->` when
     the parameter list itself wraps) land with the
     wrap-priority phase.
+
+    0.6.0 defect-5 fix (Option A): when the body is a block
+    and the arrow lands on a line whose leading col DIFFERS
+    from the caller's `_indent * 4` (typically because the
+    arrow sits on a chain-continuation or paren-aligned
+    continuation), align the block body's indent to
+    `arrow_line_leading + 4` (rounded up to the 4-space grid)
+    rather than the caller's block indent. Also aligns the
+    closing `}` to the arrow line's leading col so it visually
+    reconnects with the segment that opened the block. Keeps
+    body statements visually contained inside the enclosing
+    chain segment (site: `EntityDelta.java:1133, 2102`) rather
+    than orphaning them at outer-statement indent.
+
+    For non-chain lambdas (arrow-line-leading == caller's
+    `_indent * 4`), the target indent equals the current
+    `_indent + 1`, so `_emit_block` runs unchanged.
     """
     parameters = node.child_by_field_name("parameters")
     body = node.child_by_field_name("body")
@@ -5722,7 +5739,118 @@ def _emit_lambda_expression(
         )
     _emit_node(emitter, source, parameters)
     emitter.write(" -> ")
-    _emit_node(emitter, source, body)
+    if body.type == "block" and _lambda_uses_chain_cascade_indent(
+        emitter
+    ):
+        _emit_lambda_block_body(emitter, source, body)
+    elif body.type == "block":
+        _emit_node(emitter, source, body)
+    else:
+        _emit_node(emitter, source, body)
+
+
+def _lambda_uses_chain_cascade_indent(emitter: Emitter) -> bool:
+    """Return True when the current emit position sits on a
+    chain-continuation line (`.<method>(<params> -> `), so
+    defect-5's Option A body-indent rule should fire.
+
+    Detection: leftmost non-space char on the current
+    in-progress line is `.`. That's the sig for a chain-
+    cascade segment where the arrow lives on its OWN line
+    at a chain-continuation col rather than being packed on
+    the caller's line. Packed-arrow cases (single-line chain
+    with an inline `.execute(() -> {` fragment) return False
+    so the standard `_emit_block` path emits body statements
+    at the outer statement's block indent — matching the
+    pre-0.6 behavior and preserving idempotency of the
+    surrounding paren-aligned / source-preserved layout.
+    """
+    current = emitter._current
+    stripped = current.lstrip(" ")
+    if not stripped:
+        return False
+    return stripped[0] == "."
+
+
+def _emit_lambda_block_body(
+    emitter: Emitter, source: bytes, body: Node
+) -> None:
+    """Emit a lambda's block body per defect-5 Option A —
+    body-statement indent = arrow-line-leading + 4, closing
+    `}` at arrow-line-leading.
+
+    The arrow-line-leading col is captured BEFORE writing the
+    opening `{` (so the emitter's in-progress line still
+    reflects the caller's chain-cascade or paren-align
+    context). Body statements land at
+    `ceil(arrow_line_leading / 4) * 4 + 4` (nearest 4-space-
+    grid boundary at or above the arrow, plus one indent
+    level). The closing `}` writes at
+    `ceil(arrow_line_leading / 4) * 4`, so it aligns with the
+    line that opened the block rather than the outer
+    statement's indent.
+
+    When the arrow-leading col already matches the caller's
+    block indent (`_indent * 4`), the target simplifies to
+    `(_indent + 1) * 4` — identical to `_emit_block`'s
+    behavior — and this helper produces the same output as
+    the pre-0.6 code path.
+    """
+    arrow_leading = _current_line_leading_spaces(emitter)
+    # Round arrow_leading UP to the 4-space grid so
+    # body-indent-and-close-brace-indent both land on a
+    # multiple of 4 (matches the formatter's canonical
+    # indent grid used everywhere else).
+    close_indent_units = (arrow_leading + 3) // 4
+    body_indent_units = close_indent_units + 1
+    close_indent = 4 * close_indent_units
+    body_indent = 4 * body_indent_units
+    statements = list(body.named_children)
+    brace_row = body.start_point[0]
+    emitter.write("{")
+    # Consume any leading side-comment on the brace line —
+    # same rule as `_emit_block`.
+    consumed = 0
+    while (
+        consumed < len(statements)
+        and statements[consumed].type
+        in ("line_comment", "block_comment")
+        and statements[consumed].start_point[0] == brace_row
+    ):
+        emitter.write("  ")
+        _emit_node(emitter, source, statements[consumed])
+        consumed += 1
+    emitter.newline()
+    remaining = statements[consumed:]
+    # Preserve one leading blank line if source has one —
+    # same rule as `_emit_block`.
+    if remaining and remaining[0].start_point[0] - brace_row > 1:
+        emitter.newline()
+    # Set `_indent` for the duration of statement emission so
+    # any nested emissions that read `_indent` (block-relative
+    # continuations, further nested `_emit_block` bodies) see
+    # the body-indent level as their outer block. Restored
+    # before the closing `}`.
+    outer_indent = emitter._indent
+    emitter._indent = body_indent_units
+    prev_stmt: Node | None = None
+    index = 0
+    while index < len(remaining):
+        stmt = remaining[index]
+        if prev_stmt is not None:
+            if stmt.start_point[0] - prev_stmt.end_point[0] > 1:
+                emitter.newline()
+        emitter.write(" " * body_indent)
+        _emit_node(emitter, source, stmt)
+        index, stmt = _attach_trailing_side_comments(
+            emitter, source, remaining, index, stmt
+        )
+        emitter.newline()
+        prev_stmt = stmt
+        index += 1
+    emitter._indent = outer_indent
+    emitter.write(" " * close_indent)
+    emitter.write("}")
 
 
 def _emit_inferred_parameters(
