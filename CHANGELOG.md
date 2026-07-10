@@ -10,6 +10,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-10
+
 - **Chain-cascade block-lambda body indent (defect-5, Option A).**
   When a block-body lambda sits on a chain-continuation line
   (`.method(param -> {` at chain-align col), body statements
@@ -99,8 +101,6 @@ and this project adheres to
   Fixture `arg_list_wrap/04_item8_prev_arg_multi_row_breaks_next`
   updated: pre-0.6 emitted the mixed shape; now emits P3
   paren-aligned one-per-line.
-
-## [0.6.0] - 2026-07-09
 
 Formatter release covering all five in-scope items from
 `.claude/060_SCOPE.md`: P0 source-preserve rework,
