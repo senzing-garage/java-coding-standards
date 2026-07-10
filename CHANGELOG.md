@@ -10,6 +10,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+- **Javadoc `<pre>` block preservation extended to HTML-escaped
+  variants.** `_emit_javadoc_block`'s `<pre>` region detector
+  now matches `&lt;pre&gt;` / `&lt;/pre&gt;` in addition to the
+  raw `<pre>` / `</pre>` tags. Consumer trial surfaced ASCII
+  class diagrams inside escaped `<pre>` blocks being reflowed
+  as prose (data loss), because the diagram lives inside another
+  HTML tag (`<h2>Class Diagram</h2> <pre>...</pre>`) that forces
+  the `<` chars to be escaped. Locked by new fixture
+  `javadoc_reflow/07_escaped_pre_block_preserved`.
 - **Arg-list multi-arg cascade rejects P1 mixed-shape commit when
   arg's emission cascades through arg-list P4.** Consumer trial
   surfaced sites where P1's item-8 break-before-subsequent-args

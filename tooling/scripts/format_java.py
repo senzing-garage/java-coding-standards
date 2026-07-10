@@ -3433,19 +3433,25 @@ def _emit_javadoc_block(
         line = interior[i]
 
         # Inside <pre> ... </pre>: emit interior content verbatim
-        # with the `* ` prefix.
+        # with the `* ` prefix. Detect BOTH the raw `<pre>` /
+        # `</pre>` tags and their HTML-escaped `&lt;pre&gt;` /
+        # `&lt;/pre&gt;` variants (used when the surrounding
+        # javadoc must escape `<` to prevent it being parsed as
+        # HTML, e.g. inside another HTML tag).
         if in_pre:
             emitter.newline()
             if line == "":
                 emitter.write(indent + " *")
             else:
                 emitter.write(star_prefix + line)
-            if "</pre>" in line:
+            if "</pre>" in line or "&lt;/pre&gt;" in line:
                 in_pre = False
             i += 1
             continue
 
-        if "<pre>" in line and "</pre>" not in line:
+        has_open = "<pre>" in line or "&lt;pre&gt;" in line
+        has_close = "</pre>" in line or "&lt;/pre&gt;" in line
+        if has_open and not has_close:
             emitter.newline()
             emitter.write(star_prefix + line)
             in_pre = True
