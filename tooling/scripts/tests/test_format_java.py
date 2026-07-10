@@ -3889,7 +3889,7 @@ class TestFormatterWarnings:
         # `_emit_variable_declarator`'s Step 3 backtrack pattern
         # and fires the C1 emit-and-warn advisory when the
         # committed break-at-`=` shape still overflows because
-        # the RHS is unsplittable (long literal). The input
+        # the RHS cannot be broken further (long literal). The input
         # below is a bare re-assignment (`args = new String[]
         # { ... }`) at deep indent — inline overflows, break-
         # at-`=` also overflows because the array literal can't
@@ -3921,7 +3921,7 @@ class TestFormatterWarnings:
         # still overflows (matches assignment_expression's
         # sibling behavior). The input is a
         # variable_declarator at deep indent whose RHS is a
-        # single unsplittable literal.
+        # single atomic literal.
         src = (
             b"public class A {\n"
             b"    void m() {\n"

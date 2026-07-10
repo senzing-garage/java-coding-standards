@@ -5515,7 +5515,7 @@ def _emit_assignment_expression(
     _emit_node(emitter, source, right_node)
     emitter.pop_indent()
     # Spec C1 emit-and-warn: the break-at-`=` shape may itself
-    # overflow when the RHS is genuinely unsplittable (long
+    # overflow when the RHS cannot be broken further (long
     # literal or single-token identifier). Fire the advisory so
     # checkstyle-adjacent tooling and adopters get a first-class
     # signal to hand-split the value — matches every other C1
@@ -9267,7 +9267,7 @@ def _emit_variable_declarator(
     _emit_node(emitter, source, value)
     emitter.pop_indent()
     # Spec C1 emit-and-warn: the break-at-`=` shape may still
-    # overflow when the value is a single unsplittable token
+    # overflow when the value is a single atomic token
     # (long identifier / literal). Fire the advisory so
     # adopters get a first-class signal to hand-split the
     # value, matching every other C1 emit-and-warn site.
