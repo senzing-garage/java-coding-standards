@@ -1646,9 +1646,16 @@ def _chain_matches_sql_ddl_pattern(
       4. Chain has at least 2 operators (= 3+ string
          literals). A single `+` between two literals doesn't
          warrant one-per-line breaks.
-      5. At least ONE literal's content starts with a
+      5. The LEFTMOST literal's content starts with a
          recognized SQL keyword (see `_SQL_DDL_KEYWORDS`),
-         case-insensitive.
+         case-insensitive. Restricting the keyword match to
+         the leftmost operand (rather than any operand)
+         keeps common English prose from triggering the
+         detector when a later operand starts with an
+         ambiguous word like "with" or "select" (both SQL
+         keywords AND common English words) — see the
+         inline comment on the check for the full
+         rationale.
 
     Motivating example: a hand-authored `CREATE TABLE` split
     one clause per line. The current binary cascade would
@@ -9248,9 +9255,19 @@ def _emit_variable_declarator(
     saved = emitter.snapshot()
     emitter.write(" = ")
     _emit_node(emitter, source, value)
+    # `+ 1` accounts for the trailing `;` the parent
+    # field_declaration / local_variable_declaration writes
+    # after this emitter returns; `+ tail_reserve` accounts
+    # for any additional trailing chars the outer context
+    # reserved (e.g. a `for` header reserves 2 for the header
+    # remainder while emitting the init clause — a
+    # local_variable_declaration as for-init runs with
+    # tail_reserve = 2, so this check must add both). Steps 1
+    # and 2 above compute the same budget via `<=
+    # effective_max`; this check keeps Step 3 consistent.
     inline_overflow = (
         emitter.last_lines_max_width(saved[0]) > _MAX_LINE
-        or emitter.column + 1 > _MAX_LINE
+        or emitter.column + 1 + emitter.tail_reserve > _MAX_LINE
     )
     if not inline_overflow:
         _fire_wrap_overflow_advisory(
