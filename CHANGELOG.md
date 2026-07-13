@@ -15,10 +15,62 @@ and this project adheres to
 Formatting release. Applies stricter line-length compliance
 across method-call arg lists, method chains, assignment
 statements, SQL DDL string concatenation, class headers,
-lambda bodies inside method chains, and javadoc `<pre>`
-blocks; introduces a first-class overflow advisory at every
-wrap site so adopters see actionable warnings for shapes
-the formatter cannot split without a source-level change.
+lambda bodies inside method chains, javadoc `<pre>` blocks,
+and array initializers; introduces a first-class overflow
+advisory at every wrap site so adopters see actionable
+warnings for shapes the formatter cannot split without a
+source-level change.
+
+### Array initializers
+
+Array literals `{ … }` now wrap through a four-priority cascade
+(see the "Array initializers" section of the standards for
+detail):
+
+- **Priority 1** — everything on one line: `String[] x = { "a", "b", "c" };`.
+- **Priority 2** — break BEFORE the `=` when the RHS is a bare
+  array literal and the whole array fits on one continuation
+  line at block+4:
+
+  ```
+  String[] labelsWithLongName
+      = { "firstItem", "secondItem", "thirdItem", "fourthItem" };
+  ```
+
+  Skipped for `new Type[] { … }` RHS (the `= new Type[] {`
+  prefix consumes too much continuation-line budget for
+  elements to fit).
+- **Priority 3** — `= {` at end of the assignment line,
+  elements greedy-packed onto continuation lines at block+4,
+  closing `};` on its own line at the LHS indent. Middle
+  continuation lines must carry at least two elements; the
+  final continuation line may carry one:
+
+  ```
+  String[] many = {
+      "firstItem", "secondItem", "thirdItem", "fourthItem", "fifthItem",
+      "sixthItem", "seventhItem"
+  };
+  ```
+- **Priority 4** — one element per line. Fires when Priority 3
+  would place a single element on a middle line, or when any
+  individual element is too long to share its line.
+
+Unassigned array-literal contexts (return values, arguments,
+annotation values) skip Priority 2 for the same reason as
+`new Type[]` and cascade Priority 1 → Priority 3 → Priority 4.
+
+Multi-dimensional arrays follow the same rules with one
+exception: the OUTER initializer skips Priority 3 (greedy pack
+of sub-arrays would compress rows onto shared lines and hurt
+readability) and jumps directly to one-sub-array-per-line.
+Each sub-array then recursively runs its own cascade
+(Priority 1 → Priority 3 → Priority 4).
+
+Pre-0.6 the array-initializer emitter had no wrap engine at
+all: an over-80 array literal was either echoed verbatim from
+a multi-row source or emitted single-line inline (silently
+overflowing).
 
 ### Method-call argument lists
 

@@ -254,6 +254,7 @@ class Emitter:
         "_paren_align_col",
         "_paren_expr_col",
         "_arg_list_p4_fired",
+        "_array_init_inline_only",
         "warnings",
     )
 
@@ -333,6 +334,17 @@ class Emitter:
         # it to True — they never reset. This gives the read
         # site full control of scoping.
         self._arg_list_p4_fired: bool = False
+        # 0.6.0: when True, `_emit_array_initializer` emits the
+        # single-line inline form unconditionally rather than
+        # running its own multi-line cascade. Callers that are
+        # themselves speculating a single-line shape (the
+        # variable-declarator / assignment-expression cascade's
+        # Step 1 "inline all" and Step 2 "break at `=`, array
+        # still inline" attempts) set this True; the outer
+        # width check then rejects the speculation cleanly
+        # without the array committing to a multi-line P3/P4
+        # shape that would only have been discarded.
+        self._array_init_inline_only: bool = False
 
     @property
     def column(self) -> int:
@@ -452,14 +464,14 @@ class Emitter:
 
     def snapshot(
         self,
-    ) -> tuple[int, str, int, int, int | None, int | None, bool, int]:
+    ) -> tuple[int, str, int, int, int | None, int | None, bool, bool, int]:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
         tail_reserve, paren_align_col, paren_expr_col,
-        arg_list_p4_fired, warnings_count)` suitable for
-        `restore()`. The wrap-priority engines use the
-        pattern:
+        arg_list_p4_fired, array_init_inline_only,
+        warnings_count)` suitable for `restore()`. The
+        wrap-priority engines use the pattern:
 
             saved = emitter.snapshot()
             <try emitting in some shape>
@@ -482,6 +494,9 @@ class Emitter:
         that trigger arg-list P4 rollback cleanly for the
         outer wrap engine to make its P4-vs-not decision on
         the eventually-committed candidate.
+        `array_init_inline_only` is included so callers that
+        set it for a speculative inline emit have it restored
+        cleanly on rollback.
         """
         return (
             len(self._lines),
@@ -491,12 +506,15 @@ class Emitter:
             self._paren_align_col,
             self._paren_expr_col,
             self._arg_list_p4_fired,
+            self._array_init_inline_only,
             len(self.warnings),
         )
 
     def restore(
         self,
-        snap: tuple[int, str, int, int, int | None, int | None, bool, int],
+        snap: tuple[
+            int, str, int, int, int | None, int | None, bool, bool, int
+        ],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
 
@@ -514,6 +532,7 @@ class Emitter:
             paren_align_col,
             paren_expr_col,
             arg_list_p4_fired,
+            array_init_inline_only,
             warnings_count,
         ) = snap
         del self._lines[lines_count:]
@@ -523,6 +542,7 @@ class Emitter:
         self._paren_align_col = paren_align_col
         self._paren_expr_col = paren_expr_col
         self._arg_list_p4_fired = arg_list_p4_fired
+        self._array_init_inline_only = array_init_inline_only
         del self.warnings[warnings_count:]
 
     def last_lines_max_width(self, since: int) -> int:
@@ -4201,31 +4221,210 @@ def _emit_class_literal(
 def _emit_array_initializer(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `{ a, b, c }` for an array initializer (or annotation
-    value array). Per spec A4 ("Whitespace and Operator Spacing"
-    / inside braces): single space after `{`, single space
-    before `}` for non-empty initializers; `{}` for empty.
+    """Emit `{ … }` for an array initializer with wrap cascade.
 
-    Source-preservation kicks in when the source has the
-    initializer spanning multiple rows — the formatter
-    preserves the developer's layout. Single-row source
-    re-emits with the normalized spacing.
+    Per docs/java-coding-standards.md §"Array initializers":
+
+        - Priority 1 (inline): `{ a, b, c }` on one line. Single
+          space inside non-empty braces; `{}` for empty.
+        - Priority 3 (greedy multi-line): `{` at end of the
+          calling line, elements greedy-packed at block+4 with
+          NO middle-line orphans (each middle continuation line
+          carries ≥ 2 elements; the last line may carry 1),
+          closing `};` on its own line at the calling context's
+          indent.
+        - Priority 4 (one per line): fires when Priority 3 would
+          place a single element on a middle line, or when any
+          element is too long to share its line.
+
+    Multi-dimensional arrays (any child element is itself an
+    `array_initializer`) skip Priority 3 for the outer array
+    per the spec: sub-arrays land one-per-line for readability.
+    Each sub-array then recursively runs its own cascade.
+
+    Priority 2 (break BEFORE the `=`) is not a decision at this
+    emitter's level — it lives at the caller
+    (`_emit_variable_declarator` / `_emit_assignment_expression`)
+    which speculatively emits with `Emitter._array_init_inline_only
+    = True` before deciding whether to break at `=` or fall to
+    this emitter's multi-line cascade.
+
+    Legacy source-preservation of multi-row source is retained
+    for `element_value_array_initializer` (annotation-value
+    array literals) where the developer's authored layout carries
+    semantic weight the wrap engine cannot yet safely reproduce.
     """
-    if _node_spans_multiple_rows(node):
+    # 0.6.0: annotation-value arrays keep the source-preserve
+    # behavior — the annotation body is typically small enough
+    # that the wrap engine doesn't apply anyway, and preserving
+    # respects any hand-alignment the developer chose. Ordinary
+    # array_initializer runs the cascade below regardless of
+    # whether the source spans multiple rows.
+    if (
+        node.type == "element_value_array_initializer"
+        and _node_spans_multiple_rows(node)
+    ):
         emitter.write_raw_lines(
             _node_source_text(source, node), strip_trailing_ws=True
         )
         return
+
     elements = [c for c in node.named_children]
     if not elements:
         emitter.write("{}")
         return
+
+    if emitter._array_init_inline_only:
+        # Caller (variable_declarator / assignment_expression
+        # Step 1 or Step 2) is speculating a single-line shape.
+        # Emit inline; if the width doesn't fit, the caller will
+        # see the overflow and try the next tier.
+        _emit_array_init_inline(emitter, source, node, elements)
+        return
+
+    # Cascade.
+    effective_max = _MAX_LINE - emitter.tail_reserve
+    is_multi_dim = any(
+        c.type == "array_initializer" for c in elements
+    )
+
+    # Priority 1: try inline all.
+    p1_saved = emitter.snapshot()
+    _emit_array_init_inline(emitter, source, node, elements)
+    if (
+        emitter.line_count == p1_saved[0]
+        and emitter.last_lines_max_width(p1_saved[0]) <= effective_max
+    ):
+        return
+    emitter.restore(p1_saved)
+
+    # Priority 3 (skipped for multi-dim per spec).
+    if not is_multi_dim:
+        p3_saved = emitter.snapshot()
+        had_orphan = _emit_array_init_multiline(
+            emitter, source, node, elements, one_per_line=False
+        )
+        p3_fits = (
+            emitter.last_lines_max_width(p3_saved[0]) <= effective_max
+            and not had_orphan
+        )
+        if p3_fits:
+            return
+        emitter.restore(p3_saved)
+
+    # Priority 4: one element per line. Spec C1 emit-and-warn
+    # fallback — commits unconditionally; the enclosing
+    # variable_declarator / assignment_expression / statement
+    # wrapper is responsible for firing the overflow advisory
+    # if its own final shape still overflows.
+    _emit_array_init_multiline(
+        emitter, source, node, elements, one_per_line=True
+    )
+
+
+def _emit_array_init_inline(
+    emitter: Emitter,
+    source: bytes,
+    node: Node,
+    elements: list[Node],
+) -> None:
+    """Emit `{ a, b, c }` on one line (Priority 1)."""
     emitter.write("{ ")
     for index, e in enumerate(elements):
         if index > 0:
             emitter.write(", ")
         _emit_node(emitter, source, e)
     emitter.write(" }")
+
+
+def _emit_array_init_multiline(
+    emitter: Emitter,
+    source: bytes,
+    node: Node,
+    elements: list[Node],
+    one_per_line: bool,
+) -> bool:
+    """Emit the multi-line array shape used by Priority 3 (when
+    `one_per_line=False`) and Priority 4 (when `one_per_line=True`).
+
+    Layout:
+
+        {
+            <elements at block+4 indent>
+        }
+
+    Under Priority 3, elements greedy-pack across continuation
+    lines, breaking to a new line when adding the next element
+    would overflow `_MAX_LINE - tail_reserve` OR when the
+    element's own emission spans multiple rows.
+
+    Under Priority 4, each element gets its own continuation
+    line.
+
+    Returns `had_middle_line_orphan` — True when a middle
+    continuation line (any line except the last) ended up
+    carrying only one element. Only meaningful for the
+    Priority 3 caller, which uses the signal to fall back to
+    Priority 4. Priority 4 callers ignore the return value.
+    """
+    emitter.write("{")
+    emitter.newline()
+    emitter.push_indent()
+    effective_max = _MAX_LINE - emitter.tail_reserve
+
+    # Element-per-line counts across all continuation lines.
+    # `line_element_counts[i]` = number of elements finalized
+    # onto the i-th continuation line. Used post-emit to detect
+    # middle-line orphans (Priority 3's guard rule).
+    line_element_counts: list[int] = []
+    cur_line_count = 0
+    emitter.write_indent()
+
+    for index, e in enumerate(elements):
+        first_on_line = cur_line_count == 0
+        if first_on_line:
+            # First element on this line — emit as-is at the
+            # current position (already at block+4 indent).
+            _emit_node(emitter, source, e)
+            cur_line_count = 1
+            continue
+        # Try packing "next element" on the current line.
+        pack_saved = emitter.snapshot()
+        emitter.write(", ")
+        _emit_node(emitter, source, e)
+        pack_ok = (
+            emitter.last_lines_max_width(pack_saved[0])
+            <= effective_max
+            and emitter.line_count == pack_saved[0]
+        )
+        if pack_ok and not one_per_line:
+            cur_line_count += 1
+            continue
+        # Overflow or one-per-line mode — restore, break, emit
+        # on a fresh continuation line.
+        emitter.restore(pack_saved)
+        emitter.write(",")
+        emitter.newline()
+        line_element_counts.append(cur_line_count)
+        cur_line_count = 0
+        emitter.write_indent()
+        _emit_node(emitter, source, e)
+        cur_line_count = 1
+
+    line_element_counts.append(cur_line_count)
+
+    emitter.pop_indent()
+    emitter.newline()
+    emitter.write_indent()
+    emitter.write("}")
+
+    had_middle_orphan = False
+    if not one_per_line and len(line_element_counts) > 1:
+        for count in line_element_counts[:-1]:
+            if count == 1:
+                had_middle_orphan = True
+                break
+    return had_middle_orphan
 
 
 def _emit_array_creation_expression(
@@ -5345,6 +5544,109 @@ def _emit_expression_statement(
     emitter.write(";")
 
 
+def _rhs_has_array_literal(rhs_node: Node) -> bool:
+    """Return True when the RHS of an `=`/declarator is an
+    array-literal shape whose emission is subject to the array
+    initializer's own P1/P3/P4 cascade.
+
+    Two cases:
+
+      - Bare `array_initializer` (`{ a, b, c }`): valid only
+        as a `variable_declarator`'s value. `assignment
+        _expression` never sees this shape because bare
+        reassignment `x = { … }` is not legal Java.
+      - `array_creation_expression` (`new Type[] { a, b, c }`)
+        that contains an `array_initializer` child. The bare
+        `new Type[N]` form (dimensions but no `{ … }`) is not
+        an array-literal shape — the wrap engine treats it as
+        an ordinary expression.
+    """
+    if rhs_node.type == "array_initializer":
+        return True
+    if rhs_node.type == "array_creation_expression":
+        for child in rhs_node.named_children:
+            if child.type == "array_initializer":
+                return True
+    return False
+
+
+def _rhs_is_new_type_array(rhs_node: Node) -> bool:
+    """Return True when the RHS is `new Type[] { … }` — the
+    variant that skips the break-before-`=` (Priority 2) tier
+    per the "Array initializers" spec section. Bare
+    `array_initializer` RHS still uses Priority 2 when it
+    doesn't fit inline.
+    """
+    return (
+        rhs_node.type == "array_creation_expression"
+        and any(
+            c.type == "array_initializer"
+            for c in rhs_node.named_children
+        )
+    )
+
+
+def _emit_assignment_with_array_rhs(
+    emitter: Emitter,
+    source: bytes,
+    node: Node,
+    right_node: Node,
+    op_text: str,
+    cascade_start: int,
+    effective_max: int,
+    emit_inline_rhs: Callable[[], None],
+) -> None:
+    """Cascade for `LHS = <array-literal>` assignment_expression.
+
+    Per docs/java-coding-standards.md §"Array initializers":
+
+      - Priority 1: `LHS = { … };` all on one line.
+      - Priority 2: SKIPPED for assignment_expression because
+        the only valid array-RHS shape here is `new Type[]
+        { … }`, and moving `= new Type[] {` onto a
+        continuation line at block+4 consumes too much
+        horizontal budget for the elements themselves to fit.
+        (Priority 2 remains available in
+        `_emit_variable_declarator` for the bare `Type x
+        = { … }` form.)
+      - Priority 3+: no break before `=` — dispatch into the
+        array_initializer whose own cascade emits multi-line
+        greedy (P3) or one-per-line (P4).
+
+    The Priority 1 attempt sets `emitter._array_init_inline_only`
+    so the nested array emits its own P1 inline shape rather
+    than committing to a multi-line P3/P4 that we would only
+    have discarded.
+    """
+    # Priority 1: inline all — force array inline.
+    saved = emitter.snapshot()
+    prev_flag = emitter._array_init_inline_only
+    emitter._array_init_inline_only = True
+    try:
+        emit_inline_rhs()
+    finally:
+        emitter._array_init_inline_only = prev_flag
+    p1_fits = (
+        emitter.line_count == saved[0]
+        and emitter.last_lines_max_width(saved[0]) <= effective_max
+    )
+    if p1_fits:
+        _fire_wrap_overflow_advisory(
+            emitter, node, cascade_start, "assignment"
+        )
+        return
+    emitter.restore(saved)
+
+    # Priority 2 SKIPPED for assignment_expression (see docstring).
+
+    # Priority 3+: no break-at-`=`, dispatch and let the array's
+    # own cascade choose P3 or P4.
+    emit_inline_rhs()
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "assignment"
+    )
+
+
 def _emit_assignment_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -5418,6 +5720,21 @@ def _emit_assignment_expression(
         emitter.write(op_text)
         emitter.write(" ")
         _emit_node(emitter, source, right_node)
+
+    # 0.6.0: array-literal RHS gets its own cascade per the
+    # spec's "Array initializers" section: P1 inline → SKIP P2
+    # for `new Type[] { … }` → array's internal P3/P4 cascade.
+    # `_rhs_has_array_literal` returns True for
+    # `array_creation_expression` containing an
+    # `array_initializer` — the only array-literal shape valid
+    # as an assignment RHS (bare `x = { … }` is not legal Java;
+    # it only appears in variable declarations).
+    if _rhs_has_array_literal(right_node):
+        _emit_assignment_with_array_rhs(
+            emitter, source, node, right_node, op_text,
+            cascade_start, effective_max, emit_inline_rhs,
+        )
+        return
 
     # Step 1: try inline emission. Commit when every line
     # (including the LHS + op + RHS-start line AND any lines
@@ -9102,6 +9419,87 @@ def _emit_modifiers(
         emitter.write(" ")
 
 
+def _emit_variable_declarator_with_array_rhs(
+    emitter: Emitter,
+    source: bytes,
+    node: Node,
+    value: Node,
+    cascade_start: int,
+    effective_max: int,
+) -> None:
+    """Cascade for `Type NAME = <array-literal>` variable_declarator.
+
+    Per docs/java-coding-standards.md §"Array initializers":
+
+      - Priority 1: `Type NAME = { … };` all on one line.
+      - Priority 2: break BEFORE the `=`, array literal fits
+        on one continuation line at block+4. Applies ONLY when
+        the RHS is a bare `array_initializer` — SKIPPED for
+        `new Type[] { … }` because moving the whole
+        `= new Type[] {` prefix onto a continuation line eats
+        too much horizontal budget for elements to fit.
+      - Priority 3+: no break-at-`=`, array's own cascade
+        emits multi-line greedy (P3) or one-per-line (P4).
+
+    The Priority 1 and Priority 2 attempts set
+    `emitter._array_init_inline_only` so the nested array
+    emits its own P1 inline shape rather than committing to a
+    multi-line P3/P4 that we would only have discarded.
+
+    The `+ 1` in the width checks accounts for the trailing
+    `;` the parent field_declaration / local_variable_declaration
+    writes after this emitter returns.
+    """
+    is_new_type_array = _rhs_is_new_type_array(value)
+
+    # Priority 1: inline all — force array inline.
+    saved = emitter.snapshot()
+    prev_flag = emitter._array_init_inline_only
+    emitter._array_init_inline_only = True
+    try:
+        emitter.write(" = ")
+        _emit_node(emitter, source, value)
+    finally:
+        emitter._array_init_inline_only = prev_flag
+    p1_fits = (
+        emitter.line_count == saved[0]
+        and emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+    )
+    if p1_fits:
+        return
+    emitter.restore(saved)
+
+    # Priority 2: break-at-`=` with array inline. Skipped for
+    # `new Type[]` per spec.
+    if not is_new_type_array:
+        p2_saved = emitter.snapshot()
+        emitter.newline()
+        emitter.push_indent()
+        emitter.write_indent()
+        emitter.write("= ")
+        emitter._array_init_inline_only = True
+        try:
+            _emit_node(emitter, source, value)
+        finally:
+            emitter._array_init_inline_only = prev_flag
+        p2_fits = (
+            emitter.line_count == p2_saved[0] + 1
+            and emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+        )
+        if p2_fits:
+            emitter.pop_indent()
+            return
+        emitter.restore(p2_saved)
+
+    # Priority 3+: no break-at-`=`, dispatch and let the array's
+    # own cascade choose P3 or P4.
+    emitter.write(" = ")
+    _emit_node(emitter, source, value)
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "variable declarator"
+    )
+
+
 def _emit_variable_declarator(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -9204,6 +9602,18 @@ def _emit_variable_declarator(
     #       value emit its own wrap (method-call P2/P4, binary-
     #       expression wrap, etc.).
     effective_max = _MAX_LINE - emitter.tail_reserve
+
+    # 0.6.0: array-literal RHS gets its own cascade per the
+    # spec's "Array initializers" section. Priority 2 is
+    # skipped for `new Type[] { … }` (moving `= new Type[] {`
+    # onto a continuation line eats too much horizontal
+    # budget); the bare `Type x = { … }` form keeps Priority 2.
+    if _rhs_has_array_literal(value):
+        _emit_variable_declarator_with_array_rhs(
+            emitter, source, node, value, cascade_start,
+            effective_max,
+        )
+        return
 
     # Step 1: try inline single-line via speculative emission.
     # If the value's emission stays on one line AND the line

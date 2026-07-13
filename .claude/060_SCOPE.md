@@ -285,26 +285,18 @@ CURRENT (0.5.3 — 81 chars at 12-space indent, silent overflow):
             args = new String[] { "--port", "9080", "--interface", "localhost" };
 ```
 
-SHIPPED (0.6 — break-at-`=` when inline overflows,
-matching the `variable_declarator` sibling; the
-array-initializer itself is not internally wrapped,
-so the continuation line may itself still overflow —
-in that case the wrap engine fires an
-"assignment wrap could not fit within 80 chars"
-FormatterWarning advisory prompting a manual split
-of the array literal):
-```java
-            args
-                = new String[] { "--port", "9080", "--interface", "localhost" };
-```
+SHIPPED (0.6 — array literal wraps internally per
+the "Array initializers" section of the standards
+doc; `new Type[]` skips the break-before-`=` tier
+per that section, so this specific case cascades
+straight to the array's internal greedy pack at
+Priority 3):
 
-Note: an earlier plan (see git history for this
-document) called for the array-initializer to wrap
-internally as its own multi-line form. That work is
-out of scope for 0.6.0 — `_emit_array_initializer`
-still emits single-line inline or source-preserves a
-multi-row source. Internal array-initializer wrap
-remains a future item.
+```java
+            args = new String[] {
+                "--port", "9080", "--interface", "localhost"
+            };
+```
 
 ### Example 2 — method-call RHS with long args
 

@@ -3889,21 +3889,22 @@ class TestFormatterWarnings:
         # `_emit_variable_declarator`'s Step 3 backtrack pattern
         # and fires the C1 emit-and-warn advisory when the
         # committed break-at-`=` shape still overflows because
-        # the RHS cannot be broken further (long literal). The input
-        # below is a bare re-assignment (`args = new String[]
-        # { ... }`) at deep indent — inline overflows, break-
-        # at-`=` also overflows because the array literal can't
-        # be split by the formatter, so the advisory fires.
+        # the RHS cannot be broken further (long literal). The
+        # input below is a bare re-assignment (`msg = "…";`) at
+        # deep indent — inline overflows, break-at-`=` also
+        # overflows because the string literal cannot be split
+        # by the formatter, so the advisory fires.
         src = (
             b"public class A {\n"
             b"    void m() {\n"
-            b"        String[] args = null;\n"
-            b"        try {\n"
-            b"            for (int i = 0; i < 10; i++) {\n"
-            b"                args = new String[] "
-            b'{ "--port", "9080", "--interface", "localhost" };\n'
+            b"        String msg = null;\n"
+            b"        if (true) {\n"
+            b"            if (true) {\n"
+            b"                msg "
+            b'= "a quite long string literal that the developer '
+            b'placed at a low column";\n'
             b"            }\n"
-            b"        } catch (Exception e) { }\n"
+            b"        }\n"
             b"    }\n"
             b"}\n"
         )
