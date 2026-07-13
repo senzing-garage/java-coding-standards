@@ -4249,26 +4249,13 @@ def _emit_array_initializer(
     = True` before deciding whether to break at `=` or fall to
     this emitter's multi-line cascade.
 
-    Legacy source-preservation of multi-row source is retained
-    for `element_value_array_initializer` (annotation-value
-    array literals) where the developer's authored layout carries
-    semantic weight the wrap engine cannot yet safely reproduce.
+    Applies uniformly to both `array_initializer` and
+    `element_value_array_initializer` (annotation-value array
+    literals) — the cascade owns the shape regardless of source
+    layout, so a multi-row `@Foo(names = { "a", "b" })` is
+    re-flowed to the canonical single-line or multi-line form
+    the same as a variable initializer would be.
     """
-    # 0.6.0: annotation-value arrays keep the source-preserve
-    # behavior — the annotation body is typically small enough
-    # that the wrap engine doesn't apply anyway, and preserving
-    # respects any hand-alignment the developer chose. Ordinary
-    # array_initializer runs the cascade below regardless of
-    # whether the source spans multiple rows.
-    if (
-        node.type == "element_value_array_initializer"
-        and _node_spans_multiple_rows(node)
-    ):
-        emitter.write_raw_lines(
-            _node_source_text(source, node), strip_trailing_ws=True
-        )
-        return
-
     elements = [c for c in node.named_children]
     if not elements:
         emitter.write("{}")
@@ -4388,7 +4375,19 @@ def _emit_array_init_multiline(
             _emit_node(emitter, source, e)
             cur_line_count = 1
             continue
-        # Try packing "next element" on the current line.
+        if one_per_line:
+            # P4 mode — no need to speculate a pack; break
+            # unconditionally to a fresh continuation line.
+            emitter.write(",")
+            emitter.newline()
+            line_element_counts.append(cur_line_count)
+            cur_line_count = 0
+            emitter.write_indent()
+            _emit_node(emitter, source, e)
+            cur_line_count = 1
+            continue
+        # P3 mode — try packing "next element" on the current
+        # line, backtrack + break-before if it doesn't fit.
         pack_saved = emitter.snapshot()
         emitter.write(", ")
         _emit_node(emitter, source, e)
@@ -4397,11 +4396,9 @@ def _emit_array_init_multiline(
             <= effective_max
             and emitter.line_count == pack_saved[0]
         )
-        if pack_ok and not one_per_line:
+        if pack_ok:
             cur_line_count += 1
             continue
-        # Overflow or one-per-line mode — restore, break, emit
-        # on a fresh continuation line.
         emitter.restore(pack_saved)
         emitter.write(",")
         emitter.newline()
@@ -5637,10 +5634,9 @@ def _emit_assignment_with_array_rhs(
         return
     emitter.restore(saved)
 
-    # Priority 2 SKIPPED for assignment_expression (see docstring).
-
     # Priority 3+: no break-at-`=`, dispatch and let the array's
-    # own cascade choose P3 or P4.
+    # own cascade choose P3 or P4. Priority 2 is skipped for
+    # assignment_expression per the docstring rationale above.
     emit_inline_rhs()
     _fire_wrap_overflow_advisory(
         emitter, node, cascade_start, "assignment"
@@ -9451,8 +9447,17 @@ def _emit_variable_declarator_with_array_rhs(
     writes after this emitter returns.
     """
     is_new_type_array = _rhs_is_new_type_array(value)
+    effective_max_with_semi = _MAX_LINE - emitter.tail_reserve - 1
 
-    # Priority 1: inline all — force array inline.
+    # Priority 1: inline all — force array inline. The `+ 1` in
+    # `effective_max_with_semi` accounts for the trailing `;`
+    # the parent field_declaration / local_variable_declaration
+    # writes after this emitter returns; `tail_reserve` accounts
+    # for any additional trailing chars the outer context
+    # reserved (e.g. for-loop init tail). The width check uses
+    # `last_lines_max_width` so a hypothetically-oversized LHS
+    # line (long type + name) is caught even though the LHS
+    # was emitted before the speculation snapshot.
     saved = emitter.snapshot()
     prev_flag = emitter._array_init_inline_only
     emitter._array_init_inline_only = True
@@ -9463,14 +9468,18 @@ def _emit_variable_declarator_with_array_rhs(
         emitter._array_init_inline_only = prev_flag
     p1_fits = (
         emitter.line_count == saved[0]
-        and emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+        and emitter.last_lines_max_width(saved[0])
+        <= effective_max_with_semi
     )
     if p1_fits:
         return
     emitter.restore(saved)
 
     # Priority 2: break-at-`=` with array inline. Skipped for
-    # `new Type[]` per spec.
+    # `new Type[]` per spec. The `last_lines_max_width` check
+    # verifies BOTH lines fit — the LHS line (already committed
+    # before the p2_saved snapshot) is above `saved[0]` and the
+    # array-continuation line is `saved[0] + 1`.
     if not is_new_type_array:
         p2_saved = emitter.snapshot()
         emitter.newline()
@@ -9484,7 +9493,8 @@ def _emit_variable_declarator_with_array_rhs(
             emitter._array_init_inline_only = prev_flag
         p2_fits = (
             emitter.line_count == p2_saved[0] + 1
-            and emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+            and emitter.last_lines_max_width(saved[0])
+            <= effective_max_with_semi
         )
         if p2_fits:
             emitter.pop_indent()
