@@ -10,7 +10,7 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-07-10
+## [0.6.0] - 2026-07-14
 
 Formatting release. Applies stricter line-length compliance
 across method-call arg lists, method chains, assignment
