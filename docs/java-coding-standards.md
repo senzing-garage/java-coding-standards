@@ -2218,22 +2218,80 @@ the comment to its own line above the statement).
 
 ### Array initializers
 
-Wrap with the same priority structure as method-call arguments:
+Array literals `{ … }` follow a four-priority cascade. The exact
+cascade depends on the context (assignment vs. embedded) and on
+whether the RHS is a bare literal or an `array_creation_expression`
+(`new Type[] { … }`).
+
+#### Assigned context — bare literal RHS (`Type x = { … };`)
+
+Cascade in priority order:
+
+**Priority 1** — single line:
 
 ```java
-// Priority 1 — fits one line:
-int[] codes = { 1, 2, 3, 4 };
+String[] labels = { "A", "B", "C" };
+```
 
-// Priority 2 — paren-aligned with first element after `{`:
-int[] codes = { 100, 200, 300,
-                400, 500, 600,
-                700, 800, 900 };
+**Priority 2** — break BEFORE the `=`, array literal fits on the
+continuation line at block+4:
 
-// Priority 3 — one element per line:
-String[] longNames = {
-    "first-element",
-    "second-element",
-    "third-element"
+```java
+String[] labels
+    = { "firstItem", "secondItem", "thirdItem", "fourthItem" };
+```
+
+**Priority 3** — `= {` on the LHS line, elements greedy-packed
+across multiple continuation lines at block+4, `};` on its own
+line at the LHS indent. Middle continuation lines must carry at
+least two elements each; the LAST continuation line may carry a
+single element:
+
+```java
+String[] labels = {
+    "firstItem", "secondItem", "thirdItem", "fourthItem", "fifthItem",
+    "sixthItem", "seventhItem", "eighthItem", "ninthItem", "tenthItem"
+};
+```
+
+**Priority 4** — one element per line. Fires when Priority 3 would
+place a single element on a middle line, or when any individual
+element is too long to share its line with another:
+
+```java
+String[] labels = {
+    "someReallyLongFirstItemNameThatTakesSoMuchSpace",
+    "anotherLongerName",
+    "aShortThirdItem"
+};
+```
+
+#### Assigned context — `new Type[] { … }` RHS
+
+**Priority 2 is skipped.** Cascade: Priority 1 → Priority 3 →
+Priority 4. Rationale: moving `= new Type[] {` onto a
+continuation line at block+4 consumes so much horizontal budget
+that the elements themselves usually cannot fit — the break
+sacrifices too much line budget for the sake of a consistent
+break-before-operator shape. Jumping straight to Priority 3
+keeps `= new Type[] {` on the LHS line and gives elements the
+full block+4 budget.
+
+```java
+args = new String[] {
+    "--port", "9080", "--interface", "localhost"
+};
+```
+
+#### Unassigned context (return value, argument, annotation value)
+
+No `=` to break before, so Priority 2 is not applicable. Cascade:
+Priority 1 → Priority 3 → Priority 4.
+
+```java
+return new String[] {
+    "firstItem", "secondItem", "thirdItem", "fourthItem", "fifthItem",
+    "sixthItem"
 };
 ```
 
@@ -2246,25 +2304,52 @@ Spacing inside `{ }` follows "Whitespace and Operator Spacing"
   spacing between brackets.
 - **Allocation with sizes**: `new int[m][n]` — no spaces inside
   brackets, no spaces between brackets.
-- **Nested initializers**: each row is an array initializer
-  treated by the wrap rules above:
+- **Nested initializers**: the OUTER initializer skips Priority 3
+  (greedy pack of sub-arrays) and jumps straight to a
+  one-sub-array-per-line layout for readability. Each SUB-ARRAY
+  then recursively applies its own cascade (Priority 1 → Priority
+  3 → Priority 4 — Priority 2 does not apply to sub-arrays because
+  they have no owning `=`).
+
+**Priority 1** — everything fits on one line:
 
 ```java
-// Single-line if fits:
 int[][] matrix = { { 1, 2, 3 }, { 4, 5, 6 }, { 7, 8, 9 } };
+```
 
-// Wrapped: one row per line, paren-aligned to first row after
-// the outer `{`:
-int[][] matrix = { { 1, 2, 3 },
-                   { 4, 5, 6 },
-                   { 7, 8, 9 } };
+**Priority 2** — break BEFORE the `=`, whole array fits on one
+continuation line at block+4 (same rule as one-dimensional
+arrays; skipped when the RHS is a `new Type[][] { … }` form):
 
-// Priority 3 for very long rows: each row on its own line,
-// double-indented; inner rows wrap per the same rules
-// recursively:
+```java
+int[][] matrix
+    = { { 1, 2, 3 }, { 4, 5, 6 }, { 7, 8, 9 } };
+```
+
+**Priority 3 is skipped for the outer array** — jump straight to
+one-sub-array-per-line.
+
+**Priority 4** — each sub-array on its own line at block+4. Each
+sub-array itself is subject to its own cascade recursively; if a
+sub-array fits inline it stays inline, otherwise it wraps per its
+own Priority 3 → Priority 4:
+
+```java
 int[][] matrix = {
-    { 100, 200, 300, 400 },
-    { 500, 600, 700, 800 }
+    { 1, 2, 3 },
+    { 4, 5, 6 },
+    { 7, 8, 9 }
+};
+
+// Sub-array itself too long — inner Priority 3 fires per row:
+int[][] wideMatrix = {
+    {
+        100, 200, 300, 400, 500, 600, 700, 800, 900,
+        1000, 1100, 1200
+    },
+    {
+        1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000
+    }
 };
 ```
 

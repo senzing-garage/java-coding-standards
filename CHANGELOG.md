@@ -10,6 +10,240 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-14
+
+Formatting release. Applies stricter line-length compliance
+across method-call arg lists, method chains, assignment
+statements, SQL DDL string concatenation, class headers,
+lambda bodies inside method chains, javadoc `<pre>` blocks,
+and array initializers; introduces a first-class overflow
+advisory at every wrap site so adopters see actionable
+warnings for shapes the formatter cannot split without a
+source-level change.
+
+### Array initializers
+
+Array literals `{ … }` now wrap through a four-priority cascade
+(see the "Array initializers" section of the standards for
+detail):
+
+- **Priority 1** — everything on one line: `String[] x = { "a", "b", "c" };`.
+- **Priority 2** — break BEFORE the `=` when the RHS is a bare
+  array literal and the whole array fits on one continuation
+  line at block+4:
+
+  ```
+  String[] labelsWithLongName
+      = { "firstItem", "secondItem", "thirdItem", "fourthItem" };
+  ```
+
+  Skipped for `new Type[] { … }` RHS (the `= new Type[] {`
+  prefix consumes too much continuation-line budget for
+  elements to fit).
+- **Priority 3** — `= {` at end of the assignment line,
+  elements greedy-packed onto continuation lines at block+4,
+  closing `};` on its own line at the LHS indent. Middle
+  continuation lines must carry at least two elements; the
+  final continuation line may carry one:
+
+  ```
+  String[] many = {
+      "firstItem", "secondItem", "thirdItem", "fourthItem", "fifthItem",
+      "sixthItem", "seventhItem"
+  };
+  ```
+- **Priority 4** — one element per line. Fires when Priority 3
+  would place a single element on a middle line, or when any
+  individual element is too long to share its line.
+
+Unassigned array-literal contexts (return values, arguments,
+annotation values) skip Priority 2 for the same reason as
+`new Type[]` and cascade Priority 1 → Priority 3 → Priority 4.
+
+Multi-dimensional arrays follow the same rules with one
+exception: the OUTER initializer skips Priority 3 (greedy pack
+of sub-arrays would compress rows onto shared lines and hurt
+readability) and jumps directly to one-sub-array-per-line.
+Each sub-array then recursively runs its own cascade
+(Priority 1 → Priority 3 → Priority 4).
+
+Pre-0.6 the array-initializer emitter had no wrap engine at
+all: an over-80 array literal was either echoed verbatim from
+a multi-row source or emitted single-line inline (silently
+overflowing).
+
+### Method-call argument lists
+
+- **Two-line paren-aligned packing is strictly two lines.**
+  When a call's argument list needs to wrap, the "pack as
+  many args as fit on the call line, break at a comma, put
+  the rest on one continuation line aligned to the column
+  after `(`" shape now applies only when the entire list
+  fits on exactly two lines. Longer packed shapes (three or
+  more lines with mixed pack-and-break decisions) are no
+  longer produced.
+- **New paren-aligned one-per-line candidate.** When
+  two-line packing does not fit, the formatter emits each
+  argument on its own line aligned to the column after
+  `(` — the classic `foo(a,\n    b,\n    c)` shape. This
+  runs after two-line packing and before the block+4
+  one-per-line fallback.
+- **Block+4 one-per-line fallback.** When paren-alignment
+  itself does not fit, arguments break onto their own lines
+  at one indent level past the current line's start column.
+- **Nested wraps stay visually contained.** When a nested
+  call inside a wrapped argument list overflows and needs
+  its own wrap, its continuation column is anchored to the
+  current line's leading column plus one indent — no longer
+  falling back to the outer method's block indent, which
+  previously produced "deep orphan" shapes where an inner
+  argument wrapped ~40 columns to the left of the call that
+  opened it.
+- **Boolean chains inside argument lists paren-align each
+  operator.** A `||` or `&&` chain used as a positional
+  argument now emits with each operator on its own line
+  aligned to the argument's start column, rather than
+  packing multiple operators on one continuation line and
+  wrapping inside the last operand's method call.
+
+### Bare `x = value` assignments
+
+- **Bare reassignments (`x = value`, no type on the left)
+  now wrap at `=` just like `Type x = value` declarations
+  do.** When the inline form would exceed 80 chars, the
+  formatter breaks the line at `=` and emits the value on
+  a continuation line indented one level past the
+  statement start. Previously, bare assignments emitted
+  inline unconditionally, silently producing over-limit
+  lines.
+- **Backtrack-on-overflow.** If the inline shape overflows,
+  the formatter backtracks and commits the break-at-`=`
+  shape unconditionally — matching the behavior for
+  variable declarations so a pair of otherwise identical
+  right-hand sides formats the same regardless of whether
+  a type appears on the left.
+
+### Method chains
+
+- **Multi-segment chain wrapping now covers factory,
+  constructor, and instance shapes explicitly.**
+  - **Factory chains** (`SomeFactory.method(args)…`):
+    when the whole chain does not fit inline, the head
+    plus first segment stay on the call line and
+    subsequent segments align under the first segment's
+    `.`. If that shape does not fit, the chain falls
+    back to a paren-indented one-per-line form with all
+    segments on their own line one indent past the
+    receiver's start column, and finally to a block+4
+    one-per-line form.
+  - **Constructor chains** (`new SomeType(args)…`):
+    head plus first segment on the call line, remaining
+    segments dot-aligned under the first segment. Falls
+    back to paren-indent and block+4 forms in the same
+    way.
+  - **Instance chains** (`someInstance.method(args)…`):
+    keep the existing dot-aligned tier when the receiver
+    fits on the call line.
+- **Chain-tail argument wraps re-anchor.** When the final
+  chain segment's argument list itself needs to wrap, the
+  paren-align base is the chain-continuation column, not
+  the outer block indent — keeping the tail argument's
+  wraps contained inside the chain's visual band.
+
+### SQL DDL string concatenation
+
+- **`+`-concatenated string chains starting with a SQL
+  keyword emit one fragment per line.** When the leftmost
+  string operand of a `+` chain begins with one of the
+  common DDL/DML keywords (`CREATE`, `INSERT`, `UPDATE`,
+  `DELETE`, `SELECT`, `ALTER`, `DROP`, `TRUNCATE`, etc.),
+  each subsequent `+ "…"` fragment is placed on its own
+  continuation line. This preserves the hand-authored
+  one-clause-per-line layout that greedy packing
+  previously collapsed into an unreadable single wrapped
+  block.
+
+### Class headers with multiple interfaces
+
+- **`implements A, B, C, …` wraps cleanly when the clause
+  exceeds 80 chars.** The first interface stays on the
+  `implements` line; subsequent interfaces break to their
+  own lines aligned under the first interface's start
+  column. Previously the formatter emitted the whole
+  clause on a single line even when it overflowed.
+
+### Lambda bodies inside method chains
+
+- **Block-body lambdas on a chain-continuation line indent
+  their body under the arrow.** A shape like
+  `.forEach(x -> { body })` sitting at a chain-continuation
+  column now indents body statements to one indent level past
+  that column, with the closing `}` aligned back at the same
+  column. When the chain-continuation column isn't a multiple
+  of 4 (e.g. dot-aligned to a receiver whose name isn't a
+  multiple of 4 characters long), both the closing `}` and the
+  body-statement indent round UP to the nearest 4-space grid
+  boundary so the block stays on the formatter's canonical
+  indent grid. Body statements no longer drop to the outer
+  statement's block indent (which would place them visually to
+  the left of the chain-continuation dots).
+
+### Javadoc `<pre>` blocks
+
+- **`<pre>` block interior preserved verbatim.** Javadoc
+  reflow (which fills paragraph lines to near 80 chars)
+  now recognises both the raw `<pre>` and the HTML-escaped
+  `&lt;pre&gt;` forms (used when `<pre>` sits inside
+  another HTML element and must be escaped). Content
+  between `<pre>` and `</pre>` — including ASCII class
+  diagrams with box-drawing characters and column-aligned
+  layouts — is emitted unchanged.
+
+### Line-comment reflow
+
+- **Balanced fill replaces greedy fill.** When an overlong
+  `//` comment needs to reflow across multiple lines, the
+  content is distributed roughly evenly across the target
+  line count rather than packed to the maximum width on
+  line 1 with a short remainder on line 2. This eliminates
+  the 1-3 word orphan tail that greedy fill produced when
+  total content only slightly exceeded a single line's
+  budget.
+
+### Source preservation
+
+- **Author-authored multi-line argument lists that would
+  overflow at their remapped column now fall through to
+  the wrap engine.** Previously the formatter would echo
+  the source's continuation columns verbatim, producing
+  the same overflow the source already had. Now, when the
+  developer's continuation column would still push a line
+  past 80 chars at the new emission position, the
+  formatter picks its own wrap layout instead of locking
+  the stale column.
+
+### Overflow advisory (`FormatterWarning`)
+
+- **Every wrap site fires a `FormatterWarning` when its
+  terminal shape still overflows 80 chars.** Sites
+  covered: argument list, binary expression, method
+  chain, ternary expression, `=` assignment, variable
+  declarator. The advisory names the wrap site, reports
+  the maximum on-disk line width, and points at the
+  starting line/column of the overflowing construct.
+  `format_file.py` surfaces the advisory to stderr so
+  adopters see a first-class signal that a source-level
+  edit (splitting a literal, renaming a long identifier,
+  restructuring an expression) is required — the
+  formatter cannot resolve it automatically.
+
+### Enum `permits` / type parameters (P5)
+
+- No change; `enum` type parameters and `permits` clauses
+  remain unsupported by the formatter because neither is
+  legal Java (JLS §8.9). Sources with these constructs
+  raise a `NotImplementedError` from the dispatcher.
+
 ## [0.5.3] - 2026-07-07
 
 Adoption-template + formatter release. Closes the
