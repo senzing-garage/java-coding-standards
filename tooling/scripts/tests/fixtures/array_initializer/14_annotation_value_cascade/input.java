@@ -1,6 +1,6 @@
 public class Demo
 {
-    @SuppressWarnings({ "unchecked", "rawtypes", "deprecation", "unused", "removal", "static-access" })
+    @SuppressWarnings({ "unchecked", "deprecation", "unused", "removal", "static-access", "boxing" })
     public void run()
     {
     }

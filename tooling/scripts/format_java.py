@@ -104,7 +104,7 @@ import tree_sitter_java
 from tree_sitter import Language, Node, Parser, Tree
 
 
-__version__: Final[str] = "0.4.3"
+__version__: Final[str] = "0.6.0"
 
 # Tree-sitter Python binding + tree-sitter-java grammar versions
 # this formatter is calibrated against. Kept in sync with the pins
@@ -1324,6 +1324,29 @@ def _emit_extends_implements_p2_p3(
             )
 
 
+def _require_type_list(
+    node: Node, container_name: str
+) -> list[Node]:
+    """Return the named children of `node`'s `type_list` child.
+
+    Shared helper for the three interface-clause emitters
+    (`_emit_extends_interfaces`, `_emit_super_interfaces`,
+    `_emit_super_interfaces_broken`) which all need the same
+    "find the `type_list` child, raise `NotImplementedError` if
+    missing" lookup. `container_name` is the outer node type
+    (e.g. `"super_interfaces"`) used in the error message so
+    the traceback names the actual grammar node that surprised
+    us.
+    """
+    for c in node.named_children:
+        if c.type == "type_list":
+            return list(c.named_children)
+    raise NotImplementedError(
+        f"{container_name} missing 'type_list' child — grammar "
+        "shape unexpected."
+    )
+
+
 def _emit_super_interfaces_broken(
     emitter: Emitter,
     source: bytes,
@@ -1339,17 +1362,9 @@ def _emit_super_interfaces_broken(
     `_emit_extends_implements_p2_p3` when the P3 single-line
     implements clause overflows 80 chars.
     """
-    type_list = None
-    for c in super_interfaces_node.named_children:
-        if c.type == "type_list":
-            type_list = c
-            break
-    if type_list is None:
-        raise NotImplementedError(
-            "super_interfaces missing 'type_list' child — "
-            "grammar shape unexpected."
-        )
-    types = list(type_list.named_children)
+    types = _require_type_list(
+        super_interfaces_node, "super_interfaces"
+    )
     emitter.newline()
     emitter.write(cont_indent)
     emitter.write("implements ")
@@ -6275,17 +6290,7 @@ def _emit_extends_interfaces(
     parent-interface types. Single-line form; the multi-line
     wrap rule from spec B1 ("Class Headers") lands later.
     """
-    type_list = None
-    for c in node.named_children:
-        if c.type == "type_list":
-            type_list = c
-            break
-    if type_list is None:
-        raise NotImplementedError(
-            "extends_interfaces missing 'type_list' child — "
-            "grammar shape unexpected."
-        )
-    types = list(type_list.named_children)
+    types = _require_type_list(node, "extends_interfaces")
     emitter.write("extends ")
     for index, t in enumerate(types):
         if index > 0:
@@ -6329,17 +6334,7 @@ def _emit_super_interfaces(
     (when the implements clause overflows on its own) lands
     later.
     """
-    type_list = None
-    for c in node.named_children:
-        if c.type == "type_list":
-            type_list = c
-            break
-    if type_list is None:
-        raise NotImplementedError(
-            "super_interfaces missing 'type_list' child — grammar "
-            "shape unexpected."
-        )
-    types = list(type_list.named_children)
+    types = _require_type_list(node, "super_interfaces")
     emitter.write("implements ")
     for index, t in enumerate(types):
         if index > 0:
@@ -7576,6 +7571,19 @@ def _push_indent_to_col(
     == 0`. For irregular cases, `extra` is 1-3 spaces and
     inner `_indent`-based continuations will be off by up
     to `extra` cols — an accepted trade-off.
+
+    Edge case: when `target_col <= 4 * emitter._indent` (the
+    target is at or shallower than the current block indent),
+    this helper returns `(0, 0)` and the caller's subsequent
+    `write_indent()` emits at the CURRENT (deeper) indent,
+    not the requested `target_col`. That's a deliberate
+    fall-through — the callers today (arg-list P4 candidates
+    computing `line_start_col + 4`) always pass a `target_col`
+    at or past the current indent because `line_start_col` is
+    itself derived from the current line's leading spaces
+    which are typically at or past the block indent. A future
+    caller with a genuinely-shallower target would need to
+    `pop_indent()` on its own before calling.
     """
     current_indent_col = 4 * emitter._indent
     delta = target_col - current_indent_col

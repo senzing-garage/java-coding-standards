@@ -177,12 +177,16 @@ overflowing).
 - **Block-body lambdas on a chain-continuation line indent
   their body under the arrow.** A shape like
   `.forEach(x -> { body })` sitting at a chain-continuation
-  column now indents body statements to one indent level
-  past that column, with the closing `}` aligned back at
-  the chain-continuation column. Body statements no longer
-  drop to the outer statement's block indent (which would
-  place them visually to the left of the chain-continuation
-  dots).
+  column now indents body statements to one indent level past
+  that column, with the closing `}` aligned back at the same
+  column. When the chain-continuation column isn't a multiple
+  of 4 (e.g. dot-aligned to a receiver whose name isn't a
+  multiple of 4 characters long), both the closing `}` and the
+  body-statement indent round UP to the nearest 4-space grid
+  boundary so the block stays on the formatter's canonical
+  indent grid. Body statements no longer drop to the outer
+  statement's block indent (which would place them visually to
+  the left of the chain-continuation dots).
 
 ### Javadoc `<pre>` blocks
 
