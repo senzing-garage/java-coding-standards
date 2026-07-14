@@ -1530,7 +1530,9 @@ def _emit_class_body_members(
         return
     emitter.push_indent()
     prev: Node | None = None
-    for member in members:
+    index = 0
+    while index < len(members):
+        member = members[index]
         if prev is not None:
             # If the source had at least one blank line between
             # prev's last row and this member's first row,
@@ -1539,8 +1541,23 @@ def _emit_class_body_members(
                 emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, member)
+        # 0.6.1: spec C6 same-row side-comment attachment. When
+        # the next sibling is a `//` or single-row `/* */`
+        # comment that originally sat on the same source row as
+        # this member's closing `;` (field) or `}` (method), attach
+        # it inline with two-space separation instead of letting it
+        # emit as its own class-body member on a new line.
+        # Method-body iteration (`_emit_indented_member_list`,
+        # `_emit_block`) has always done this; pre-0.6.1 the
+        # class-body iterator was missing the call, so a
+        # `public int x = 5; // desc` at class level split to
+        # `public int x = 5;\n    // desc`.
+        index, member = _attach_trailing_side_comments(
+            emitter, source, members, index, member
+        )
         emitter.newline()
         prev = member
+        index += 1
     emitter.pop_indent()
 
 
@@ -5052,12 +5069,32 @@ def _emit_try_statement(
 def _emit_catch_clause(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `catch (PARAM) { ... }`.
+    """Emit `catch (PARAM) { ... }` with multi-catch wrap.
 
-    Same-line-brace form via `_emit_block`. The single
-    `catch_formal_parameter` child is dispatched directly
-    (carrying any multi-catch `|`-separated types via
-    `_emit_catch_type`).
+    Single-type catch (`catch (Ex e)`) emits inline
+    unconditionally.
+
+    Multi-type catch (`catch (A | B | C e)`) tries two shapes:
+
+      - Priority 1 — inline: `catch (A | B | C e) {`. Committed
+        when the whole header fits within 80 chars including
+        the trailing ` {` that opens the body block.
+      - Priority 2 — paren-aligned one-type-per-line. First
+        type stays on the `catch (` line. Each subsequent `|
+        Type` breaks to its own continuation line with `|`
+        aligned under the column right after `(`. The
+        parameter name and closing `) ` sit on the final type's
+        line. Example:
+
+            } catch (ClassNotFoundException
+                     | NoSuchMethodException
+                     | InvocationTargetException
+                     | IllegalAccessException e) {
+
+    Pre-0.6.1 the catch_type emitter had no wrap logic and
+    long multi-catch clauses (e.g. `WrapperMain.java:66` with
+    four exception types) collapsed to a single 125-char
+    line with no `FormatterWarning`.
     """
     body = node.child_by_field_name("body")
     if body is None or body.type != "block":
@@ -5075,9 +5112,78 @@ def _emit_catch_clause(
             "catch_clause missing catch_formal_parameter — "
             "grammar shape unexpected."
         )
+
+    # Look for a multi-type catch. Refuse annotations /
+    # modifiers on the parameter here (same rule as
+    # `_emit_catch_formal_parameter`); reserved for a future
+    # annotation-aware pass.
+    catch_type: Node | None = None
+    for child in cfp.named_children:
+        if child.type == "modifiers":
+            raise NotImplementedError(
+                "catch_formal_parameter with modifiers or "
+                "annotations is not yet supported."
+            )
+        if child.type == "catch_type":
+            catch_type = child
+    name_node = cfp.child_by_field_name("name")
+    types: list[Node] = []
+    if catch_type is not None:
+        types = [c for c in catch_type.children if c.is_named]
+
+    if catch_type is None or name_node is None or len(types) < 2:
+        # Single-type catch (or grammar shape the wrap engine
+        # doesn't handle) — emit inline via the standard
+        # dispatch path. Pre-existing behavior preserved.
+        emitter.write("catch (")
+        _emit_node(emitter, source, cfp)
+        emitter.write(") ")
+        _emit_node(emitter, source, body)
+        return
+
+    # Multi-type catch cascade.
+    cascade_start = emitter.line_count
+    # Priority 1 — inline: `catch (A | B | C e) {`. The `+ 1`
+    # accounts for the `{` that `_emit_block` writes on the
+    # current line right after `) `. Wider tail context (e.g.
+    # a trailing `finally` on the same source row — rare) is
+    # already covered by `emitter.tail_reserve`.
+    p1_saved = emitter.snapshot()
     emitter.write("catch (")
-    _emit_node(emitter, source, cfp)
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.write(" | ")
+        _emit_node(emitter, source, t)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
     emitter.write(") ")
+    p1_fits = (
+        emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+    )
+    if p1_fits:
+        _emit_node(emitter, source, body)
+        return
+    emitter.restore(p1_saved)
+
+    # Priority 2 — paren-aligned one-type-per-line.
+    emitter.write("catch (")
+    paren_align_col = emitter.column
+    for index, t in enumerate(types):
+        if index > 0:
+            emitter.newline()
+            emitter.write(" " * paren_align_col)
+            emitter.write("| ")
+        _emit_node(emitter, source, t)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
+    emitter.write(") ")
+    # Spec C1 emit-and-warn: if a single type name is itself
+    # too long to fit at the paren-aligned column, the C1
+    # advisory fires here so the developer sees a
+    # first-class signal to shorten the type name.
+    _fire_wrap_overflow_advisory(
+        emitter, node, cascade_start, "multi-catch"
+    )
     _emit_node(emitter, source, body)
 
 
@@ -6769,14 +6875,22 @@ def _emit_interface_body_members(
         return
     emitter.push_indent()
     prev: Node | None = None
-    for member in members:
+    index = 0
+    while index < len(members):
+        member = members[index]
         if prev is not None:
             if member.start_point[0] - prev.end_point[0] > 1:
                 emitter.newline()
         emitter.write_indent()
         _emit_node(emitter, source, member)
+        # 0.6.1: same-row side-comment attachment (see
+        # `_emit_class_body_members` for rationale).
+        index, member = _attach_trailing_side_comments(
+            emitter, source, members, index, member
+        )
         emitter.newline()
         prev = member
+        index += 1
     emitter.pop_indent()
 
 
@@ -7807,6 +7921,28 @@ def _arg_list_takes_source_preserve_path(
     return col + len(first_segment) <= effective_max
 
 
+def _is_block_body_lambda(arg_node: Node) -> bool:
+    """Return True when `arg_node` is a `lambda_expression`
+    whose body is a `block` (`(params) -> { … }`).
+
+    Used by `_emit_argument_list`'s single-arg cascade (0.6.1
+    item A) to detect the idiomatic Java lambda-arg pattern.
+    Block-body lambdas own their own indent decisions inside
+    the body; the arg-list's fit check for such a lambda-arg
+    should look only at the CALL LINE and CLOSING LINE, not
+    at body-statement widths (which the body's own wrap
+    engine controls).
+
+    Expression-body lambdas (`x -> x + 1`) emit single-line
+    and don't need this special-case handling — they're
+    covered by the standard P1 fit check.
+    """
+    if arg_node.type != "lambda_expression":
+        return False
+    body = arg_node.child_by_field_name("body")
+    return body is not None and body.type == "block"
+
+
 def _emit_argument_list(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -8419,8 +8555,58 @@ def _emit_argument_list(
     # which made the decision flip between formatter passes.
     cascade_start = emitter.line_count
     if len(args) == 1:
-        # Single-arg cascade uses try_priorities (both P4
-        # candidates are width-only): P1 inline → P4 block+4
+        # 0.6.1 fix (item A): when the single arg is a
+        # block-body lambda (`.method(() -> { body })`), the
+        # lambda body's own line widths are the body's
+        # responsibility — they're wrapped by the block's own
+        # emission logic, not by the enclosing arg-list. But
+        # `try_priorities`' default fit check computes
+        # `last_lines_max_width` across EVERY emitted line
+        # including the body, so a source-code line inside
+        # the lambda body that exceeds 80 chars (already a
+        # pre-existing overflow) rejects P1 and cascades to
+        # P4 (break before the arrow). P4 doesn't fix the
+        # body-line overflow — it just adds `\n<indent>()
+        # -> {` before the lambda, pushing every body line
+        # +4 cols deeper (which typically creates NEW
+        # overflows and cascading advisories). Pre-0.6.1
+        # sites: `sz-sdk-java-grpc` had 22 idiomatic
+        # `this.performTest(() -> { … })` calls rewritten
+        # to the P4 shape purely because unrelated body
+        # lines were >80 chars.
+        #
+        # For block-body-lambda single-arg calls, run a
+        # manual cascade: try P1 with a fit check that
+        # excludes the lambda body's lines. Only the CALL
+        # LINE (up through `() -> {`) and the CLOSING LINE
+        # (`})`) need to fit at the enclosing widths. Body
+        # lines are the body's own concern.
+        if _is_block_body_lambda(args[0]):
+            saved = emitter.snapshot()
+            emit_p1()
+            effective_max = _MAX_LINE - emitter.tail_reserve
+            # The call/opener line — first finalized line since
+            # the P1 emit began, or the in-progress line if
+            # nothing was finalized yet (defensive; the block
+            # body always emits at least one newline).
+            opener_ok = True
+            if saved[0] < len(emitter._lines):
+                opener_ok = (
+                    len(emitter._lines[saved[0]]) <= _MAX_LINE
+                )
+            # The closer line — the in-progress line at the
+            # end of P1 emit, containing `})` plus tail
+            # context the parent will append.
+            closer_ok = (
+                emitter.column + emitter.tail_reserve <= _MAX_LINE
+            )
+            if opener_ok and closer_ok:
+                _fire_wrap_overflow_advisory(
+                    emitter, node, cascade_start, "argument list"
+                )
+                return
+            emitter.restore(saved)
+        # Standard single-arg cascade: P1 inline → P4 block+4
         # → P4 paren-defer (last-committed).
         candidates: list[Callable[[], None]] = [
             emit_p1,
