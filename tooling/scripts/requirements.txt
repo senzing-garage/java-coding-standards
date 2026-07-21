@@ -13,7 +13,7 @@
 # tree-sitter Python binding. 0.25.2 (Apr 2025) is the current
 # stable line. Pins like this also constrain Dependabot — set the
 # range carefully when bumping.
-tree-sitter==0.25.2
+tree-sitter==0.26.0
 
 # tree-sitter-java grammar. 0.23.5 (Dec 2024) is the current
 # stable. The formatter dispatches on grammar node names; the
