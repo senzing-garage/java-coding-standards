@@ -110,6 +110,65 @@ deeper and created new overflows. `sz-sdk-java-grpc` had 22
 idiomatic `this.performTest(() -> { … })` calls rewritten this
 way by 0.6.0.
 
+### Pack-all-or-nothing for method chains
+
+Removed the 0.6.0 "P1F" factory-chain tier, which packed receiver +
+factory + the FIRST CHAIN SEGMENT onto line 1 whenever the receiver
+was a PascalCase identifier and the chain had three or more
+segments. The all-on-one-line shape is only available when the
+WHOLE chain fits; once it does not, the break belongs at the first
+chain continuation dot, not wherever 80 characters ran out. The old
+tier also made the same idiom render two different ways depending
+on whether segment 1 happened to fit:
+
+```java
+        this.env = SzCoreEnvironment.newBuilder().instanceName(x)
+                                                 .settings(y);
+```
+
+now:
+
+```java
+        this.env = SzCoreEnvironment.newBuilder()
+                                    .instanceName(x)
+                                    .settings(y);
+```
+
+Chains fall straight through to P2F. The same-method greedy tier
+(`sb.append(a).append(b)`) is unaffected — that density is
+deliberate. Across the four trial trees this shape drops from 73
+sites to 24, and the 24 remaining are all same-method chains.
+
+### Arguments that wrap get their own line
+
+Neither priority 1 nor priority 2 previously rejected a shape where
+an argument was packed onto the call line and then wrapped
+internally. Every emitted line stayed under the cap, so the width
+check passed and a partial break committed — the layout the
+"Anti-pattern" section of the standards forbids:
+
+```java
+        assertThrows(IllegalStateException.class, () -> mapB.put("key2",
+                                                                "val2"));
+```
+
+Both tiers now reject an ordinary argument that had to wrap, which
+leaves it room to render whole one line down:
+
+```java
+        assertThrows(IllegalStateException.class,
+                     () -> mapB.put("key2", "val2"));
+```
+
+Arguments that inherently own multiple rows — block-bodied lambdas
+and text blocks — are exempt, so `performTest(() -> { … })` keeps
+priority 1. The exemption tests only structural properties of the
+node and deliberately never consults the source layout: doing so
+makes the answer depend on whether an earlier pass already wrapped
+the argument, which oscillated
+`arguments(Rectangle.class, Set.of(…), …)` between two shapes on
+alternate passes.
+
 ### `switch` brace placement
 
 `switch (value)` now keeps its opening brace on the same line, as
@@ -181,7 +240,7 @@ same commit. `requirements.txt` now says so in a comment.
   identical before and after, so no formatting decision in
   this release alters program meaning.
 - Corpus idempotency improved from 25 non-idempotent files to
-  14, with **no new regressions**. The 14 remaining are
+  12, with **no new regressions**. The 12 remaining are
   pre-existing and unrelated to these rules.
 - Lines over 80 characters across the four trees moved from
   1598 to 1605. The seven additions are the cost of rule 1:

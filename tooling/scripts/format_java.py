@@ -8358,7 +8358,37 @@ def _emit_argument_list(
         else:
             _emit_node(emitter, source, arg)
 
+    # 0.6.1: set by emit_p1 when an argument's emission introduced
+    # newlines and that argument is NOT one that legitimately owns
+    # multiple rows. A block-bodied lambda or a text block spans
+    # rows by nature, and P1 is the right shape for them — that is
+    # what the single-arg lambda fix relies on. But an ordinary
+    # argument that had to WRAP means P1 is producing the partial
+    # break the standards' "Anti-pattern" section forbids: some
+    # arguments on the call line, the rest beneath at a different
+    # column.
+    p1_illegit_wrap = [False]
+
+    def _arg_owns_its_rows(arg: Node) -> bool:
+        """True when `arg` spanning rows is inherent, not a wrap.
+
+        Deliberately tests only STRUCTURAL properties of the node —
+        never `_node_spans_multiple_rows`, which reads the source
+        layout. Using the source here makes the answer depend on
+        whether a previous pass already wrapped the argument: pass 1
+        sees a single-row source and rejects the packed shape, pass 2
+        sees the wrapped output, treats it as inherently multi-row,
+        and packs it again. That oscillated
+        `arguments(Rectangle.class, Set.of(...), ...)` between two
+        shapes on alternate passes.
+        """
+        return (
+            _is_block_body_lambda(arg)
+            or arg.type == "text_block"
+        )
+
     def emit_p1() -> None:
+        p1_illegit_wrap[0] = False
         emitter.write("(")
         if single_arg_binary:
             arg_col = emitter.column
@@ -8391,6 +8421,8 @@ def _emit_argument_list(
                 prev_arg_multi_row = (
                     emitter.line_count > operand_start
                 )
+                if prev_arg_multi_row and not _arg_owns_its_rows(arg):
+                    p1_illegit_wrap[0] = True
         emitter.write(")")
 
     def emit_p4_single_arg_block_indent() -> None:
@@ -8586,7 +8618,18 @@ def _emit_argument_list(
             # `Emitter._arg_list_p4_fired`.
             arg_wrapped_via_p4 = emitter._arg_list_p4_fired
             emitter._arg_list_p4_fired = prev_p4 or arg_wrapped_via_p4
-            if not widths_ok or arg_wrapped_via_p4:
+            # 0.6.1: same reasoning as P1's `p1_illegit_wrap`. Packing
+            # this arg onto the call line "fits" only because the arg
+            # itself wrapped internally — every emitted line is under
+            # the cap, so the width check passes and P2 commits a
+            # partial break. Break before the arg instead, which
+            # usually leaves it room to render whole. Arguments that
+            # inherently own multiple rows are exempt.
+            arg_illegit_wrap = (
+                emitter.line_count > operand_start
+                and not _arg_owns_its_rows(arg)
+            )
+            if not widths_ok or arg_wrapped_via_p4 or arg_illegit_wrap:
                 emitter.restore(saved)
                 emitter._arg_list_p4_fired = prev_p4
                 emitter.write(",")
@@ -8868,29 +8911,31 @@ def _emit_argument_list(
         emitter._arg_list_p4_fired = False
         emit_p1()
         p1_p4_fired = emitter._arg_list_p4_fired
-        # 0.6.1 nested-call wrap: in an embedded call, also reject P1
-        # when it emitted multi-row at all. P1's item-8 invariant lets
-        # an argument wrap internally and then breaks before the
-        # NEXT argument, which is exactly the mixed shape the
-        # standards' "Anti-pattern" section forbids — some arguments
-        # packed on the call line, the rest at another column:
+        # 0.6.1: reject P1 when an ordinary argument had to WRAP.
+        # P1's item-8 invariant lets an argument wrap internally and
+        # then breaks before the NEXT argument, producing exactly the
+        # partial break the standards' "Anti-pattern" section forbids
+        # — some arguments on the call line, the rest beneath at a
+        # different column:
         #
-        #     builder(reportCode, statistic.principle(principle)
-        #                                  .matchKey(matchKey),
-        #             source1, source2, entityId)
+        #     assertThrows(IllegalStateException.class, () -> mapB.put("k",
+        #                                                             "v"));
         #
-        # Before rule 2, P2 absorbed these; with P2 skipped they fall
-        # to P1 instead. Rejecting sends them to P3, which keeps every
-        # argument in one column and (here) the chain intact on one
-        # line. Scoped to embedded calls because that is where 0.6.1
-        # already owns the shape.
-        p1_multi_row = emitter.line_count > initial[0]
+        # Rejecting sends it to P2, which puts each argument in one
+        # column and leaves the wrapped argument room to fit whole:
+        #
+        #     assertThrows(IllegalStateException.class,
+        #                  () -> mapB.put("k", "v"));
+        #
+        # Arguments that legitimately own multiple rows (block-bodied
+        # lambdas, text blocks) do NOT trip this — P1 is the correct
+        # shape for `performTest(() -> { … })` and rejecting it there
+        # would undo the single-arg lambda fix. `_arg_owns_its_rows`
+        # draws that line.
         if (
             emitter.last_lines_max_width(initial[0]) <= effective_max
             and not p1_p4_fired
-            and not (
-                p1_multi_row and _is_nested_or_chained_call(node)
-            )
+            and not p1_illegit_wrap[0]
         ):
             emitter._arg_list_p4_fired = prev_p4 or p1_p4_fired
             _fire_wrap_overflow_advisory(
@@ -8987,61 +9032,6 @@ def _collect_method_chain(
         current = current.child_by_field_name("object")
     segments.reverse()
     return current, segments
-
-
-def _chain_receiver_is_factory(
-    source: bytes, head: Node | None
-) -> bool:
-    """Return True when `head` is a PascalCase identifier — the
-    factory-pattern receiver per Q-CHAIN-3.
-
-    Under the 0.6.0 method-chain cascade, chains split into
-    two shapes:
-
-    - **Factory** — `SomeClass.method(...)...`. Leftmost
-      identifier starts with an uppercase letter AND contains
-      at least one lowercase letter. Under this shape the
-      first `method_invocation` segment is the "factory
-      method"; the P1F candidate keeps head + factory +
-      first_chain on line 1 and aligns subsequent chains to
-      the FIRST CHAIN's `.` (segments[1]).
-    - **Instance chain** — `someInstance.method(...)...`
-      (camelCase) OR `SOME_CONSTANT.method()` (all uppercase +
-      underscores; typically a `static final` singleton).
-      Leftmost identifier IS the receiver; the first segment
-      is the first chain method. Existing `emit_p2` already
-      produces this shape.
-    - **Constructor** — head is an `object_creation_expression`
-      (`new SomeClass(...)...`). Handled by the C cascade —
-      structurally same as instance chain for P1C purposes
-      (head + first_chain on line 1).
-
-    Returns True only for the factory shape. Instance chains
-    and constructors return False (they use the existing
-    head + first_chain shape).
-
-    Rationale for the heuristic (Q-CHAIN-3): the AST can't
-    semantically distinguish `SomeClass.method(x)` (static
-    factory) from `someInstance.method(x)` (instance method) —
-    both parse as `method_invocation` with an identifier
-    `object`. Naming convention is the reliable signal in Java
-    codebases that follow standard style (classes start with
-    uppercase, variables with lowercase). SCREAMING_SNAKE_CASE
-    is treated as instance despite the uppercase because it's
-    conventionally a `static final` constant reference, not a
-    class name.
-    """
-    if head is None or head.type != "identifier":
-        return False
-    text = _node_source_text(source, head)
-    if not text:
-        return False
-    # PascalCase: first char uppercase, contains at least one
-    # lowercase char. Excludes SCREAMING_SNAKE_CASE (all
-    # uppercase / underscores / digits).
-    if not text[0].isupper():
-        return False
-    return any(c.islower() for c in text)
 
 
 def _is_method_chain_inner(node: Node) -> bool:
@@ -9552,67 +9542,6 @@ def _emit_method_chain_wrapped(
             emitter.write(".")
             emit_seg_track_wrap(seg)
 
-    # 0.6.0 P1F Q-CHAIN-4 backoff signal — set to True when any
-    # segment's emit inside `emit_p1f_factory` introduced
-    # newlines (its args had to wrap, or it contained a nested
-    # multi-row construct). Consulted at the try_priorities
-    # commit-check to reject P1F even if widths fit —
-    # Q-CHAIN-4 says "back off to a shallower tier when a
-    # chain method's own args wrap." The shape produced when
-    # P1F emits but a chain method wraps mid-args is
-    # visually confused (deep chain-align col AND deep args
-    # col mixed) — cleaner to fall through to P2F.
-    p1f_segment_wrapped = [False]
-
-    def emit_p1f_factory() -> None:
-        # 0.6.0 P1F — factory-chain "deep dot" candidate.
-        # Applies only when `head` is a PascalCase identifier
-        # (Q-CHAIN-3 factory receiver) AND the chain has at
-        # least THREE segments (factory + first_chain + at
-        # least one more). Layout:
-        #
-        #     head.factoryMethod(args).firstChain(args)
-        #                             .chain2(args)
-        #                             .chain3(args)
-        #
-        # Subsequent chains align to the FIRST CHAIN'S `.`
-        # (segments[1]), NOT to the factory's `.` (segments[0]).
-        # This gives the "factory + first-chain" impression
-        # on line 1 that the P2F candidate below would split
-        # across two lines.
-        #
-        # Requires at least 3 segments because with only 2
-        # (factory + one chain) there are no "subsequent
-        # chains" to align — the wrap decision has nothing
-        # to place, so the shape collapses to P1 (if the
-        # whole thing fits inline) or P2F (if it doesn't).
-        assert head is not None, (
-            "emit_p1f_factory requires a non-None factory head; "
-            "call site gates on this."
-        )
-        p1f_segment_wrapped[0] = False
-
-        def emit_seg_track_wrap(seg: Node) -> None:
-            before = emitter.line_count
-            emit_segment(seg)
-            if emitter.line_count > before:
-                p1f_segment_wrapped[0] = True
-
-        _emit_node(emitter, source, head)
-        emitter.write(".")
-        emit_seg_track_wrap(segments[0])
-        # After factoryMethod's args, emit `.firstChain(...)`.
-        # Capture the `.` column BEFORE writing the dot so
-        # subsequent chains align to firstChain's `.` column.
-        chain_align_col = emitter.column
-        emitter.write(".")
-        emit_seg_track_wrap(segments[1])
-        for seg in segments[2:]:
-            emitter.newline()
-            emitter.write(" " * chain_align_col)
-            emitter.write(".")
-            emit_seg_track_wrap(seg)
-
     def emit_p3() -> None:
         if head is not None:
             _emit_node(emitter, source, head)
@@ -9745,33 +9674,32 @@ def _emit_method_chain_wrapped(
             return
         emitter.restore(greedy_saved)
 
-    # 0.6.0 P1F — factory-chain "deep dot" candidate. Tried
-    # BEFORE the standard P2 (= scope-doc P2F) when the chain
-    # receiver is a PascalCase identifier (Q-CHAIN-3 factory
-    # heuristic) AND the chain has at least 3 segments so
-    # there is a chain-tail to align. If P1F fits, we get
-    # the tighter `head.factory(a).chain1(b)` on line 1 with
-    # subsequent chains aligned to chain1's `.`. If P1F
-    # overflows (typically because factory + first_chain +
-    # their combined args don't fit on line 1), fall through
-    # to P2F (current `emit_p2`) which puts only head +
-    # factory on line 1.
-    if (
-        not chain_is_sole_arg
-        and head is not None
-        and len(segments) >= 3
-        and _chain_receiver_is_factory(source, head)
-    ):
-        p1f_saved = emitter.snapshot()
-        emit_p1f_factory()
-        p1f_fits = (
-            emitter.last_lines_max_width(p1f_saved[0])
-            <= effective_max
-            and not p1f_segment_wrapped[0]
-        )
-        if p1f_fits:
-            return
-        emitter.restore(p1f_saved)
+    # 0.6.1 removed the 0.6.0 "P1F" factory-chain tier, which sat
+    # here and packed receiver + factory + FIRST CHAIN onto line 1
+    # (`Factory.make(a).step1(b)` with `.step2(c)` aligned under
+    # `.step1`'s dot) whenever the receiver was a PascalCase
+    # identifier and the chain had 3+ segments.
+    #
+    # That violates the pack-all-or-nothing principle: the
+    # all-on-one-line shape is only available when the WHOLE chain
+    # fits. Once it does not, the correct break point is the first
+    # chain continuation dot — not "as many segments as happen to
+    # fit". P1F produced a line whose content was determined purely
+    # by where 80 characters ran out, which is also why the same
+    # idiom rendered two ways depending on whether segment 1 fit:
+    #
+    #     this.env = SzCoreEnvironment.newBuilder().instanceName(x)
+    #                                              .settings(y)
+    #
+    # rather than the canonical form the source already had:
+    #
+    #     this.env = SzCoreEnvironment.newBuilder()
+    #                                 .instanceName(x)
+    #                                 .settings(y)
+    #
+    # Falling straight through to P2F (`emit_p2`: receiver +
+    # factory on line 1, every remaining segment one per line at
+    # the first dot's column) restores that.
 
     # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
     # cascade. Fires when the whole chain is wrapped in a
