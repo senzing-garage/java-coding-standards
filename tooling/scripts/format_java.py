@@ -7942,6 +7942,39 @@ def _arg_list_takes_source_preserve_path(
     if _is_nested_or_chained_call(node):
         return False
 
+    # 0.6.1 — decline when the source shows an argument that WRAPPED.
+    #
+    # The "if an argument breaks, the argument list breaks" rule lives
+    # in the wrap engine's P1/P2 commit checks, but source preservation
+    # is consulted FIRST and short-circuits the whole cascade. Without
+    # this, an arg list authored (or left by an older release) in the
+    # packed-then-wrapped shape is echoed straight back, so the
+    # formatter emits the exact layout the standards document
+    # publishes under "NOT PRODUCED" — and two semantically identical
+    # inputs format differently depending only on how they were typed:
+    #
+    #     // authored on one row -> the rule applies
+    #     outerMethod(firstArgument,
+    #                 (SomeCastType) innerCall(alphaArg, betaArg, gm));
+    #
+    #     // authored pre-wrapped -> preservation echoed it back
+    #     outerMethod(firstArgument, (SomeCastType) innerCall(alpha,
+    #                                                         beta, gm));
+    #
+    # Declining here closes the class rather than chasing individual
+    # parent shapes — `cast_expression` was the escape hatch that
+    # surfaced it, and parenthesized and ternary have the same hole.
+    # `_arg_owns_its_rows` keeps the constructs that legitimately span
+    # rows — block-bodied lambdas, text blocks, anonymous classes — on
+    # the preservation path, which is what protects the idiomatic
+    # `execute(new Runnable() { … })` and `performTest(() -> { … })`
+    # shapes.
+    if any(
+        _node_spans_multiple_rows(a) and not _arg_owns_its_rows(a)
+        for a in arg_nodes
+    ):
+        return False
+
     src_text = _node_source_text(source, node)
     effective_max = _MAX_LINE - emitter.tail_reserve
 
@@ -8031,6 +8064,32 @@ def _is_anonymous_class(node: Node) -> bool:
     if node.type != "object_creation_expression":
         return False
     return any(c.type == "class_body" for c in node.named_children)
+
+
+def _arg_owns_its_rows(arg: Node) -> bool:
+    """True when `arg` spanning rows is inherent, not a wrap.
+
+    Block-bodied lambdas, text blocks and anonymous classes occupy
+    several rows by their nature; every other construct occupies
+    several rows only because something wrapped it. That distinction
+    is what the 0.6.1 "if an argument breaks, the argument list
+    breaks" rule keys on.
+
+    Deliberately tests only STRUCTURAL properties of the node —
+    never `_node_spans_multiple_rows`, which reads the source
+    layout. Using the source makes the answer depend on whether a
+    previous pass already wrapped the argument: pass 1 sees a
+    single-row source and rejects the packed shape, pass 2 sees the
+    wrapped output, treats it as inherently multi-row, and packs it
+    again. That oscillated
+    `arguments(Rectangle.class, Set.of(...), ...)` between two
+    shapes on alternate passes.
+    """
+    return (
+        _is_block_body_lambda(arg)
+        or arg.type == "text_block"
+        or _is_anonymous_class(arg)
+    )
 
 
 def _is_nested_or_chained_call(arg_list: Node) -> bool:
@@ -8203,6 +8262,26 @@ def _emit_argument_list(
         else:
             target_col = emitter.indent_level * 4 + 4
         lines = src_text.split("\n")
+
+        def _shift(rows: list[str], delta: int) -> list[str]:
+            """Shift every continuation row by `delta` columns.
+
+            The first row is untouched — it continues the current
+            in-progress line, whose column the caller already set.
+            Internal alignment (paren-aligned operators, dot-aligned
+            chains inside the preserved block) survives because every
+            row moves by the same amount.
+            """
+            out: list[str] = [rows[0]]
+            for row in rows[1:]:
+                stripped = row.lstrip()
+                if not stripped:
+                    out.append("")
+                    continue
+                leading = len(row) - len(stripped)
+                out.append(" " * max(0, leading + delta) + stripped)
+            return out
+
         # Find the source's first non-empty continuation col.
         source_first_cont_col = None
         for line in lines[1:]:
@@ -8214,69 +8293,54 @@ def _emit_argument_list(
         if source_first_cont_col is None:
             # No continuation lines to shift.
             final_lines = lines
-        elif source_first_cont_col >= target_col:
-            # Source is already at or past the canonical target —
-            # developer chose a deeper indent (e.g. wrap-engine
-            # P3 at the inner call's paren_align_col, or a
-            # manually-placed continuation at a deeper col).
-            # Respect that choice; do NOT pull it shallower.
-            # This preserves idempotency: when first-pass output
-            # places continuations at a column deeper than this
-            # rule's target, subsequent passes leave them
-            # untouched.
-            #
-            # 0.6.0 P0 spike (Q1c): when the developer-chosen
-            # deeper indent still overflows 80 chars at the
-            # target emission position, decline preservation and
-            # fall through to the wrap engine. The wrap engine's
-            # paren-aligned candidate (P1 / P2-greedy / P4)
-            # emits at the CORRECT enclosing paren column;
-            # source-preserving an overflowing developer-authored
-            # column locks the wrong shape indefinitely because
-            # per-pass width math never rewrites it. Idempotency
-            # holds because wrap-engine output at column X
-            # re-enters this branch on the next pass with
-            # `source_first_cont_col = X`; if wrap-engine's own
-            # output overflows (long literals that can't be
-            # split), we fall through again and re-emit the same
-            # shape.
-            prospective_max = _max_source_preserve_line_width(
-                lines, emitter.column, emitter.tail_reserve,
-            )
-            if prospective_max > _MAX_LINE:
-                # Signal fall-through to wrap engine.
-                final_lines = None
-            else:
-                final_lines = lines
         else:
-            # Shift all continuation lines by the same delta so
-            # internal alignment (paren-aligned operators, dot-
-            # aligned chains within the source-preserved block)
-            # is preserved relative to the new anchor.
-            delta = target_col - source_first_cont_col
-            shifted: list[str] = [lines[0]]
-            for line in lines[1:]:
-                stripped = line.lstrip()
-                if not stripped:
-                    shifted.append("")
-                    continue
-                leading = len(line) - len(stripped)
-                new_leading = max(0, leading + delta)
-                shifted.append(" " * new_leading + stripped)
-            # 0.5.2 F — shift-up-overflow guard. When the
-            # shift makes any shifted line exceed 80 chars
-            # (i.e. the source's shallower indent had the
-            # content fitting under 80, but the target
-            # column shift pushes it past), decline
-            # source-preserve entirely so the wrap engine
-            # can pick a layout that fits. Without this
-            # guard, the formatter mechanically shifts
-            # a fitting shallow-indent source into an
-            # overflowing shape and only reports it via
-            # the post-emit advisory — leaving an
-            # unnecessary LineLength violation that the
-            # wrap engine (P1 → P2-greedy → P4) would have
-            # avoided by choosing a fitting candidate.
+            # Shift every continuation line by one delta so internal
+            # alignment (paren-aligned operators, dot-aligned chains
+            # inside the preserved block) survives the move.
+            #
+            # The delta is the larger of two candidates:
+            #
+            #  - RE-ANCHOR: the construct's own displacement,
+            #    `emit column - source column`. The author's
+            #    continuation column was chosen relative to where the
+            #    construct sat in the source, so preserving that
+            #    relationship is what keeps a deliberately-deeper
+            #    indent meaningful. Preserving the ABSOLUTE column
+            #    instead leaves it aligned with nothing once the
+            #    statement is re-indented:
+            #
+            #        // source: statement col 20, paren-align 33
+            #        // emitted at col 16 -> paren-align is now 29,
+            #        // but the continuation kept its absolute 33
+            #        assertEquals(customersConfig, configJson,
+            #                         "Unexpected definition.");
+            #
+            #  - TO-TARGET: whatever lands the first continuation on
+            #    the canonical target column.
+            #
+            # Taking the max makes TO-TARGET a floor: a deeper author
+            # indent is respected and merely re-anchored, but a large
+            # negative displacement can never drag continuations left
+            # of the canonical column (and never to column 0, which an
+            # unfloored re-anchor did produce).
+            #
+            # Idempotency holds by construction: on a later pass the
+            # source column IS the emit column, so RE-ANCHOR is 0 and
+            # TO-TARGET is <= 0 for an already-deep continuation —
+            # the max is 0 and nothing moves.
+            delta = max(
+                emitter.column - node.start_point[1],
+                target_col - source_first_cont_col,
+            )
+            shifted = _shift(lines, delta)
+            # 0.5.2 F — shift-overflow guard. When the shift pushes a
+            # line past 80 (the source's indent had it fitting, the
+            # new column does not), decline source-preserve entirely
+            # so the wrap engine can pick a layout that fits. Without
+            # this the formatter mechanically shifts a fitting source
+            # into an overflowing shape and only reports it via the
+            # post-emit advisory, leaving a LineLength violation the
+            # wrap engine would have avoided.
             shifted_max = _max_source_preserve_line_width(
                 shifted, emitter.column, emitter.tail_reserve,
             )
@@ -8393,25 +8457,6 @@ def _emit_argument_list(
     # arguments on the call line, the rest beneath at a different
     # column.
     p1_illegit_wrap = [False]
-
-    def _arg_owns_its_rows(arg: Node) -> bool:
-        """True when `arg` spanning rows is inherent, not a wrap.
-
-        Deliberately tests only STRUCTURAL properties of the node —
-        never `_node_spans_multiple_rows`, which reads the source
-        layout. Using the source here makes the answer depend on
-        whether a previous pass already wrapped the argument: pass 1
-        sees a single-row source and rejects the packed shape, pass 2
-        sees the wrapped output, treats it as inherently multi-row,
-        and packs it again. That oscillated
-        `arguments(Rectangle.class, Set.of(...), ...)` between two
-        shapes on alternate passes.
-        """
-        return (
-            _is_block_body_lambda(arg)
-            or arg.type == "text_block"
-            or _is_anonymous_class(arg)
-        )
 
     def emit_p1() -> None:
         p1_illegit_wrap[0] = False
@@ -9220,8 +9265,22 @@ def _emit_method_chain_wrapped(
     #
     # Suppressing the hung tiers there would force a needless
     # one-per-line rewrite of a perfectly readable chain.
+    # 0.6.1 review finding 8: additionally require `head is None`.
+    # The suppression exists for chains rule 1 broke out because their
+    # RECEIVER is itself a wrapping call, so the hung/dot-aligned tiers
+    # anchor to a column derived from that call's arguments. When the
+    # chain has an explicit receiver that is a bare identifier, the
+    # dot-aligned two-line form is both readable and compact, and
+    # suppressing it turned a very common test idiom into four lines
+    # for no benefit:
+    #
+    #     assertTrue(someReceiverObject.methodOne(alphaArgument)
+    #                                  .methodTwo(betaArgument));
+    #
+    # Matches the `head is None` condition `p3_col` already uses, so
+    # the tail anchor and the tier gate now key on the same shape.
     chain_is_sole_arg = False
-    if chain_is_positional_arg:
+    if chain_is_positional_arg and head is None:
         sibling_args = [
             c for c in chain_parent.children
             if c.is_named

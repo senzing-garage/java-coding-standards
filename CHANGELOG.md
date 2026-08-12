@@ -169,6 +169,38 @@ the argument, which oscillated
 `arguments(Rectangle.class, Set.of(…), …)` between two shapes on
 alternate passes.
 
+### Source preservation re-anchors, and yields to the break rule
+
+Two fixes to the verbatim source-preservation path.
+
+Preserved continuation columns are now **re-anchored**. The path
+replayed the author's columns literally, so re-indenting the
+enclosing statement left the continuation aligned with nothing:
+
+```java
+        // statement dedented, but the continuation kept col 33
+        assertEquals(customersConfig, configJson,
+                         "Unexpected configuration definition.");
+```
+
+Every preserved row now shifts by the construct's own displacement,
+floored at the canonical continuation column so a large negative
+shift can never drag rows left of it. Internal alignment survives
+because all rows move together, and idempotency holds by
+construction: on a later pass the source column is the emit column,
+so the shift is zero.
+
+Preservation also now **declines when the source shows an argument
+that wrapped**. The "if an argument breaks, the argument list
+breaks" rule lives in the wrap engine, but preservation is consulted
+first and short-circuited it — so an arg list authored in the
+packed-then-wrapped shape was echoed back, and two semantically
+identical inputs formatted differently depending only on how they
+were typed. Constructs that legitimately span rows (block-bodied
+lambdas, text blocks, anonymous classes) stay on the preservation
+path, which is what keeps `execute(new Runnable() { … })` and
+`performTest(() -> { … })` idiomatic.
+
 ### `switch` brace placement
 
 `switch (value)` now keeps its opening brace on the same line, as
@@ -240,13 +272,13 @@ same commit. `requirements.txt` now says so in a comment.
   identical before and after, so no formatting decision in
   this release alters program meaning.
 - Corpus idempotency improved from 25 non-idempotent files to
-  12, with **no new regressions**. The 12 remaining are
+  11, with **no new regressions**. The 11 remaining are
   pre-existing and unrelated to these rules.
 - Lines over 80 characters across the four trees moved from
-  1598 to 1605. The seven additions are the cost of rule 1:
-  breaking the enclosing call gives the nested argument list a
-  roomier column in most cases but adds an indent level in a
-  few.
+  1598 to 1590. Three files gain one line each — unsplittable
+  string literals pushed over by rule 1's extra indent level,
+  which the formatter cannot split without rewriting the
+  literal. Every other file holds or improves.
 - Nine existing fixture golden files updated, each reviewed and
   confirmed an improvement — `arg_list_wrap/05`, `06`, `07`
   and `11`, `method_chain_wrap/11`, `14` and `16`,
