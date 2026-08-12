@@ -7,6 +7,7 @@ arrive with subsequent phases.
 from __future__ import annotations
 
 import dataclasses
+import importlib.metadata
 import re
 import subprocess
 import sys
@@ -60,6 +61,30 @@ class TestGrammarVersionPins:
             pins["tree-sitter-java"]
             == format_java.GRAMMAR_VERSION["tree-sitter-java"]
         )
+
+    def test_installed_versions_match_pins(self) -> None:
+        """The INSTALLED packages match the pins too.
+
+        The two assertions above compare two files to each other
+        and never consult the environment, so a stale virtualenv
+        validates the whole suite against a binding the formatter
+        is not calibrated for. That is not hypothetical: the 0.6.1
+        review ran 704 passing tests with tree-sitter 0.25.2
+        installed against a 0.26.0 pin.
+
+        Determinism across machines is the stated reason these
+        pins are tight, so the environment is exactly what needs
+        checking. A failure here means `pip install -r
+        tooling/scripts/requirements.txt`, not a code change.
+        """
+        for package, pinned in format_java.GRAMMAR_VERSION.items():
+            installed = importlib.metadata.version(package)
+            assert installed == pinned, (
+                f"{package} {installed} is installed but the pin "
+                f"is {pinned} — reinstall with `pip install -r "
+                f"tooling/scripts/requirements.txt` so parses "
+                f"match what the formatter is calibrated against."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -4182,3 +4207,132 @@ class TestCli:
         # parse failed — that's the asymmetry the routing fixes.
         assert "clean" not in result.stdout
         assert f"parsed {java}" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Nested-call wrap helpers (0.6.1)
+# ---------------------------------------------------------------------------
+
+
+def _first_arg_list_of(snippet: str):
+    """Return the FIRST `argument_list` node in a method body.
+
+    `snippet` is a single statement; it is wrapped in a minimal
+    class so it parses. Pre-order search means the outermost call's
+    argument list is found first, which is the node the nested-call
+    predicates are asked about.
+    """
+    src = (
+        "class A { void m() { " + snippet + " } }"
+    ).encode()
+    tree = format_java.parse_source(src)
+    found = []
+
+    def visit(node) -> None:
+        if node.type == "argument_list":
+            found.append(node)
+        for child in node.children:
+            visit(child)
+
+    visit(tree.root_node)
+    assert found, f"no argument_list parsed from: {snippet}"
+    return found
+
+
+class TestIsNestedOrChainedCall:
+    """Lock the traversal in `_is_nested_or_chained_call`.
+
+    The predicate decides where the 0.6.1 nested-call rules apply,
+    so its coverage is a behavioral contract rather than an
+    implementation detail. The False cases are as important as the
+    True ones: each is a parent shape the rules deliberately do NOT
+    reach, and a silent change there would widen the rules without
+    anyone noticing.
+    """
+
+    @pytest.mark.parametrize(
+        "snippet, expected",
+        [
+            # Positional argument of another call.
+            ("outer(inner(a, b));", True),
+            ("outer(x, inner(a, b));", True),
+            # Receiver of a method chain.
+            ("builder(a, b).build();", True),
+            # Constructors count as calls in both positions.
+            ("outer(new Foo(a, b));", True),
+            ("new Foo(a, b).bar();", True),
+            # Parent shapes the rules deliberately do not reach.
+            ("var x = (inner(a, b));", False),
+            ("var x = (Cast) inner(a, b);", False),
+            ("var x = flag ? inner(a, b) : other;", False),
+            ("run(() -> inner(a, b));", False),
+            ("var x = inner(a, b) + other;", False),
+            ("var x = inner(a, b).field;", False),
+            ("var x = inner(a, b)[0];", False),
+            ("inner(a, b);", False),
+        ],
+    )
+    def test_traversal(self, snippet: str, expected: bool) -> None:
+        arg_lists = _first_arg_list_of(snippet)
+        # The OUTERMOST argument_list is the one under test for the
+        # False cases (a bare statement call, a cast, etc.); for the
+        # True cases the inner call's list is what qualifies. Assert
+        # that SOME list matches for True and NONE for False.
+        results = [
+            format_java._is_nested_or_chained_call(node)
+            for node in arg_lists
+        ]
+        assert any(results) is expected, (
+            f"{snippet!r} -> {results}"
+        )
+
+    def test_never_raises_on_detached_node(self) -> None:
+        """A `program`-rooted argument list has no owning call."""
+        tree = format_java.parse_source(b"class A { }")
+        assert (
+            format_java._is_nested_or_chained_call(tree.root_node)
+            is False
+        )
+
+
+class TestIsAnonymousClass:
+    """`new Foo() { … }` owns its rows; `new Foo()` does not."""
+
+    def test_anonymous_class_detected(self) -> None:
+        tree = format_java.parse_source(
+            b"class A { void m() { "
+            b"run(new Runnable() { public void r() { } }); } }"
+        )
+        found = []
+
+        def visit(node) -> None:
+            if node.type == "object_creation_expression":
+                found.append(node)
+            for child in node.children:
+                visit(child)
+
+        visit(tree.root_node)
+        assert found
+        assert format_java._is_anonymous_class(found[0]) is True
+
+    def test_plain_constructor_is_not_anonymous(self) -> None:
+        tree = format_java.parse_source(
+            b"class A { void m() { run(new Foo(a)); } }"
+        )
+        found = []
+
+        def visit(node) -> None:
+            if node.type == "object_creation_expression":
+                found.append(node)
+            for child in node.children:
+                visit(child)
+
+        visit(tree.root_node)
+        assert found
+        assert format_java._is_anonymous_class(found[0]) is False
+
+    def test_non_creation_node_is_not_anonymous(self) -> None:
+        tree = format_java.parse_source(b"class A { }")
+        assert (
+            format_java._is_anonymous_class(tree.root_node) is False
+        )

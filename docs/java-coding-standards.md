@@ -1134,6 +1134,12 @@ from a call at statement top level. "Embedded" means either of:
 - the call is the receiver of a method chain — one or more
   `.segment()` calls follow it.
 
+Rules 1 and 2 below use that definition as written. Rule 3 is
+narrower: it governs the chain tail only when the chain is the
+**sole** argument of its enclosing call — the position rule 1 has
+already broken out onto its own line. A chain that is one of
+several arguments keeps its ordinary tail layout.
+
 In those positions the priority 2 comma-packed form reads badly,
 because the reader must track a half-packed argument list and the
 enclosing construct at the same time. Three rules apply.
@@ -1196,10 +1202,12 @@ stable across formatting passes — the same construct can rank the
 columns differently on a second pass and oscillate.
 
 ```java
-    // NOT PRODUCED — enclosing call left inline, inner argument
-    // list paren-aligned beneath it. The inner column is a
-    // function of the receiver's length, so it drifts rightward
-    // with deeper nesting and longer receivers.
+    // NOT PRODUCED — the enclosing call is left inline. Note the
+    // inner list's paren-alignment is fine on its own (shape D
+    // above uses it); what is excluded is anchoring it to the
+    // enclosing call's paren, which makes the column a function of
+    // the receiver's length so it drifts rightward with deeper
+    // nesting and longer receivers.
     reportUpdates.add(builder(DATA_SOURCE_SUMMARY,
                               ENTITY_COUNT,
                               entityId).records(-1)
@@ -1223,10 +1231,10 @@ break the enclosing call, pack the arguments if they fit at the
 new column, otherwise one per line — and the tail is always one
 segment per line.
 
-A chain that is one of several arguments, and whose receiver is a
-plain identifier rather than a wrapping call, is **not** embedded
-for rule 3's purposes. Its dot-aligned form reads well and is
-retained:
+Per rule 3's narrower scope above, a chain that is one of several
+arguments is untouched by it — rule 1 never broke that chain out,
+so its tail keeps the ordinary dot-aligned layout, which reads well
+when the receiver is a plain identifier:
 
 ```java
     assertEquals("expected", actualMethod.replaceAll("\\s", "")

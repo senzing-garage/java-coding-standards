@@ -45,7 +45,7 @@ of the standards for the full statement):
 Before:
 
 ```java
-        reportUpdates.add(builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT, source,
+        reportUpdates.add(builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT,
                                   source, entityId)
             .records(-1)
             .build());
@@ -220,7 +220,7 @@ same commit. `requirements.txt` now says so in a comment.
   (AST round-trip, idempotency) and performance gates resolve
   their corpus to `<consumer>/src`, which does not exist in a
   standalone checkout — so they had been skipping on every CI
-  run, leaving those properties ungated. The job checks out
+  run, leaving those properties unchecked. The job checks out
   `senzing-garage/senzing-commons-java` at a pinned release
   tag and points `SENZING_JAVA_FUZZ_CORPUS` at it. Pinned
   rather than tracking `main` so an unrelated consumer commit
@@ -247,15 +247,20 @@ same commit. `requirements.txt` now says so in a comment.
   breaking the enclosing call gives the nested argument list a
   roomier column in most cases but adds an indent level in a
   few.
-- Two existing fixture goldens updated, both improvements:
-  `arg_list_wrap/11` (now takes the rule-1 shape) and
-  `method_chain_wrap/11`, which had been echoing an author
-  layout whose continuation sat at column 12 while the call
-  it continued opened at column 20.
+- Nine existing fixture golden files updated, each reviewed and
+  confirmed an improvement — `arg_list_wrap/05`, `06`, `07`
+  and `11`, `method_chain_wrap/11`, `14` and `16`,
+  `line_comment_reflow/07`, and `text_block/03`. The most
+  illustrative is `method_chain_wrap/11`, which had been
+  echoing an author layout whose continuation sat at column
+  12 while the call it continued opened at column 20.
+  `method_chain_wrap/18_p1f_factory_deep_dot` is renamed to
+  `18_factory_chain_breaks_at_first_dot`, since it no longer
+  locks the removed tier.
 - Javadoc `<pre>` handling re-verified rather than changed: no
   `<pre>` line is added or removed anywhere in the four trial
   diffs, and a direct test of a `<pre>` ASCII box diagram with
-  long reflowable prose on both sides preserves the diagram
+  long wrappable prose on both sides preserves the diagram
   byte-for-byte. The 0.6.0 pre-release report of a destroyed
   diagram is resolved.
 

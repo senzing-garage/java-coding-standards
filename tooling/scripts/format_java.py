@@ -7925,14 +7925,18 @@ def _arg_list_takes_source_preserve_path(
     # and so declines to back off. The chain then commits its
     # dot-aligned hanging-tail shape on pass 2 where pass 1
     # produced one-segment-per-line.
-    sole_args = [
+    arg_nodes = [
         c for c in node.children
         if c.is_named
         and c.type not in ("line_comment", "block_comment")
     ]
     if (
-        len(sole_args) == 1
-        and sole_args[0].type == "method_invocation"
+        len(arg_nodes) == 1
+        and arg_nodes[0].type in (
+            "method_invocation",
+            "object_creation_expression",
+        )
+        and not _is_anonymous_class(arg_nodes[0])
     ):
         return False
     if _is_nested_or_chained_call(node):
@@ -7965,11 +7969,6 @@ def _arg_list_takes_source_preserve_path(
     # source-preservation. With the AST walk both callers
     # (`_emit_argument_list` and the chain discriminator)
     # see the same estimate and decide the same way.
-    arg_nodes = [
-        c for c in node.children
-        if c.is_named
-        and c.type not in ("line_comment", "block_comment")
-    ]
     any_multiline_arg = any(
         _node_spans_multiple_rows(a) for a in arg_nodes
     )
@@ -8006,6 +8005,32 @@ def _is_block_body_lambda(arg_node: Node) -> bool:
         return False
     body = arg_node.child_by_field_name("body")
     return body is not None and body.type == "block"
+
+
+def _is_anonymous_class(node: Node) -> bool:
+    """Return True for `new Foo() { … }` — an object creation
+    carrying an anonymous class body.
+
+    Structurally a call, but its body spans rows by nature rather
+    than because anything wrapped, so it belongs with block-bodied
+    lambdas and text blocks: the nested-call rules must not break
+    before it, and the "argument that wraps gets its own line"
+    rule must not count it. Spec C8 fixes the idiomatic shape —
+
+        service.execute(new Runnable() {
+            public void run()
+            {
+                y();
+            }
+        });
+
+    — with the closing `}` at the statement indent followed by the
+    call's own `);`. Breaking before the argument would push the
+    whole body one level deeper for no benefit.
+    """
+    if node.type != "object_creation_expression":
+        return False
+    return any(c.type == "class_body" for c in node.named_children)
 
 
 def _is_nested_or_chained_call(arg_list: Node) -> bool:
@@ -8049,11 +8074,11 @@ def _is_nested_or_chained_call(arg_list: Node) -> bool:
     # `object_creation_expression` (`new Foo(a, b)`) counts as a
     # call here: it owns an `argument_list` and reads identically
     # at a call site, so a `new Foo(…)` sitting in an argument
-    # list gets the same treatment as `foo(…)`. It cannot be a
-    # chain receiver in the `outer.type == "method_invocation"`
-    # sense below (a chain on a constructor nests the
-    # constructor as the `object` field), which the receiver
-    # identity check handles unchanged.
+    # list gets the same treatment as `foo(…)`. It can also be a
+    # chain receiver — `new Foo(a).bar()` parses as a
+    # `method_invocation` whose `object` field IS the
+    # `object_creation_expression` — so the receiver-identity
+    # branch below reaches constructors too, which is intended.
     if call is None or call.type not in (
         "method_invocation",
         "object_creation_expression",
@@ -8385,6 +8410,7 @@ def _emit_argument_list(
         return (
             _is_block_body_lambda(arg)
             or arg.type == "text_block"
+            or _is_anonymous_class(arg)
         )
 
     def emit_p1() -> None:
@@ -8828,40 +8854,36 @@ def _emit_argument_list(
         # before 0.6.1, because the two columns could rank
         # differently on the second pass. A single monotone
         # did-it-wrap check has no such failure mode.
-        if args[0].type == "method_invocation":
+        if args[0].type in (
+            "method_invocation",
+            "object_creation_expression",
+        ) and not _is_anonymous_class(args[0]):
             saved = emitter.snapshot()
             emit_p1()
             effective_max = _MAX_LINE - emitter.tail_reserve
             stayed_inline = emitter.line_count == saved[0]
-            if (
+            if not (
                 stayed_inline
                 and emitter.last_lines_max_width(saved[0])
                 <= effective_max
             ):
-                _fire_wrap_overflow_advisory(
-                    emitter, node, cascade_start, "argument list"
+                emitter.restore(saved)
+                try_priorities(
+                    emitter,
+                    [
+                        emit_p4_single_arg_block_indent,
+                        emit_p4_single_arg_paren_defer,
+                    ],
                 )
-                return
-            emitter.restore(saved)
-            try_priorities(
-                emitter,
-                [
-                    emit_p4_single_arg_block_indent,
-                    emit_p4_single_arg_paren_defer,
-                ],
-            )
-            _fire_wrap_overflow_advisory(
-                emitter, node, cascade_start, "argument list"
-            )
-            return
-        # Standard single-arg cascade: P1 inline → P4 block+4
-        # → P4 paren-defer (last-committed).
-        candidates: list[Callable[[], None]] = [
-            emit_p1,
-            emit_p4_single_arg_block_indent,
-            emit_p4_single_arg_paren_defer,
-        ]
-        try_priorities(emitter, candidates)
+        else:
+            # Standard single-arg cascade: P1 inline → P4 block+4
+            # → P4 paren-defer (last-committed).
+            candidates: list[Callable[[], None]] = [
+                emit_p1,
+                emit_p4_single_arg_block_indent,
+                emit_p4_single_arg_paren_defer,
+            ]
+            try_priorities(emitter, candidates)
     else:
         # Multi-arg cascade — manual snapshot/restore because
         # P2's two-line constraint (per spec "Method Call
@@ -9118,29 +9140,11 @@ def _emit_method_chain_wrapped(
                 "(`obj.<Type>method(...)`) is not yet supported."
             )
 
-    # 0.6.1 nested-call wrap (rule 3): anchor the chain tail to
-    # "col of the first non-space on the chain's own line + 4",
-    # the same 0.6.0 anchor rule the arg-list P4 candidates use,
-    # rather than the block-relative `4 * (indent_level + 1)`.
-    #
-    # The two agree for a chain at statement top level (a
-    # statement at indent 8 has `indent_level == 2`, so both give
-    # 12). They diverge exactly when the chain is a nested
-    # emission — e.g. a chain that is a positional argument, which
-    # rule 1 has already dropped to `line_start + 4`. There the
-    # block-relative form anchors the tail back at the enclosing
-    # STATEMENT's indent, far left of the chain it belongs to:
-    #
-    #     record(source, builder(DATA_SOURCE_SUMMARY,
-    #                            ENTITY_COUNT,
-    #                            entityId)
-    #         .build());              <-- col 12, orphaned
-    #
-    # Line-start + 4 keeps the tail visually attached to its own
-    # chain, which is what rule 3 specifies.
     # Is this chain a positional argument of another call?
-    # Governs the rule-3 tail anchor below.
-    chain_parent = segments[-1].parent if segments else None
+    # Governs the rule-3 tail anchor below. `segments` is always
+    # non-empty here — the sole call site gates on
+    # `len(segments) >= 2`.
+    chain_parent = segments[-1].parent
     chain_is_positional_arg = (
         chain_parent is not None
         and chain_parent.type == "argument_list"
@@ -9185,6 +9189,12 @@ def _emit_method_chain_wrapped(
     #
     # Three unrelated columns for one argument. The block-relative
     # anchor keeps that case readable, so it is retained.
+    # The block-relative value is a FLOOR, not an alternative: a
+    # chain sitting at a shallower column than its own statement
+    # indent (possible when an enclosing construct emitted it at a
+    # dedented position) would otherwise anchor its tail left of
+    # the statement it belongs to. `max` keeps the tail at or
+    # right of the canonical continuation column in every case.
     p3_col = 4 * (emitter.indent_level + 1)
     if chain_is_positional_arg and head is None:
         p3_col = max(p3_col, emitter.column + 4)
