@@ -2,8 +2,7 @@ public class Demo
 {
     public String render(int status)
     {
-        switch (status)
-        {
+        switch (status) {
             case ACTIVE:
                 return """
                     Status: active

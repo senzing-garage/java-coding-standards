@@ -104,7 +104,7 @@ import tree_sitter_java
 from tree_sitter import Language, Node, Parser, Tree
 
 
-__version__: Final[str] = "0.6.0"
+__version__: Final[str] = "0.6.1"
 
 # Tree-sitter Python binding + tree-sitter-java grammar versions
 # this formatter is calibrated against. Kept in sync with the pins
@@ -112,7 +112,7 @@ __version__: Final[str] = "0.6.0"
 # calibration-gate re-run; the emitter dispatches on grammar node
 # names that can drift between grammar releases.
 GRAMMAR_VERSION: Final[dict[str, str]] = {
-    "tree-sitter": "0.25.2",
+    "tree-sitter": "0.26.0",
     "tree-sitter-java": "0.23.5",
 }
 
@@ -4566,10 +4566,35 @@ def _emit_switch_expression(
             "switch_expression missing condition or block — "
             "grammar shape unexpected."
         )
+    # Brace placement per the standards' "Switch Statements and
+    # Expressions": the opening brace goes on the SAME line
+    # (control-flow style), i.e. `switch (value) {`. Pre-0.6.1 this
+    # emitted an unconditional newline, giving every switch an
+    # Allman brace — 98 sites across the four consumer trees, and
+    # the same-line form was never produced at all. Checkstyle does
+    # not gate brace placement on `LITERAL_SWITCH`, so it went
+    # unnoticed.
+    #
+    # The "Multi-line Conditions" exception still applies: when the
+    # condition's RENDERED output spans more than one line, the
+    # brace drops to its own line at the switch's indent so the
+    # condition stays visually separate from the body. Mirrors
+    # `_emit_if_statement`, including the +2 tail reserve for the
+    # `) {` that follows the condition.
     emitter.write("switch ")
-    _emit_node(emitter, source, cond)
-    emitter.newline()
-    emitter.write_indent()
+    cond_start_line_count = emitter.line_count
+    prev_reserve = emitter.set_tail_reserve(
+        emitter.tail_reserve + 2
+    )
+    try:
+        _emit_node(emitter, source, cond)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
+    if emitter.line_count > cond_start_line_count:
+        emitter.newline()
+        emitter.write_indent()
+    else:
+        emitter.write(" ")
     _emit_node(emitter, source, block)
 
 
@@ -7873,6 +7898,46 @@ def _arg_list_takes_source_preserve_path(
     if _arg_list_has_semantic_multi_row_arg(node):
         return False
 
+    # 0.6.1 nested-call wrap — decline preservation for the two
+    # shapes the nested-call rules now own outright. In both, the
+    # layout is formatter-determined, so there is no author
+    # layout left to honor; echoing the source rows instead
+    # re-anchors them to the current emit column and makes the
+    # two passes disagree.
+    #
+    # The 0.5.0 opt-out above doesn't catch either case: it asks
+    # whether an ARGUMENT spans rows, while these rules break
+    # around single-row arguments — the arg list spans rows but
+    # the arguments do not.
+    #
+    # Rule 1 — sole argument is a method invocation. It either
+    # stays inline or lands at `line_start + 4`. Without this,
+    # pass 1 runs the wrap engine and anchors at `line_start +
+    # 4`; pass 2 preserves the now-multi-row arg list and
+    # re-anchors it 4 cols deeper. That split made
+    # `Boolean.FALSE.equals(result.get(x).getProcessedValue())`
+    # oscillate between cols 20 and 24 on alternate passes.
+    #
+    # Rule 2 — the call is a positional argument of another call
+    # or the receiver of a chain. Preserving here also defeats
+    # the chain cascade's Q-CHAIN-4 backoff, which treats a
+    # source-preserved arg list as a "legitimate" multi-row emit
+    # and so declines to back off. The chain then commits its
+    # dot-aligned hanging-tail shape on pass 2 where pass 1
+    # produced one-segment-per-line.
+    sole_args = [
+        c for c in node.children
+        if c.is_named
+        and c.type not in ("line_comment", "block_comment")
+    ]
+    if (
+        len(sole_args) == 1
+        and sole_args[0].type == "method_invocation"
+    ):
+        return False
+    if _is_nested_or_chained_call(node):
+        return False
+
     src_text = _node_source_text(source, node)
     effective_max = _MAX_LINE - emitter.tail_reserve
 
@@ -7941,6 +8006,72 @@ def _is_block_body_lambda(arg_node: Node) -> bool:
         return False
     body = arg_node.child_by_field_name("body")
     return body is not None and body.type == "block"
+
+
+def _is_nested_or_chained_call(arg_list: Node) -> bool:
+    """Return True when `arg_list`'s owning call is embedded.
+
+    "Embedded" means the `method_invocation` that owns this
+    `argument_list` is either:
+
+      1. a positional argument of ANOTHER call, or
+      2. the receiver of a method chain — i.e. one or more
+         `.segment()` calls follow it.
+
+    0.6.1 nested-call wrap (rule 2): in both positions the
+    P2 "two-line paren-aligned comma-packed" shape reads
+    badly, because the reader has to track a half-packed
+    argument list AND the enclosing construct at the same
+    time:
+
+        reportUpdates.add(builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT,
+                                  entityId).records(-1)
+            .build());
+
+    Skipping P2 in these positions sends the cascade to P3
+    (one arg per line), which keeps the argument list a
+    single readable column:
+
+        reportUpdates.add(
+            builder(DATA_SOURCE_SUMMARY,
+                    ENTITY_COUNT,
+                    entityId)
+                .records(-1)
+                .build());
+
+    The rule is deliberately arity-independent — it fires
+    whether the enclosing call has one argument or several,
+    because the unreadable shape is the same either way.
+    Rule 1 (forcing the enclosing call to break) applies only
+    to the single-argument case; see `_emit_argument_list`.
+    """
+    call = arg_list.parent
+    # `object_creation_expression` (`new Foo(a, b)`) counts as a
+    # call here: it owns an `argument_list` and reads identically
+    # at a call site, so a `new Foo(…)` sitting in an argument
+    # list gets the same treatment as `foo(…)`. It cannot be a
+    # chain receiver in the `outer.type == "method_invocation"`
+    # sense below (a chain on a constructor nests the
+    # constructor as the `object` field), which the receiver
+    # identity check handles unchanged.
+    if call is None or call.type not in (
+        "method_invocation",
+        "object_creation_expression",
+    ):
+        return False
+    outer = call.parent
+    if outer is None:
+        return False
+    if outer.type == "argument_list":
+        return True
+    if outer.type == "method_invocation":
+        # A chain tail follows only when this call is the
+        # RECEIVER of the enclosing invocation. When it is
+        # instead the enclosing call's argument, the
+        # `argument_list` branch above already caught it.
+        receiver = outer.child_by_field_name("object")
+        return receiver is not None and receiver.id == call.id
+    return False
 
 
 def _emit_argument_list(
@@ -8297,7 +8428,19 @@ def _emit_argument_list(
         emitter.newline()
         push_count, extra = _push_indent_to_col(emitter, target_col)
         _emit_p4_write_target_indent(emitter, push_count, extra)
-        _emit_node(emitter, source, args[0])
+        # Reserve 1 char for the `)` written below. Without it the
+        # argument's own cascade measures only up to its last token
+        # and can commit an inline shape that this closer then pushes
+        # past 80 — e.g. `result.add(\n    arguments(a, b, c, d));`
+        # where the inner list measured 79 and `));` made it 81.
+        # The inner list has to see the closer to reject its P1.
+        prev_reserve = emitter.set_tail_reserve(
+            emitter.tail_reserve + 1
+        )
+        try:
+            _emit_node(emitter, source, args[0])
+        finally:
+            emitter.set_tail_reserve(prev_reserve)
         emitter.write(")")
         for _ in range(push_count):
             emitter.pop_indent()
@@ -8606,6 +8749,68 @@ def _emit_argument_list(
                 )
                 return
             emitter.restore(saved)
+        # 0.6.1 nested-call wrap (rule 1): when the sole argument
+        # is itself a method invocation — plain, or the head of a
+        # `.a().b()` chain — that cannot stay on one line, break
+        # BEFORE it instead of letting it wrap in place.
+        #
+        # P1's ordinary width check is not enough here. A nested
+        # call that wraps internally still "fits", because every
+        # emitted line lands under the cap — so P1 commits and
+        # produces a shape where the argument list starts at the
+        # enclosing call's paren column and its continuation
+        # lines march far to the right:
+        #
+        #     reportUpdates.add(builder(DATA_SOURCE_SUMMARY,
+        #                               ENTITY_COUNT,
+        #                               entityId).records(-1)
+        #         .build());
+        #
+        # Rejecting P1 whenever the nested call did not stay
+        # inline sends the cascade to `line_start + 4`, which
+        # gives the nested arg list a far roomier column and
+        # anchors the chain tail on the 4-space grid:
+        #
+        #     reportUpdates.add(
+        #         builder(DATA_SOURCE_SUMMARY,
+        #                 ENTITY_COUNT,
+        #                 entityId)
+        #             .records(-1)
+        #             .build());
+        #
+        # The test is "did it stay on one line", NOT "which
+        # column fits better". That matters: a comparative
+        # two-column fit probe is what made
+        # `builder(...).records(-1).build()` non-idempotent
+        # before 0.6.1, because the two columns could rank
+        # differently on the second pass. A single monotone
+        # did-it-wrap check has no such failure mode.
+        if args[0].type == "method_invocation":
+            saved = emitter.snapshot()
+            emit_p1()
+            effective_max = _MAX_LINE - emitter.tail_reserve
+            stayed_inline = emitter.line_count == saved[0]
+            if (
+                stayed_inline
+                and emitter.last_lines_max_width(saved[0])
+                <= effective_max
+            ):
+                _fire_wrap_overflow_advisory(
+                    emitter, node, cascade_start, "argument list"
+                )
+                return
+            emitter.restore(saved)
+            try_priorities(
+                emitter,
+                [
+                    emit_p4_single_arg_block_indent,
+                    emit_p4_single_arg_paren_defer,
+                ],
+            )
+            _fire_wrap_overflow_advisory(
+                emitter, node, cascade_start, "argument list"
+            )
+            return
         # Standard single-arg cascade: P1 inline → P4 block+4
         # → P4 paren-defer (last-committed).
         candidates: list[Callable[[], None]] = [
@@ -8663,9 +8868,29 @@ def _emit_argument_list(
         emitter._arg_list_p4_fired = False
         emit_p1()
         p1_p4_fired = emitter._arg_list_p4_fired
+        # 0.6.1 nested-call wrap: in an embedded call, also reject P1
+        # when it emitted multi-row at all. P1's item-8 invariant lets
+        # an argument wrap internally and then breaks before the
+        # NEXT argument, which is exactly the mixed shape the
+        # standards' "Anti-pattern" section forbids — some arguments
+        # packed on the call line, the rest at another column:
+        #
+        #     builder(reportCode, statistic.principle(principle)
+        #                                  .matchKey(matchKey),
+        #             source1, source2, entityId)
+        #
+        # Before rule 2, P2 absorbed these; with P2 skipped they fall
+        # to P1 instead. Rejecting sends them to P3, which keeps every
+        # argument in one column and (here) the chain intact on one
+        # line. Scoped to embedded calls because that is where 0.6.1
+        # already owns the shape.
+        p1_multi_row = emitter.line_count > initial[0]
         if (
             emitter.last_lines_max_width(initial[0]) <= effective_max
             and not p1_p4_fired
+            and not (
+                p1_multi_row and _is_nested_or_chained_call(node)
+            )
         ):
             emitter._arg_list_p4_fired = prev_p4 or p1_p4_fired
             _fire_wrap_overflow_advisory(
@@ -8675,20 +8900,29 @@ def _emit_argument_list(
         emitter.restore(initial)
         emitter._arg_list_p4_fired = prev_p4
         # P2 (two-line packed).
-        p2_snap = emitter.snapshot()
-        emit_p2_greedy()
-        p2_line_count = emitter.line_count - p2_snap[0]
-        p2_fits = (
-            emitter.last_lines_max_width(p2_snap[0])
-            <= effective_max
-            and p2_line_count <= 1
-        )
-        if p2_fits:
-            _fire_wrap_overflow_advisory(
-                emitter, node, cascade_start, "argument list"
+        #
+        # 0.6.1 nested-call wrap (rule 2): skipped entirely when
+        # this call is a positional arg of another call or the
+        # receiver of a chain. The half-packed shape P2 produces
+        # is hard to read once it has to be tracked alongside an
+        # enclosing construct, so the cascade goes straight to
+        # P3's one-arg-per-line column. See
+        # `_is_nested_or_chained_call`.
+        if not _is_nested_or_chained_call(node):
+            p2_snap = emitter.snapshot()
+            emit_p2_greedy()
+            p2_line_count = emitter.line_count - p2_snap[0]
+            p2_fits = (
+                emitter.last_lines_max_width(p2_snap[0])
+                <= effective_max
+                and p2_line_count <= 1
             )
-            return
-        emitter.restore(p2_snap)
+            if p2_fits:
+                _fire_wrap_overflow_advisory(
+                    emitter, node, cascade_start, "argument list"
+                )
+                return
+            emitter.restore(p2_snap)
         # P3 (paren-aligned one-per-line).
         # 0.6.0 defect-3 fix (extends the P1 reject): P3 packs
         # arg 0 with the opening `(`. If arg 0's own emission
@@ -8894,7 +9128,106 @@ def _emit_method_chain_wrapped(
                 "(`obj.<Type>method(...)`) is not yet supported."
             )
 
+    # 0.6.1 nested-call wrap (rule 3): anchor the chain tail to
+    # "col of the first non-space on the chain's own line + 4",
+    # the same 0.6.0 anchor rule the arg-list P4 candidates use,
+    # rather than the block-relative `4 * (indent_level + 1)`.
+    #
+    # The two agree for a chain at statement top level (a
+    # statement at indent 8 has `indent_level == 2`, so both give
+    # 12). They diverge exactly when the chain is a nested
+    # emission — e.g. a chain that is a positional argument, which
+    # rule 1 has already dropped to `line_start + 4`. There the
+    # block-relative form anchors the tail back at the enclosing
+    # STATEMENT's indent, far left of the chain it belongs to:
+    #
+    #     record(source, builder(DATA_SOURCE_SUMMARY,
+    #                            ENTITY_COUNT,
+    #                            entityId)
+    #         .build());              <-- col 12, orphaned
+    #
+    # Line-start + 4 keeps the tail visually attached to its own
+    # chain, which is what rule 3 specifies.
+    # Is this chain a positional argument of another call?
+    # Governs the rule-3 tail anchor below.
+    chain_parent = segments[-1].parent if segments else None
+    chain_is_positional_arg = (
+        chain_parent is not None
+        and chain_parent.type == "argument_list"
+    )
+
+    # 0.6.1 nested-call wrap (rule 3): anchor the chain tail to
+    # "the chain's own start column + 4" when the chain is a
+    # positional argument, rather than the block-relative
+    # `4 * (indent_level + 1)`.
+    #
+    # Scoped to the positional-argument case on purpose. A chain
+    # that is an assignment RHS (`String x = foo.bar()…`) also
+    # starts mid-line, but its canonical tail column IS the
+    # block-relative one — anchoring to its start column would
+    # push the tail out under the `=`. Inside an argument list the
+    # block-relative form instead pulls the tail back to the
+    # enclosing STATEMENT's indent, far left of the chain it
+    # belongs to:
+    #
+    #     record(source, builder(DATA_SOURCE_SUMMARY,
+    #                            ENTITY_COUNT,
+    #                            entityId)
+    #         .build());              <-- col 12, orphaned
+    #
+    # Anchoring to the chain's start keeps the tail visually
+    # attached to its own chain, which is what rule 3 specifies.
+    # Additionally requires `head is None` — a HEADLESS chain, whose
+    # first segment is itself the call (`builder(a, b).records(-1)`).
+    # That is the shape rule 3 is about: segments following an
+    # embedded CALL, whose own argument list is what wrapped.
+    #
+    # When the chain has an explicit receiver
+    # (`SzGrpcServices.inferStatus(x).getCode()`), the receiver is
+    # typically a bare identifier sitting deep in an argument list,
+    # and anchoring the tail to its column strands the segments far
+    # to the right of everything:
+    #
+    #     assertEquals(Status.UNIMPLEMENTED.getCode(), SzGrpcServices
+    #                                                      .inferStatus(
+    #         new UnsupportedOperationException())
+    #                                                      .getCode(),
+    #
+    # Three unrelated columns for one argument. The block-relative
+    # anchor keeps that case readable, so it is retained.
     p3_col = 4 * (emitter.indent_level + 1)
+    if chain_is_positional_arg and head is None:
+        p3_col = max(p3_col, emitter.column + 4)
+
+    # 0.6.1 nested-call wrap (rule 3): True when this chain is the
+    # SOLE argument of its enclosing call — the exact position in
+    # which rule 1 has already broken the argument out onto its
+    # own line. Rules 1 and 3 travel together: once the chain owns
+    # a line, its tail goes one-segment-per-line, so the tiers
+    # that hang the first segment off the receiver's closing paren
+    # and dot-align the rest (P1F, P3F, P2, P2-greedy) are
+    # suppressed — they produce shape "C", which 0.6.1
+    # deliberately removed from the vocabulary.
+    #
+    # Deliberately NOT "any positional argument". A chain that is
+    # one of several arguments has not been broken out by rule 1,
+    # and its receiver is typically a short identifier where the
+    # dot-aligned shape reads well:
+    #
+    #     assertEquals("expected", actualMethod.replaceAll("\\s", "")
+    #                                          .replaceAll("\\n", " ")
+    #                                          .trim());
+    #
+    # Suppressing the hung tiers there would force a needless
+    # one-per-line rewrite of a perfectly readable chain.
+    chain_is_sole_arg = False
+    if chain_is_positional_arg:
+        sibling_args = [
+            c for c in chain_parent.children
+            if c.is_named
+            and c.type not in ("line_comment", "block_comment")
+        ]
+        chain_is_sole_arg = len(sibling_args) == 1
 
     def emit_segment(seg: Node) -> None:
         name = seg.child_by_field_name("name")
@@ -9402,7 +9735,8 @@ def _emit_method_chain_wrapped(
     # keep one-per-line because the canonical motivation
     # (builder pattern with named receiver) doesn't apply.
     if (
-        head is not None
+        not chain_is_sole_arg
+        and head is not None
         and _chain_segments_share_method_name(source, segments)
     ):
         greedy_saved = emitter.snapshot()
@@ -9423,7 +9757,8 @@ def _emit_method_chain_wrapped(
     # to P2F (current `emit_p2`) which puts only head +
     # factory on line 1.
     if (
-        head is not None
+        not chain_is_sole_arg
+        and head is not None
         and len(segments) >= 3
         and _chain_receiver_is_factory(source, head)
     ):
@@ -9447,7 +9782,10 @@ def _emit_method_chain_wrapped(
     # + 4 for the chain-tail. Falls through to P2 if the
     # paren-indent shape overflows or Q-CHAIN-4 backoff
     # triggers.
-    if emitter.paren_expr_col is not None:
+    if (
+        not chain_is_sole_arg
+        and emitter.paren_expr_col is not None
+    ):
         p3f_saved = emitter.snapshot()
         emit_p3f_paren_indent()
         p3f_fits = (
@@ -9460,15 +9798,16 @@ def _emit_method_chain_wrapped(
         emitter.restore(p3f_saved)
 
     p2_saved = emitter.snapshot()
-    emit_p2()
-    p2_fits = (
-        emitter.last_lines_max_width(p2_saved[0])
-        <= effective_max
-        and not p2_segment_wrapped[0]
-    )
-    if p2_fits:
-        return
-    emitter.restore(p2_saved)
+    if not chain_is_sole_arg:
+        emit_p2()
+        p2_fits = (
+            emitter.last_lines_max_width(p2_saved[0])
+            <= effective_max
+            and not p2_segment_wrapped[0]
+        )
+        if p2_fits:
+            return
+        emitter.restore(p2_saved)
     emit_p3()
     # Method-chain wrap site advisory uses the first segment
     # (or head, if present) as the source position — the

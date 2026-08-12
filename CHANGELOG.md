@@ -10,6 +10,196 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-12
+
+Bug-fix release. Five formatter defects surfaced by running
+0.6.0 across four consumer source bases, plus a dependency
+bump the drift guard makes impossible for Dependabot to land
+on its own and two CI/tooling corrections. The headline change
+is the new nested-call wrap: 0.6.0's two-line comma-packed
+argument shape is withdrawn wherever a call is embedded in
+another expression, which both improves readability and
+removes the speculative two-column fit comparison behind a
+class of non-idempotent output.
+
+### Nested-call wrap
+
+A call embedded in another expression — as a positional
+argument of another call, or as the receiver of a method chain
+— now wraps by three rules (see the "Nested-call wrap" section
+of the standards for the full statement):
+
+- **Rule 1** — when a call's sole argument is itself a method
+  invocation that cannot stay on one line, break before it so
+  it lands at single indentation from the enclosing call's
+  line start.
+- **Rule 2** — within an embedded call's own argument list,
+  the priority 2 two-line comma-packed tier is skipped; the
+  cascade goes P1 → P3 → P4. Applies regardless of the
+  enclosing call's argument count.
+- **Rule 3** — chain segments following an embedded call
+  always emit one per line, anchored at the chain's own start
+  column + 4 rather than at the enclosing statement's indent
+  (which orphaned the tail far to the left of its chain).
+
+Before:
+
+```java
+        reportUpdates.add(builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT, source,
+                                  source, entityId)
+            .records(-1)
+            .build());
+```
+
+After:
+
+```java
+        reportUpdates.add(
+            builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT, source, entityId)
+                .records(-1)
+                .build());
+```
+
+Two layouts are now deliberately unreachable: the enclosing
+call left inline with the inner argument list paren-aligned
+beneath it, and the first chain segment hung off the inner
+call's closing paren with later segments dot-aligned under it.
+Both required ranking two candidate continuation columns
+against each other, and that ranking is not stable across
+passes — it is the mechanism behind the
+`builder(...).records(-1).build()` oscillation reported
+against 0.6.0. Selection is now a single monotone
+"did the nested call stay on one line" test.
+
+`object_creation_expression` (`new Foo(a, b)`) counts as a
+call for these rules; it owns an argument list and reads
+identically at a call site.
+
+A chain that is one of several arguments and whose receiver is
+a plain identifier is not treated as embedded — its
+dot-aligned form reads well and is retained.
+
+### Source preservation
+
+Source preservation no longer fires for the two shapes the
+nested-call rules own outright. Those layouts are
+formatter-determined, so there is no author layout left to
+honor, and echoing the source rows re-anchored them to the
+current emit column — which is why the rules previously
+applied on the first pass only. This also stops a preserved
+argument list from suppressing the method-chain cascade's
+Q-CHAIN-4 backoff, which had let the hanging-tail shape commit
+on a second pass where the first produced one-per-line.
+
+### Class and interface body trailing comments
+
+`_emit_class_body_members` and `_emit_interface_body_members`
+now attach trailing side comments, matching the method-body
+iterators. A `//` comment on the same source row as a field's
+`;` or a method's `}` stays inline; 0.6.0 moved it to its own
+class-body-level line.
+
+### Single-argument block-bodied lambdas
+
+The single-argument cascade's priority 1 fit check no longer
+counts line widths from inside a block-bodied lambda's body.
+The body owns its own indent decisions, so a pre-existing
+over-80 line inside it was rejecting P1 and forcing a break
+before the arrow — which pushed every body line 4 columns
+deeper and created new overflows. `sz-sdk-java-grpc` had 22
+idiomatic `this.performTest(() -> { … })` calls rewritten this
+way by 0.6.0.
+
+### `switch` brace placement
+
+`switch (value)` now keeps its opening brace on the same line, as
+the "Switch Statements and Expressions" section of the standards
+requires. The emitter had been writing an unconditional newline,
+so every `switch` got an Allman brace — 98 sites across the four
+consumer source bases, and the correct same-line form was never
+produced at all. Checkstyle does not gate brace placement on
+`LITERAL_SWITCH`, which is why this went unnoticed.
+
+The "Multi-line Conditions" exception still applies: when the
+condition's rendered output spans more than one line, the brace
+drops to its own line so the condition stays visually separate
+from the body. This now mirrors `_emit_if_statement` exactly,
+including the two-character tail reserve for the `) {` that
+follows the condition.
+
+### Multi-catch clauses
+
+`catch (A | B | C e)` union types now wrap: inline when they
+fit, otherwise paren-aligned one exception type per line, with
+a `multi-catch` overflow advisory. 0.6.0 had no wrap logic
+here and emitted a silent 125-character line.
+
+### Dependencies
+
+`tree-sitter` 0.25.2 → 0.26.0. Only the Python binding moves;
+`tree-sitter-java` stays at 0.23.5, so the grammar node-name
+set the emitter dispatches on is unchanged. Formatter output
+is byte-identical to 0.25.2 across all four trial source bases
+and the advisory logs match exactly.
+
+Note for future bumps: `requirements.txt` pins are mirrored by
+`GRAMMAR_VERSION` in `format_java.py`, and
+`TestGrammarVersionPins` fails the build when the two drift.
+Dependabot can only edit `requirements.txt`, so its bump PRs
+always arrive red and need `GRAMMAR_VERSION` bumped in the
+same commit. `requirements.txt` now says so in a comment.
+
+### Build and CI
+
+- Removed the redundant `/tooling/scripts/tests` pip ecosystem
+  from `dependabot.yml`. `tests/requirements.txt` pulls the
+  runtime pins in via `-r ../requirements.txt`, so both
+  entries covered the same dependency set and every bump
+  arrived as two identical PRs (#23/#24, #38/#39, #43/#44,
+  #46/#47), resolved each time by closing one by hand.
+- New `corpus-gate` job in the pytest workflow. The fuzz
+  (AST round-trip, idempotency) and performance gates resolve
+  their corpus to `<consumer>/src`, which does not exist in a
+  standalone checkout — so they had been skipping on every CI
+  run, leaving those properties ungated. The job checks out
+  `senzing-garage/senzing-commons-java` at a pinned release
+  tag and points `SENZING_JAVA_FUZZ_CORPUS` at it. Pinned
+  rather than tracking `main` so an unrelated consumer commit
+  cannot turn this repo's CI red.
+
+### Verification
+
+- 704/704 pytest, including six new `nested_call_wrap`
+  fixtures covering both reachable shapes, the no-chain
+  nested argument, the multi-argument enclosing call, the
+  all-inline case, and an idempotency regression case
+  (`Boolean.FALSE.equals(result.get(x).getProcessedValue())`,
+  which had oscillated between two continuation columns).
+- Trial-formatted `senzing-commons-java`, `sz-sdk-java`,
+  `sz-sdk-java-grpc` and `data-mart-replicator` — 504 files.
+  **Zero AST changes**: every file's named-node sequence is
+  identical before and after, so no formatting decision in
+  this release alters program meaning.
+- Corpus idempotency improved from 25 non-idempotent files to
+  14, with **no new regressions**. The 14 remaining are
+  pre-existing and unrelated to these rules.
+- Lines over 80 characters across the four trees moved from
+  1598 to 1605. The seven additions are the cost of rule 1:
+  breaking the enclosing call gives the nested argument list a
+  roomier column in most cases but adds an indent level in a
+  few.
+- Two existing fixture goldens updated, both improvements:
+  `arg_list_wrap/11` (now takes the rule-1 shape) and
+  `method_chain_wrap/11`, which had been echoing an author
+  layout whose continuation sat at column 12 while the call
+  it continued opened at column 20.
+- Javadoc `<pre>` handling re-verified rather than changed: no
+  `<pre>` line is added or removed anywhere in the four trial
+  diffs, and a direct test of a `<pre>` ASCII box diagram with
+  long reflowable prose on both sides preserves the diagram
+  byte-for-byte. The 0.6.0 pre-release report of a destroyed
+  diagram is resolved.
+
 ## [0.6.0] - 2026-07-14
 
 Formatting release. Applies stricter line-length compliance

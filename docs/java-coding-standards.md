@@ -1032,6 +1032,11 @@ line aligned to the first column after the opening parenthesis:
                        parameterC, parameterD);
 ```
 
+Priority 2 is skipped when the call is embedded in another
+expression — as a positional argument of another call, or as the
+receiver of a method chain. See
+[Nested-call wrap](#nested-call-wrap) below.
+
 **Priority 3: Paren-aligned, one argument per line** — if the
 argument list cannot fit in priority 2's two-line shape, place each
 argument on its own line, with all arguments left-aligned to the
@@ -1075,6 +1080,115 @@ The argument list either stays entirely on one line (priority 1),
 wraps with paren-aligned continuation (priorities 2–3), or fully
 unrolls onto next-line indented arguments (priority 4) — never
 mid-form.
+
+### Nested-call wrap
+
+A call that is **embedded** in another expression wraps differently
+from a call at statement top level. "Embedded" means either of:
+
+- the call is a positional argument of another call, or
+- the call is the receiver of a method chain — one or more
+  `.segment()` calls follow it.
+
+In those positions the priority 2 comma-packed form reads badly,
+because the reader must track a half-packed argument list and the
+enclosing construct at the same time. Three rules apply.
+
+**Rule 1 — break before a sole nested argument.** When a call's
+only argument is itself a method invocation (plain, or the head of
+a chain) that cannot stay on one line, break before it so it lands
+at single indentation from the start of the enclosing call's line:
+
+```java
+    reportUpdates.add(
+        builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT, source, entityId)
+            .records(-1)
+            .build());
+```
+
+**Rule 2 — skip priority 2.** Within an embedded call's own
+argument list, the two-line comma-packed tier is not used; the
+cascade goes priority 1 → priority 3 → priority 4. This keeps the
+argument list a single readable column:
+
+```java
+    reportUpdates.add(
+        builder(DATA_SOURCE_SUMMARY,
+                ENTITY_COUNT,
+                dataSourceCode,
+                targetSourceCode,
+                entityId)
+            .records(-1)
+            .build());
+```
+
+Rule 2 applies regardless of how many arguments the **enclosing**
+call has — the shape it prevents is equally hard to read either
+way. Rule 1, by contrast, only applies when there is a single
+argument to break before; with several arguments the enclosing call
+wraps by its own cascade:
+
+```java
+    record(source, builder(DATA_SOURCE_SUMMARY,
+                           ENTITY_COUNT,
+                           dataSourceCode,
+                           entityId)
+                       .build());
+```
+
+**Rule 3 — uniform chain tail.** Chain segments following an
+embedded call always go one per line, anchored at the chain's own
+start column plus 4. The anchor is deliberately relative to the
+chain rather than to the enclosing statement; anchoring to the
+statement pulls the tail far to the left of the chain it belongs
+to, orphaning it.
+
+#### Shapes that are not produced
+
+Two otherwise-plausible layouts are excluded on purpose. Both are
+readable in isolation, but selecting them requires comparing how
+two different continuation columns fit, and that comparison is not
+stable across formatting passes — the same construct can rank the
+columns differently on a second pass and oscillate.
+
+```java
+    // NOT PRODUCED — enclosing call left inline, inner argument
+    // list paren-aligned beneath it. The inner column is a
+    // function of the receiver's length, so it drifts rightward
+    // with deeper nesting and longer receivers.
+    reportUpdates.add(builder(DATA_SOURCE_SUMMARY,
+                              ENTITY_COUNT,
+                              entityId).records(-1)
+                                       .build());
+```
+
+```java
+    // NOT PRODUCED — first chain segment hung off the inner
+    // call's closing paren, later segments dot-aligned under it.
+    // The dot-align column derives from the callee name plus the
+    // argument widths, so it matches no structural indent.
+    reportUpdates.add(
+        builder(DATA_SOURCE_SUMMARY,
+                ENTITY_COUNT,
+                entityId).records(-1)
+                         .build());
+```
+
+Excluding both leaves a two-tier cascade with a single fit test:
+break the enclosing call, pack the arguments if they fit at the
+new column, otherwise one per line — and the tail is always one
+segment per line.
+
+A chain that is one of several arguments, and whose receiver is a
+plain identifier rather than a wrapping call, is **not** embedded
+for rule 3's purposes. Its dot-aligned form reads well and is
+retained:
+
+```java
+    assertEquals("expected", actualMethod.replaceAll("\\s", "")
+                                         .replaceAll("\\n", " ")
+                                         .trim());
+```
 
 ---
 
