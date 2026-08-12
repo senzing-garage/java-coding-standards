@@ -1081,6 +1081,50 @@ wraps with paren-aligned continuation (priorities 2–3), or fully
 unrolls onto next-line indented arguments (priority 4) — never
 mid-form.
 
+### If an argument breaks, the argument list breaks
+
+An argument that is too wide for the space left on the call line
+must not be packed onto it and then wrapped internally. Wrapping
+the argument in place satisfies the 80-character limit — every
+emitted line is under the cap — while still producing the
+anti-pattern above, because the argument's own continuation column
+is set by where the line ran out rather than by any structure:
+
+```java
+    // WRONG — arg 2 packed onto the call line, then wrapped.
+    assertThrows(IllegalStateException.class, () -> mapB.put("key2",
+                                                            "val2"));
+```
+
+Break the argument list instead, which gives the argument a full
+line to render on:
+
+```java
+    assertThrows(IllegalStateException.class,
+                 () -> mapB.put("key2", "val2"));
+```
+
+This applies to any argument complex enough to wrap — a nested
+call, a lambda, an object creation, or a compound expression such
+as a long string concatenation. It does not affect simple
+arguments, which cannot wrap and so continue to pack under
+priority 2:
+
+```java
+    someVar.someMethod(parameterA, parameterB, parameterC, parameterD,
+                       parmE);
+```
+
+Two argument forms are exempt, because spanning several lines is
+inherent to them rather than the result of a wrap: block-bodied
+lambdas and text blocks. Both keep priority 1:
+
+```java
+    this.performTest(() -> {
+        doSomething();
+    });
+```
+
 ### Nested-call wrap
 
 A call that is **embedded** in another expression wraps differently
