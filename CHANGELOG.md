@@ -79,18 +79,6 @@ A chain that is one of several arguments and whose receiver is
 a plain identifier is not treated as embedded — its
 dot-aligned form reads well and is retained.
 
-### Source preservation
-
-Source preservation no longer fires for the two shapes the
-nested-call rules own outright. Those layouts are
-formatter-determined, so there is no author layout left to
-honor, and echoing the source rows re-anchored them to the
-current emit column — which is why the rules previously
-applied on the first pass only. This also stops a preserved
-argument list from suppressing the method-chain cascade's
-Q-CHAIN-4 backoff, which had let the hanging-tail shape commit
-on a second pass where the first produced one-per-line.
-
 ### Class and interface body trailing comments
 
 `_emit_class_body_members` and `_emit_interface_body_members`
@@ -169,37 +157,94 @@ the argument, which oscillated
 `arguments(Rectangle.class, Set.of(…), …)` between two shapes on
 alternate passes.
 
-### Source preservation re-anchors, and yields to the break rule
+### Source preservation
 
-Two fixes to the verbatim source-preservation path.
+Three changes, all narrowing when the formatter defers to the
+author's layout.
 
-Preserved continuation columns are now **re-anchored**. The path
-replayed the author's columns literally, so re-indenting the
-enclosing statement left the continuation aligned with nothing:
+**The width-based fallback is retired.** Preservation now fires only
+for its two correctness reasons — interleaved `//` or `/* */`
+comments, and `// CSOFF` regions. The third trigger, "the source
+spans rows and its first line fits at the emission column", is gone.
+
+That trigger was a fallback meaning "the formatter cannot obviously
+do better, so keep what is there" — and on any file the formatter
+has already touched, what is there is whatever an EARLIER VERSION
+wrote. It was therefore a propagation channel for the formatter's own
+past mistakes: the orphaned continuation at
+`SzCoreEngineReadTest.java:110-111` survived every pass because the
+orphan is in the source and the gate faithfully re-emitted it. It
+also made layout history-dependent — two semantically identical files
+formatted differently according to how they happened to be typed.
+
+Every remaining multi-row argument list now goes to the wrap engine,
+so output is a function of the AST alone. Files written by older
+releases are re-flowed by the next ordinary format pass; there is no
+special mode to run and no adopter action required.
+
+**Preserved continuation columns are re-anchored.** Where
+preservation still applies, it replayed the author's columns
+literally, so re-indenting the enclosing statement left the
+continuation aligned with nothing. Every preserved row now shifts by
+the construct's own displacement, floored at the canonical
+continuation column so a large negative shift cannot drag rows left
+of it. Internal alignment survives because all rows move together,
+and idempotency holds by construction: on a later pass the source
+column is the emit column, so the shift is zero.
+
+**Preservation yields to the nested-call rules.** It no longer fires
+for the shapes those rules own outright, nor when the source shows an
+ordinary argument that wrapped — the "if an argument breaks, the
+argument list breaks" rule lives in the wrap engine, and
+preservation was consulted first and short-circuited it. This also
+stops a preserved argument list from suppressing the method-chain
+cascade's Q-CHAIN-4 backoff. Constructs that legitimately span rows
+(block-bodied lambdas, text blocks, anonymous classes) stay on the
+preservation path, which is what keeps
+`execute(new Runnable() { … })` and `performTest(() -> { … })`
+idiomatic.
+
+### Argument lists: all-on-one-continuation-line tier
+
+New priority 3b. When the arguments cannot fit at the paren-aligned
+column but **all** of them fit together on one continuation line,
+break immediately after the `(` and place them there at single
+indentation:
 
 ```java
-        // statement dedented, but the continuation kept col 33
-        assertEquals(customersConfig, configJson,
-                         "Unexpected configuration definition.");
+        BadOptionParametersException ex = new BadOptionParametersException(
+            COMMAND_LINE, CONFIG, "--config", List.of());
 ```
 
-Every preserved row now shifts by the construct's own displacement,
-floored at the canonical continuation column so a large negative
-shift can never drag rows left of it. Internal alignment survives
-because all rows move together, and idempotency holds by
-construction: on a later pass the source column is the emit column,
-so the shift is zero.
+This is the zero-arguments-on-the-call-line member of the same greedy
+family as priority 2, whose rule is two lines maximum: zero or more
+arguments on the call line, all remaining arguments on ONE
+continuation line, otherwise one per line paren-aligned. Skipped for
+embedded calls, like priority 2 — it is a greedy tier and the
+nested-call rules withdraw the greedy family from those positions.
 
-Preservation also now **declines when the source shows an argument
-that wrapped**. The "if an argument breaks, the argument list
-breaks" rule lives in the wrap engine, but preservation is consulted
-first and short-circuited it — so an arg list authored in the
-packed-then-wrapped shape was echoed back, and two semantically
-identical inputs formatted differently depending only on how they
-were typed. Constructs that legitimately span rows (block-bodied
-lambdas, text blocks, anonymous classes) stay on the preservation
-path, which is what keeps `execute(new Runnable() { … })` and
-`performTest(() -> { … })` idiomatic.
+Without this tier the cascade jumped from paren-aligned straight to
+one-argument-per-line, which cost three lines per site on a very
+common shape.
+
+### Enhanced-`for` header wrapping
+
+Enhanced-`for` headers now wrap. The primary break is **before the
+`:`**, with the colon leading the continuation line so the iterable
+stays attached to it, and the opening brace goes Allman because the
+header is multi-line — the same exception that already governs `if`,
+`while` and `switch`:
+
+```java
+            for (Map.Entry<String, Map<String, SzFlagMetaData>> entry
+                    : parent.entrySet())
+            {
+```
+
+The header was previously written straight out with no cascade, so 25
+sites across the four trial source bases simply overflowed (up to 103
+characters). Basic `for` already wrapped; this was a missing node type
+rather than a policy gap.
 
 ### `switch` brace placement
 
@@ -260,7 +305,8 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 704/704 pytest, including six new `nested_call_wrap`
+- 732/732 pytest on the pinned tree-sitter 0.26.0, including
+  the `nested_call_wrap`
   fixtures covering both reachable shapes, the no-chain
   nested argument, the multi-argument enclosing call, the
   all-inline case, and an idempotency regression case
@@ -272,13 +318,18 @@ same commit. `requirements.txt` now says so in a comment.
   identical before and after, so no formatting decision in
   this release alters program meaning.
 - Corpus idempotency improved from 25 non-idempotent files to
-  11, with **no new regressions**. The 11 remaining are
+  8, with **no new regressions**. The 8 remaining are
   pre-existing and unrelated to these rules.
 - Lines over 80 characters across the four trees moved from
-  1598 to 1590. Three files gain one line each — unsplittable
-  string literals pushed over by rule 1's extra indent level,
-  which the formatter cannot split without rewriting the
-  literal. Every other file holds or improves.
+  1598 to 1578, and all 25 over-long enhanced-`for` headers are
+  now wrapped. Three files gain one line each — literal-dense
+  demo and flag files already carrying hundreds.
+- Deep orphaned continuations — a construct's contents emitted
+  left of the `(` they belong to — fell from 37 to 3.
+- 265 of 504 trial files are reformatted, a net **-168 lines**.
+  Retiring the preservation fallback alone would have cost
+  +660; the new all-on-one-continuation-line tier is what turns
+  that into a reduction.
 - Nine existing fixture golden files updated, each reviewed and
   confirmed an improvement — `arg_list_wrap/05`, `06`, `07`
   and `11`, `method_chain_wrap/11`, `14` and `16`,

@@ -1,4 +1,4 @@
-# 0.6.2 scope — the four shapes 0.6.1 leaves wrong
+# 0.6.1 remaining scope — the four shapes 0.6.1 leaves wrong
 
 Decisions from the 0.6.1 consumer-trial census (504 files across
 `senzing-commons-java`, `sz-sdk-java`, `sz-sdk-java-grpc`,

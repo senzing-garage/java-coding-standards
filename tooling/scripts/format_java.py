@@ -335,7 +335,7 @@ class Emitter:
         # it to True — they never reset. This gives the read
         # site full control of scoping.
         self._arg_list_p4_fired: bool = False
-        # 0.6.2: set when an argument list commits its
+        # 0.6.1: set when an argument list commits its
         # block-relative last-resort anchor, which has no
         # relationship to the `(` it belongs to. Read by the
         # variable-declarator cascade to backtrack to
@@ -5540,7 +5540,7 @@ def _emit_enhanced_for_statement(
             "'value' — grammar shape unexpected."
         )
 
-    # 0.6.2 — enhanced-for header wrapping. Pre-0.6.2 the header was
+    # 0.6.1 — enhanced-for header wrapping. Pre-0.6.1 the header was
     # written straight out with no cascade at all, so a long one simply
     # overflowed (25 sites across the four consumer trees, up to 103
     # chars). Basic `for` already wrapped; this was a missing node type
@@ -8074,7 +8074,7 @@ def _arg_list_takes_source_preserve_path(
         if col + len(single_line_estimate) <= effective_max:
             return False
 
-    # 0.6.2 — the width-based fallback is RETIRED.
+    # 0.6.1 — the width-based fallback is RETIRED.
     #
     # Preservation previously ended with "the source spans rows and
     # its first line fits at the emission column, so keep the author's
@@ -8818,7 +8818,7 @@ def _emit_argument_list(
     # anchor from outer line's leading spaces)" from "args 1+
     # fire P4 at deeper paren-align cols (spec-compliant)".
     p3_arg0_fired_p4 = [False]
-    # 0.6.2 item 1 — set when any argument's P3 emission left a
+    # 0.6.1 — set when any argument's P3 emission left a
     # line starting left of the paren-align column. Read at the
     # commit check to escalate the whole list to P4.
     p3_arg_escaped = [False]
@@ -8855,7 +8855,7 @@ def _emit_argument_list(
                 emitter._arg_list_p4_fired = False
             arg_start_line = emitter.line_count
             _emit_arg_with_optional_paren_align(arg)
-            # 0.6.2 item 1 — whole-list escalation. If ANY argument
+            # 0.6.1 — whole-list escalation. If ANY argument
             # cannot render at `cont_col` without either overflowing
             # or escaping to a shallower anchor, the paren-aligned
             # shape is wrong for the WHOLE list: every argument
@@ -8935,7 +8935,7 @@ def _emit_argument_list(
             emitter.pop_indent()
 
     def emit_p4_packed() -> None:
-        # 0.6.2 — "P4-packed": break right after `(` and put EVERY
+        # 0.6.1 — "P4-packed": break right after `(` and put EVERY
         # argument on a single continuation line at `line_start + 4`.
         #
         # This is the zero-args-on-the-first-line member of the greedy
@@ -9204,7 +9204,7 @@ def _emit_argument_list(
                 )
                 return
             emitter.restore(p2_snap)
-            # 0.6.2 — P4-packed: the other member of the two-line
+            # 0.6.1 — P4-packed: the other member of the two-line
             # greedy family, with ZERO arguments on the call line.
             # Tried before P3 because it costs two lines where P3
             # costs one per argument, and because `line_start + 4`
@@ -10421,7 +10421,7 @@ def _emit_variable_declarator(
     prev_escaped = emitter._anchor_escaped
     emitter._anchor_escaped = False
     _emit_node(emitter, source, value)
-    # 0.6.2: an inline RHS whose emission left a line starting LEFT of
+    # 0.6.1: an inline RHS whose emission left a line starting LEFT of
     # where the value began has orphaned part of itself — typically a
     # chain whose tail could not fit at the deep column the inline
     # shape forced, so the tail's own arguments escaped to a

@@ -151,6 +151,30 @@ if (someVeryLongCondition
 }
 ```
 
+### Enhanced-`for` header wrapping
+
+When an enhanced-`for` header does not fit on one line, break
+**before the `:`**, with the colon leading the continuation line so
+the iterable stays visually attached to it. Because the header is
+now multi-line, the opening brace goes Allman per the
+[Multi-Line Conditions](#exception-multi-line-conditions) rule:
+
+```java
+    for (Map.Entry<String, Map<String, SzFlagMetaData>> entry
+            : parent.entrySet())
+    {
+        // ...
+    }
+```
+
+A header that fits keeps the same-line brace:
+
+```java
+    for (String name : names) {
+        // ...
+    }
+```
+
 ### Closing Brace Rules
 
 - `catch`, `finally`, `else`, `else if`, and `while` (in do-while)
@@ -1048,6 +1072,30 @@ first column after the opening parenthesis:
                        parameterC,
                        parameterD);
 ```
+
+**Priority 3b: Next-line, all arguments on one line** — if the
+arguments cannot fit at the paren-aligned column but **all** of them
+fit together on a single continuation line, break immediately after
+the opening parenthesis and place them there at **single
+indentation (4 spaces)** from the start of the call's line:
+
+```java
+    BadOptionParametersException ex = new BadOptionParametersException(
+        COMMAND_LINE, CONFIG, "--config", List.of());
+```
+
+This is the zero-arguments-on-the-call-line member of the same
+greedy family as priority 2. The rule for that family is **two
+lines maximum**: zero or more arguments on the call line, and all
+remaining arguments on one continuation line. Priority 2 covers the
+"one or more on the call line" case; this covers "none on the call
+line", which arises when the call's own prefix is so wide that the
+paren-aligned column has no useful room left. If the arguments will
+not fit on a single continuation line either, fall through to
+priority 4.
+
+Like priority 2, this priority is skipped when the call is embedded
+in another expression — see [Nested-call wrap](#nested-call-wrap).
 
 **Priority 4: Next-line, single-indented, one argument per line** —
 if any single argument is too long to fit on a single line at the
