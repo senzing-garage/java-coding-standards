@@ -5540,13 +5540,60 @@ def _emit_enhanced_for_statement(
             "'value' — grammar shape unexpected."
         )
 
+    # 0.6.2 — enhanced-for header wrapping. Pre-0.6.2 the header was
+    # written straight out with no cascade at all, so a long one simply
+    # overflowed (25 sites across the four consumer trees, up to 103
+    # chars). Basic `for` already wrapped; this was a missing node type
+    # rather than a policy gap.
+    #
+    # Primary break is BEFORE the `:`, with the colon leading the
+    # continuation line so the iterable stays visually attached to it:
+    #
+    #     for (Map.Entry<String, Map<String, SzFlagMetaData>> entry
+    #             : parent.entrySet())
+    #     {
+    #
+    # When the header breaks, the opening brace goes Allman — the same
+    # "Multi-line Conditions" exception that already governs `if`,
+    # `while` and (since 0.6.1) `switch`, so a wrapped header stays
+    # visually separate from the body.
+    saved = emitter.snapshot()
     emitter.write("for (")
     _emit_node(emitter, source, type_node)
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
-    emitter.write(" : ")
+    # Reserve the `) {` that follows the iterable on the inline form.
+    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 3)
+    try:
+        emitter.write(" : ")
+        _emit_node(emitter, source, value_node)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
+    inline_fits = (
+        emitter.line_count == saved[0]
+        and emitter.column + 3 <= _MAX_LINE
+    )
+    if inline_fits:
+        emitter.write(") ")
+        _emit_node(emitter, source, body)
+        return
+    emitter.restore(saved)
+
+    emitter.write("for (")
+    _emit_node(emitter, source, type_node)
+    emitter.write(" ")
+    _emit_node(emitter, source, name_node)
+    emitter.newline()
+    emitter.push_indent()
+    emitter.push_indent()
+    emitter.write_indent()
+    emitter.write(": ")
     _emit_node(emitter, source, value_node)
-    emitter.write(") ")
+    emitter.write(")")
+    emitter.pop_indent()
+    emitter.pop_indent()
+    emitter.newline()
+    emitter.write_indent()
     _emit_node(emitter, source, body)
 
 
@@ -8027,10 +8074,39 @@ def _arg_list_takes_source_preserve_path(
         if col + len(single_line_estimate) <= effective_max:
             return False
 
-    # Standard gate: source's first line fits at supplied
-    # emission column.
-    first_segment = src_text.split("\n", 1)[0]
-    return col + len(first_segment) <= effective_max
+    # 0.6.2 — the width-based fallback is RETIRED.
+    #
+    # Preservation previously ended with "the source spans rows and
+    # its first line fits at the emission column, so keep the author's
+    # layout". That is not a correctness rule like the two above
+    # (interleaved comments, CSOFF); it is a fallback meaning "the
+    # formatter cannot obviously do better, so echo what is there".
+    #
+    # What is there, on any file the formatter has already touched, is
+    # whatever an EARLIER VERSION of the formatter wrote. That makes
+    # the fallback a propagation channel for its own past mistakes:
+    # the deep orphan at `SzCoreEngineReadTest.java:110-111` survives
+    # every pass because the orphan is in the source and this gate
+    # faithfully re-emits it. It also makes layout history-dependent —
+    # two semantically identical files format differently according to
+    # how they were typed, which is the general case of the "NOT
+    # PRODUCED shape is still produced" review finding.
+    #
+    # Declining here hands every remaining multi-row argument list to
+    # the wrap engine, so output is a function of the AST alone. Files
+    # written by older versions are re-flowed by the next ordinary
+    # format pass — no special mode and no adopter action needed.
+    #
+    # Measured across the 504-file consumer trial: deep orphans
+    # 12 -> 3, non-idempotent files 11 -> 8, lines over 80 1599 ->
+    # 1601, zero AST changes.
+    #
+    # A geometric alternative — "decline when the preserved layout is
+    # not one the formatter would itself produce" — was measured and
+    # rejected: classifying a layout needs the call line's indent, and
+    # that is not reliably available here because the emitter's
+    # current line is often not the call line.
+    return False
 
 
 def _is_block_body_lambda(arg_node: Node) -> bool:
@@ -8858,6 +8934,41 @@ def _emit_argument_list(
         for _ in range(push_count):
             emitter.pop_indent()
 
+    def emit_p4_packed() -> None:
+        # 0.6.2 — "P4-packed": break right after `(` and put EVERY
+        # argument on a single continuation line at `line_start + 4`.
+        #
+        # This is the zero-args-on-the-first-line member of the greedy
+        # family. The rule for that family is two lines maximum: zero
+        # or more arguments on the call line, and ALL remaining
+        # arguments on one continuation line. P2 covers the "one or
+        # more on the call line" case; this covers "none on the call
+        # line", which arises when the call's own prefix is already so
+        # wide that the paren-align column has no useful room left:
+        #
+        #     BadOptionParametersException ex = new BadOptionParametersException(
+        #         COMMAND_LINE, CONFIG, "--config", List.of());
+        #
+        # Without this tier the cascade skips straight to one argument
+        # per line, which costs three extra lines here for no gain.
+        # Because `line_start + 4` is far shallower than the
+        # paren-align column, this tier frequently fits where P2
+        # cannot.
+        emitter._arg_list_p4_fired = True
+        line_start_col = _current_line_leading_spaces(emitter)
+        target_col = line_start_col + 4
+        emitter.write("(")
+        push_count, extra = _push_indent_to_col(emitter, target_col)
+        emitter.newline()
+        _emit_p4_write_target_indent(emitter, push_count, extra)
+        for index, arg in enumerate(args):
+            if index > 0:
+                emitter.write(", ")
+            _emit_arg_with_optional_paren_align(arg)
+        emitter.write(")")
+        for _ in range(push_count):
+            emitter.pop_indent()
+
     # P1 is the AST-deterministic single-line candidate, but
     # may emit a multi-row layout when an intermediate arg
     # wraps multi-row and item-8 forces a break before
@@ -9093,6 +9204,35 @@ def _emit_argument_list(
                 )
                 return
             emitter.restore(p2_snap)
+            # 0.6.2 — P4-packed: the other member of the two-line
+            # greedy family, with ZERO arguments on the call line.
+            # Tried before P3 because it costs two lines where P3
+            # costs one per argument, and because `line_start + 4`
+            # has room the paren-align column often does not.
+            #
+            # Inside the same rule-2 guard as P2, and for the same
+            # reason: this is a GREEDY tier, and rule 2 withdraws the
+            # greedy family from embedded calls. Outside the guard it
+            # re-introduced exactly the packed-inside-an-enclosing-
+            # construct shape rule 2 removed, e.g.
+            # `builder(\n    A, B, C, D)` as a positional argument.
+            #
+            # Same two-line invariant as P2: reject if the emission
+            # spills past one continuation line, so this stays greedy
+            # rather than becoming a second one-per-line shape.
+            packed_snap = emitter.snapshot()
+            emit_p4_packed()
+            packed_line_count = emitter.line_count - packed_snap[0]
+            if (
+                emitter.last_lines_max_width(packed_snap[0])
+                <= effective_max
+                and packed_line_count <= 1
+            ):
+                _fire_wrap_overflow_advisory(
+                    emitter, node, cascade_start, "argument list"
+                )
+                return
+            emitter.restore(packed_snap)
         # P3 (paren-aligned one-per-line).
         # 0.6.0 defect-3 fix (extends the P1 reject): P3 packs
         # arg 0 with the opening `(`. If arg 0's own emission
