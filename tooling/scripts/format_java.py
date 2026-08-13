@@ -8723,6 +8723,10 @@ def _emit_argument_list(
     # anchor from outer line's leading spaces)" from "args 1+
     # fire P4 at deeper paren-align cols (spec-compliant)".
     p3_arg0_fired_p4 = [False]
+    # 0.6.2 item 1 — set when any argument's P3 emission left a
+    # line starting left of the paren-align column. Read at the
+    # commit check to escalate the whole list to P4.
+    p3_arg_escaped = [False]
 
     def emit_p3_paren_one_per_line() -> None:
         # P3: paren-aligned, one argument per line. Per spec
@@ -8754,7 +8758,42 @@ def _emit_argument_list(
                 # fall to P4 (block+4 one-per-line) in that case.
                 saved_p4 = emitter._arg_list_p4_fired
                 emitter._arg_list_p4_fired = False
+            arg_start_line = emitter.line_count
             _emit_arg_with_optional_paren_align(arg)
+            # 0.6.2 item 1 — whole-list escalation. If ANY argument
+            # cannot render at `cont_col` without either overflowing
+            # or escaping to a shallower anchor, the paren-aligned
+            # shape is wrong for the WHOLE list: every argument
+            # behaves as if the first had not fit, and the cascade
+            # falls to P4 (break before the first argument).
+            #
+            # Testing every argument is the point. The old code chose
+            # paren-alignment because the EARLY arguments fit, then
+            # discovered a later one could not and orphaned it —
+            # which is why the same construct renders correctly at
+            # one argument and wrong at the next:
+            #
+            #     new SzInterestingEntity(100L,
+            #                             1,
+            #                             Arrays.asList(
+            #                                 "FLAG"),      <- correct
+            #                             Arrays.asList(
+            #         createSampleRecord("DS", "R")));      <- orphan
+            #
+            # An argument that "escapes" is one whose emission left a
+            # line starting LEFT of `cont_col`. That happens when the
+            # argument's own cascade runs out of tiers and commits its
+            # block-relative C1 fallback, whose anchor has nothing to
+            # do with this argument list.
+            rows = list(emitter._lines[arg_start_line:])
+            if emitter.line_count > arg_start_line:
+                rows.append(emitter._current)
+            for row in rows:
+                if not row.strip():
+                    continue
+                if len(row) - len(row.lstrip()) < cont_col:
+                    p3_arg_escaped[0] = True
+                    break
             if index == 0:
                 if emitter._arg_list_p4_fired:
                     p3_arg0_fired_p4[0] = True
@@ -9051,10 +9090,12 @@ def _emit_argument_list(
         # visually contained inside the enclosing context.
         p3_snap = emitter.snapshot()
         p3_arg0_fired_p4[0] = False
+        p3_arg_escaped[0] = False
         emit_p3_paren_one_per_line()
         if (
             emitter.last_lines_max_width(p3_snap[0]) <= effective_max
             and not p3_arg0_fired_p4[0]
+            and not p3_arg_escaped[0]
         ):
             _fire_wrap_overflow_advisory(
                 emitter, node, cascade_start, "argument list"
