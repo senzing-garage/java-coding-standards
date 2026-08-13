@@ -255,6 +255,7 @@ class Emitter:
         "_paren_expr_col",
         "_arg_list_p4_fired",
         "_array_init_inline_only",
+        "_anchor_escaped",
         "warnings",
     )
 
@@ -334,6 +335,13 @@ class Emitter:
         # it to True — they never reset. This gives the read
         # site full control of scoping.
         self._arg_list_p4_fired: bool = False
+        # 0.6.2: set when an argument list commits its
+        # block-relative last-resort anchor, which has no
+        # relationship to the `(` it belongs to. Read by the
+        # variable-declarator cascade to backtrack to
+        # break-at-`=`, where the construct starts shallow
+        # enough that the last resort is not reached.
+        self._anchor_escaped: bool = False
         # 0.6.0: when True, `_emit_array_initializer` emits the
         # single-line inline form unconditionally rather than
         # running its own multi-line cascade. Callers that are
@@ -464,13 +472,16 @@ class Emitter:
 
     def snapshot(
         self,
-    ) -> tuple[int, str, int, int, int | None, int | None, bool, bool, int]:
+    ) -> tuple[
+        int, str, int, int, int | None, int | None, bool, bool, bool, int
+    ]:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
         tail_reserve, paren_align_col, paren_expr_col,
         arg_list_p4_fired, array_init_inline_only,
-        warnings_count)` suitable for `restore()`. The
+        anchor_escaped, warnings_count)` suitable for
+        `restore()`. The
         wrap-priority engines use the pattern:
 
             saved = emitter.snapshot()
@@ -507,13 +518,15 @@ class Emitter:
             self._paren_expr_col,
             self._arg_list_p4_fired,
             self._array_init_inline_only,
+            self._anchor_escaped,
             len(self.warnings),
         )
 
     def restore(
         self,
         snap: tuple[
-            int, str, int, int, int | None, int | None, bool, bool, int
+            int, str, int, int, int | None, int | None, bool, bool,
+            bool, int
         ],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
@@ -533,6 +546,7 @@ class Emitter:
             paren_expr_col,
             arg_list_p4_fired,
             array_init_inline_only,
+            anchor_escaped,
             warnings_count,
         ) = snap
         del self._lines[lines_count:]
@@ -543,6 +557,7 @@ class Emitter:
         self._paren_expr_col = paren_expr_col
         self._arg_list_p4_fired = arg_list_p4_fired
         self._array_init_inline_only = array_init_inline_only
+        self._anchor_escaped = anchor_escaped
         del self.warnings[warnings_count:]
 
     def last_lines_max_width(self, since: int) -> int:
@@ -8580,6 +8595,10 @@ def _emit_argument_list(
             _emit_node(emitter, source, args[0])
             emitter.write(")")
         else:
+            # Block-relative, and therefore unmoored from this call's
+            # `(`. Flag it so callers that can reposition the whole
+            # construct get the chance to avoid reaching this tier.
+            emitter._anchor_escaped = True
             emitter.push_indent()
             emitter.write_indent()
             _emit_node(emitter, source, args[0])
@@ -10081,6 +10100,20 @@ def _emit_variable_declarator_with_array_rhs(
     )
 
 
+def _rhs_is_multi_segment_chain(value: Node) -> bool:
+    """True when `value` is a method chain of two or more segments.
+
+    `a.b()` is a single segment and reads fine inline; `a.b().c()` is
+    the shape whose tail can be squeezed against the right margin when
+    the chain starts at a deep column, which is what the declarator's
+    break-at-`=` preference exists to relieve.
+    """
+    if value.type != "method_invocation":
+        return False
+    receiver = value.child_by_field_name("object")
+    return receiver is not None and receiver.type == "method_invocation"
+
+
 def _emit_variable_declarator(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -10245,7 +10278,36 @@ def _emit_variable_declarator(
     # the now-single-line value and correctly broke at `=`.)
     saved = emitter.snapshot()
     emitter.write(" = ")
+    prev_escaped = emitter._anchor_escaped
+    emitter._anchor_escaped = False
     _emit_node(emitter, source, value)
+    # 0.6.2: an inline RHS whose emission left a line starting LEFT of
+    # where the value began has orphaned part of itself — typically a
+    # chain whose tail could not fit at the deep column the inline
+    # shape forced, so the tail's own arguments escaped to a
+    # block-relative anchor:
+    #
+    #     String nativeResult = engine.getNativeApi()
+    #                                 .getEntityByRecordId(
+    #                     dataSourceCode, recordID);
+    #
+    # Width alone cannot detect this — every line above is under 80,
+    # so the overflow test below passes and Step 3 commits. Treating it
+    # like an overflow sends it to the break-at-`=` backtrack, where
+    # the chain starts shallow enough for its tail to fit:
+    #
+    #     String nativeResult
+    #         = engine.getNativeApi()
+    #                 .getEntityByRecordId(dataSourceCode, recordID);
+    #
+    # Deliberately a REMEDY, not a preference: a wrapped chain that
+    # orphans nothing keeps the inline shape, because breaking at `=`
+    # would cost a line for no benefit.
+    # Geometry cannot answer this: the legitimate chain-P3 ladder
+    # (segments at block+4) also places rows left of the value column,
+    # so a column test cannot tell a clean ladder from a real orphan.
+    # The flag is set at the one place the escape actually happens.
+    inline_orphan = emitter._anchor_escaped
     # `+ 1` accounts for the trailing `;` the parent
     # field_declaration / local_variable_declaration writes
     # after this emitter returns; `+ tail_reserve` accounts
@@ -10260,7 +10322,7 @@ def _emit_variable_declarator(
         emitter.last_lines_max_width(saved[0]) > _MAX_LINE
         or emitter.column + 1 + emitter.tail_reserve > _MAX_LINE
     )
-    if not inline_overflow:
+    if not inline_overflow and not inline_orphan:
         _fire_wrap_overflow_advisory(
             emitter, node, cascade_start, "variable declarator"
         )
