@@ -294,6 +294,80 @@ components have broken every row can sit under the limit; the check
 would pass and commit. It is rejected the same way the argument-list
 cascade rejects an argument that wrapped.
 
+### The argument-breaks rule now holds at priority 3
+
+"If an argument breaks, the argument list breaks" was enforced at
+priorities 1 and 2 but not priority 3. Under priority 3 each argument
+already has its own line, so the gap looked harmless — but an argument
+that wraps there puts its own continuation at exactly the column its
+siblings occupy, and the continuation stops being distinguishable from
+an argument:
+
+```java
+        multilineFormat(rr.getFormat()
+                        + " record not as expected:",
+                        "RECORDS TEXT: ",
+```
+
+Falling through to priority 4 gives the arguments their own column:
+
+```java
+        multilineFormat(
+            rr.getFormat() + " record not as expected:",
+            "RECORDS TEXT: ",
+```
+
+Arguments that inherently own rows stay exempt, as everywhere else the
+rule applies. The round-2 correction to the escape scan is what made
+priority 3 reachable for a wrapping first argument, which is why this
+gap surfaced now rather than earlier.
+
+Most of what changes is an argument coming back whole where it used to
+be split at the paren-aligned column — a nested call, a chain, or a
+string concatenation:
+
+```java
+    // before                            after
+    engine.findPath(startRecordKey,      engine.findPath(
+                    ...                      ...
+                    SzRecordKeys.of(         SzRecordKeys.of(avoidances),
+                        avoidances),         requiredSources);
+                    requiredSources);
+```
+
+Cost: 121 files take a different shape and the corpus grows 660 lines
+(+0.30%). Lines over 80 are unchanged at 1,581, files needing a second
+pass are unchanged at 6, and the count of files reformatted against
+0.6.0 moves only 322 to 324 — those 121 files were already being
+reformatted, so an adopter's diff barely grows.
+
+### Argument separators are reserved for
+
+`emit_p4_multi_arg` appends a `,` after every argument and a `)` after
+the last, and reserved for neither. An argument that measured itself as
+exactly 80 columns therefore committed, and the separator landed in
+column 81 — invisible to the argument, which fit, and to the loop,
+which had already committed. Latent until the priority 3 rule above
+routed more lists through this path, where it produced 22 over-long
+lines.
+
+The reserve deliberately drops the **inherited** tail reserve for every
+argument but the last. That inherited value stands for characters the
+parent appends after the whole construct — an enclosing statement's
+`;` — which land on the construct's final line only. Carrying it onto a
+middle argument's row makes the budget one character too tight and
+splits an argument that is legal at 80:
+
+```java
+                SzConfigManager.class.getMethod("registerConfig", String.class),
+```
+
+This is the fourth off-by-one of the same family in this release, after
+the enhanced-`for` closing paren, the escape scan's row range, and the
+parameter-alignment width test. All four shared a shape: a width
+measured over a span that included something the construct did not
+write, or excluded something it did.
+
 ### Double-indenting parameters only when it gains room
 
 Priority 3 breaks after the opening parenthesis to escape a paren
@@ -717,8 +791,8 @@ same commit. `requirements.txt` now says so in a comment.
   fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
-- 322 of 504 trial files are reformatted, a net **+831 lines**
-  (about +0.4% against 220k). The release trades lines for
+- 324 of 504 trial files are reformatted, a net **+1,491 lines**
+  (about +0.7% against 220k). The release trades lines for
   compliance and predictability: rule 1 breaks each nesting
   level of an embedded call onto its own row, and "if an
   argument breaks, the argument list breaks" turns a packed

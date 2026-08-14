@@ -5,12 +5,12 @@ public class Demo
         for (Object t : keys) {
             if (t != null) {
                 if (keys.isEmpty()) {
-                    String defaultResult = engine.findPath(startRecordKey,
-                                                           endRecordKey,
-                                                           maxDegrees,
-                                                           SzRecordKeys.of(
-                                                               avoidances),
-                                                           requiredSources);
+                    String defaultResult = engine.findPath(
+                        startRecordKey,
+                        endRecordKey,
+                        maxDegrees,
+                        SzRecordKeys.of(avoidances),
+                        requiredSources);
                 }
             }
         }

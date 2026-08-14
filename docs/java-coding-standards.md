@@ -1180,6 +1180,30 @@ line to render on:
                  () -> mapB.put("key2", "val2"));
 ```
 
+The rule holds at **every** priority, not only where arguments are
+packed onto the call line. Under priority 3 each argument already
+has its own line, but an argument that wraps there puts its own
+continuation at exactly the column its siblings occupy, so the
+continuation reads as another argument:
+
+```java
+    // WRONG — is `+ " record not as expected:"` an argument?
+    multilineFormat(rr.getFormat()
+                    + " record not as expected:",
+                    "RECORDS TEXT: ",
+                    recordsText);
+```
+
+Falling through to priority 4 moves the arguments to their own
+column and leaves the continuation unambiguously subordinate:
+
+```java
+    multilineFormat(
+        rr.getFormat() + " record not as expected:",
+        "RECORDS TEXT: ",
+        recordsText);
+```
+
 This applies to any argument complex enough to wrap — a nested
 call, a lambda, an object creation, or a compound expression such
 as a long string concatenation. It does not affect simple

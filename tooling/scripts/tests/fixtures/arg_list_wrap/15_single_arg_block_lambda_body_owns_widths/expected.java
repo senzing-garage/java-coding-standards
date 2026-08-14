@@ -4,12 +4,12 @@ public class Demo
     {
         this.performTest(() -> {
             try {
-                String defaultResult = engine.findPath(startRecordKey,
-                                                       endRecordKey,
-                                                       maxDegrees,
-                                                       SzRecordKeys.of(
-                                                           avoidances),
-                                                       requiredSources);
+                String defaultResult = engine.findPath(
+                    startRecordKey,
+                    endRecordKey,
+                    maxDegrees,
+                    SzRecordKeys.of(avoidances),
+                    requiredSources);
             } catch (Exception e) {
             }
         });
