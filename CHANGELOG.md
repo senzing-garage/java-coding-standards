@@ -294,6 +294,51 @@ components have broken every row can sit under the limit; the check
 would pass and commit. It is rejected the same way the argument-list
 cascade rejects an argument that wrapped.
 
+### Double-indenting parameters only when it gains room
+
+Priority 3 breaks after the opening parenthesis to escape a paren
+column pushed far right by a long return type and method name. When
+the parenthesis already sits at or left of the double-indent column,
+that break moves every parameter FURTHER right and cannot help, so
+priority 2 is now kept as the narrowest available shape:
+
+```java
+    // paren at column 11, double-indent would be 12
+    void m(SomeExtremelyLongQualifiedTypeName a,
+           int aParameterWithAnExtremelyLongName)
+
+    // paren at column 19 — the break is genuinely narrower
+    StringBuffer m(
+            SomeExtremelyLongQualifiedTypeName a,
+            int aParameterWithAnExtremelyLongName)
+```
+
+The test is the column of the `(`, not the length of the method name:
+the return type, modifiers and type parameters all push it right. No
+file in the trial corpus changes — the shape needs a very short
+signature alongside unusually long parameters — but priority 3 is the
+terminal candidate, so getting it wrong meant emitting the widest of
+the available shapes with nothing downstream to correct it.
+
+### Advisories where the formatter declines to reflow
+
+Two silent exits now report themselves. A parameter list that cannot
+fit even with every parameter on its own line at the deepest indent
+had no advisory at all — the formatter wrote a 114-column line and
+said nothing. And a javadoc line preserved as structural, which by
+design is never reflowed, said nothing either. Both are spec C1
+emit-and-warn sites; the warn half was missing. The failure mode was
+a developer hitting a checkstyle `LineLength` failure, running the
+formatter, seeing no change and no output, and concluding the
+formatter was broken.
+
+Both advisories respect checkstyle's own `LineLength` `ignorePattern`,
+so a line the build will not reject does not generate noise. That
+matters more than it sounds: without the exemption, `@see <a href=...>`
+javadoc produced 123 advisories across the corpus, 73 of them in one
+file and none of them actionable. With it, 17 advisories are added in
+total and every one names a line that genuinely fails the build.
+
 ### Wrapped parameter lists align their names
 
 `_emit_formal_parameters` never implemented the column alignment the
@@ -326,6 +371,21 @@ does not model it.
 Padding can push a priority 2 line past the limit, in which case the
 cascade falls to priority 3 as it is defined to. That happened twice
 in the fixture suite and the results land at 66 and 50 columns.
+
+Priority 3 has no such escape — it is the terminal candidate — so
+there the aligned and unaligned forms are compared and alignment is
+given up when it is what costs the width. The shape that needs this
+is a short type sharing a list with a long one, since the short
+type's name is padded out to the long type's column while still
+carrying its own full length:
+
+```java
+        void m(
+                SomeExtremelyLongQualifiedTypeName  a,
+                int                                 aParameterWithALongName)
+                                                    // 82 aligned, 50 not
+```
+
 Measured across the corpus the alignment adds **8 lines** and
 introduces **no** new over-80 line, touching 30 files.
 
@@ -485,8 +545,13 @@ using the same `_arg_owns_its_rows` predicate as the
 "if an argument breaks, the argument list breaks" rule, and for the
 same reason. Structurally-owned rows are the only rows the wrap
 engine cannot reclaim, so they are the only ones that legitimately
-strand a chain tail. This was the last non-idempotent construct in
-the trial corpus outside javadoc prose.
+strand a chain tail.
+
+Three constructs in the corpus still take a second pass to settle —
+the Tier 1 braced-`if` collapse, basic-`for` header wrapping, and one
+chain-with-lambda re-shape — but all of them converge on that second
+pass. What this release eliminates is the harder case: output that
+never settles at all.
 
 ### Argument lists: all-on-one-continuation-line tier (priority 2b)
 
@@ -593,16 +658,16 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 722/722 pytest on the pinned tree-sitter 0.26.0. New fixtures
+- 723/723 pytest on the pinned tree-sitter 0.26.0. New fixtures
   cover the nested-call wrap's two reachable shapes, a nested
   argument with no chain, a multi-argument enclosing call, the
   all-inline case, and three idempotency regressions: the
   `Boolean.FALSE.equals(result.get(x).getProcessedValue())`
   column oscillation, the chain back-off test reading source rows,
   and a first argument that wraps while the paren-aligned shape
-  still fits. The count falls from 735 because the 18 unit tests
-  covering the deleted single-line width estimator were removed
-  with it.
+  still fits. Deleting the single-line width estimator removed the
+  18 unit tests that covered it, so the count is not comparable
+  with 0.6.0's on a like-for-like basis.
 - Trial-formatted `senzing-commons-java`, `sz-sdk-java`,
   `sz-sdk-java-grpc` and `data-mart-replicator` — 504 files,
   comparing the output of 0.6.0 against the output of this
@@ -631,10 +696,10 @@ same commit. `requirements.txt` now says so in a comment.
   javadoc case fixed above.
 
   Note for anyone re-measuring: taking the 0.6.0 _output_ as the
-  starting point instead of pristine source reports 1 rather than
-  7, because the first pass of the new release absorbs the
-  second-pass changes those six files needed anyway. The pristine
-  baseline is the honest one.
+  starting point instead of pristine source reports fewer, because
+  the first pass of the new release absorbs the second-pass changes
+  those six files needed anyway. The pristine baseline is the honest
+  one.
 
 - Lines over 80 characters across the four trees moved from
   1618 to 1581, and all 25 over-long enhanced-`for` headers are

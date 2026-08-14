@@ -93,7 +93,6 @@ validation and diagnostics.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -777,6 +776,7 @@ def _fire_wrap_overflow_advisory(
     node: "Node",
     since_line_count: int,
     site_label: str,
+    remedy: str | None = None,
 ) -> None:
     """Fire a `FormatterWarning` when this wrap site's
     committed emit produced any on-disk line wider than
@@ -794,6 +794,11 @@ def _fire_wrap_overflow_advisory(
     `warnings` appended would be truncated by `restore()`. The
     advisory therefore describes only the line(s) the
     formatter actually committed and could not shrink further.
+
+    `remedy` overrides the closing sentence for sites where the
+    default advice does not apply — a preserved javadoc line has
+    no operand to split, so telling the developer to split one
+    sends them looking for something that isn't there.
 
     `site_label` names the wrap engine for the message (e.g.
     `"binary expression"`, `"ternary expression"`,
@@ -833,15 +838,18 @@ def _fire_wrap_overflow_advisory(
     for existing in emitter.warnings:
         if my_start_line <= existing.line <= my_end_line:
             return
+    if remedy is None:
+        remedy = (
+            "Split a long operand or literal so the wrap engine "
+            "has a break point that fits the line limit."
+        )
     emitter.warnings.append(FormatterWarning(
         line=node.start_point[0] + 1,
         column=node.start_point[1] + 1,
         message=(
             f"{site_label} wrap could not fit within "
             f"{_MAX_LINE} chars (max line width "
-            f"{max_on_disk}). Split a long operand or "
-            f"literal so the wrap engine has a break point "
-            f"that fits the line limit."
+            f"{max_on_disk}). {remedy}"
         ),
     ))
 
@@ -2572,7 +2580,7 @@ def _inner_would_invert_paren_align(
         current = stack.pop()
         if current.type == "argument_list" and (
             _arg_list_takes_source_preserve_path(
-                emitter, source, current, column=proposed_col
+                emitter, source, current
             )
         ):
             src = _node_source_text(source, current)
@@ -3265,6 +3273,36 @@ _JAVADOC_BLOCK_TOKENS: Final[tuple[str, ...]] = (
 )
 
 
+_LINE_LENGTH_EXEMPT_MARKERS: Final[tuple[str, ...]] = (
+    "a href",
+    "href",
+    "http://",
+    "https://",
+    "@snippet",
+)
+"""Substrings that make checkstyle's `LineLength` check skip a line.
+
+Mirrors the `ignorePattern` in `checkstyle/senzing-checkstyle.xml`. The
+formatter consults it before advising about a line it could not shorten:
+warning about a line the build will not reject is noise, and noise in a
+per-build advisory channel is how the channel stops being read.
+
+A javadoc `@see <a href="...">` is the common case — an unbreakable URL
+inside markup. Across the trial corpus 73 of 123 candidate advisories
+were exactly that, all in one file, none of them actionable.
+
+Kept as a literal list rather than parsed out of the checkstyle XML: the
+formatter has no dependency on that file today, and reading it would mean
+locating a consumer-specific config from inside a library module. The
+cost is that the two can drift, which is why both sides name each other.
+"""
+
+
+def _line_length_exempt(text: str) -> bool:
+    """True when checkstyle's `LineLength` check would skip `text`."""
+    return any(m in text for m in _LINE_LENGTH_EXEMPT_MARKERS)
+
+
 def _looks_like_snippet_file_attr(stripped: str) -> bool:
     """Return True when `stripped` looks like a `file="..."`
     attribute line in a `{@snippet}` directive (and therefore
@@ -3767,10 +3805,35 @@ def _emit_javadoc_block(
         # blank, not starting with `@`, no tag continuation
         # whitespace, not standalone block HTML).
         if not _javadoc_is_prose_line(line):
-            # Block tag standalone (e.g. `<p>`, `<ul>`) — emit
-            # verbatim and continue.
+            # Structural line — a block tag (`<p>`, `<ul>`), a list
+            # item, or anything the author indented. Emit verbatim.
+            #
+            # If it does not fit, say so. Reflowing it is not an
+            # option: the indent and the markers are the structure,
+            # and merging such a line into its neighbours is what the
+            # structural classification exists to prevent. But the
+            # formatter must not decline silently either — otherwise a
+            # developer hits a checkstyle LineLength failure, runs the
+            # formatter, gets no output and no change, and reasonably
+            # concludes the formatter is broken. Spec C1's rule is
+            # emit AND warn; this is the warn.
             emitter.newline()
+            before = emitter.line_count
             emitter.write(star_prefix + line)
+            full_line = star_prefix + line
+            if (
+                len(full_line) > _MAX_LINE
+                and not _line_length_exempt(full_line)
+            ):
+                _fire_wrap_overflow_advisory(
+                    emitter, node, before,
+                    "javadoc structural line",
+                    remedy=(
+                        "The line is indented or carries markup, so "
+                        "it is preserved rather than reflowed. "
+                        "Shorten the text or reduce the indent."
+                    ),
+                )
             i += 1
             continue
 
@@ -3781,8 +3844,9 @@ def _emit_javadoc_block(
             if nxt == "":
                 break
             if not _javadoc_is_prose_line(nxt):
-                break
-            if nxt[0].isspace():
+                # Covers the indented case too: an indent alone makes
+                # a line non-prose, so there is no separate
+                # leading-whitespace test to make here.
                 break
             para_lines.append(nxt)
             j += 1
@@ -4864,8 +4928,8 @@ def _emit_record_declaration(
     exposed as `formal_parameters`; super_interfaces and
     type_parameters apply the same way as for classes.
 
-    Header wrapping follows the spec's "Record Headers"
-    priorities. Priority 1 is the whole header on one line.
+    Header wrapping follows the priorities in the spec's
+    "Record Declarations" section. Priority 1 is the whole header on one line.
     When that overflows, priority 2 moves the `implements`
     clause to its own single-indented continuation line and
     leaves the components where they are — the components only
@@ -4939,9 +5003,9 @@ def _emit_record_declaration(
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if (
+    if super_interfaces_node is not None and (
         emitter.last_lines_max_width(saved[0]) > _MAX_LINE
-        or (params_wrapped and super_interfaces_node is not None)
+        or params_wrapped
     ):
         # Priority 2+ — re-emit with the `implements` clause on
         # its own continuation line. The component list runs its
@@ -7543,9 +7607,17 @@ def _emit_formal_parameters(
     column — matching the spec's "Method and Constructor
     Declarations / Parameter Placement / P3" example.
 
-    Receivers (`@This Foo this`) and varargs (`Type... name`)
-    are not yet supported and will surface via dispatch
-    refusals from the per-parameter / per-type emitters.
+    Varargs (`Type... name`) are supported via
+    `_emit_spread_parameter`; they are excluded from name
+    alignment because their prefix is not a bare type.
+
+    Receiver parameters (`Foo this`) are NOT supported and,
+    worse, are silently DROPPED: the `params` filter below keeps
+    only `formal_parameter` and `spread_parameter`, and no
+    emitter is registered for `receiver_parameter`. A method
+    declaring one would lose it from the output. Pre-existing
+    and not yet fixed; recorded here so the next reader finds it
+    rather than trusting the filter.
     """
     if not force_wrap and _node_spans_multiple_rows(node):
         # Preserve developer-authored multi-line params from
@@ -7594,20 +7666,27 @@ def _emit_formal_parameters(
     name_col_offset = _formal_param_name_col_offset(
         emitter, source, params
     )
-    emitter.write("(")
     cont_p2 = " " * paren_col
-    for index, param in enumerate(params):
-        if index > 0:
-            emitter.write(",")
-            emitter.newline()
-            emitter.write(cont_p2)
-        if name_col_offset is None:
-            _emit_node(emitter, source, param)
-        else:
-            _emit_formal_parameter_aligned(
-                emitter, source, param, paren_col + name_col_offset
-            )
-    emitter.write(")")
+
+    def emit_p2(name_col: int | None) -> None:
+        emitter.write("(")
+        for index, param in enumerate(params):
+            if index > 0:
+                emitter.write(",")
+                emitter.newline()
+                emitter.write(cont_p2)
+            if name_col is None:
+                _emit_node(emitter, source, param)
+            else:
+                _emit_formal_parameter_aligned(
+                    emitter, source, param, name_col
+                )
+        emitter.write(")")
+
+    p2_name_col = (
+        None if name_col_offset is None else paren_col + name_col_offset
+    )
+    emit_p2(p2_name_col)
     if emitter.last_lines_max_width(saved2[0]) <= effective_max:
         return
     # P3: next-line, one per line at p3_indent_col. Falls back
@@ -7616,22 +7695,125 @@ def _emit_formal_parameters(
     # — the formatter still emits the wrap so any remaining
     # overflow surfaces as a checkstyle LineLength rather than
     # silent under-formatting).
-    emitter.restore(saved2)
     p3_col = p3_indent_col if p3_indent_col is not None else paren_col
+    if p3_col >= paren_col:
+        # Priority 3 exists to escape a paren column pushed far right by
+        # a long return type and method name. When the paren column is
+        # already at or left of `start_col + 8`, breaking after the `(`
+        # moves every parameter FURTHER right and cannot help — so
+        # priority 2 is the narrowest shape available and becomes the
+        # terminal candidate:
+        #
+        #     void m(SomeExtremelyLongQualifiedTypeName a,      <- P2, 11
+        #            int aParameterWithAnExtremelyLongName)
+        #
+        #     void m(                                           <- P3, 12
+        #             SomeExtremelyLongQualifiedTypeName a,
+        #             int aParameterWithAnExtremelyLongName)
+        #
+        # Commit priority 2, dropping the name alignment first if that
+        # is what costs the width, and warn if it still does not fit.
+        aligned_width = emitter.last_lines_max_width(saved2[0])
+        if p2_name_col is not None:
+            emitter.restore(saved2)
+            emit_p2(None)
+            if emitter.last_lines_max_width(saved2[0]) >= aligned_width:
+                emitter.restore(saved2)
+                emit_p2(p2_name_col)
+        _fire_wrap_overflow_advisory(
+            emitter, node, saved2[0], "parameter list",
+            remedy=(
+                "Breaking after the opening parenthesis would indent "
+                "the parameters further right than they already are, "
+                "so there is no narrower shape. Shorten a type or "
+                "parameter name."
+            ),
+        )
+        return
+    emitter.restore(saved2)
     cont_p3 = " " * p3_col
-    emitter.write("(")
-    for index, param in enumerate(params):
-        emitter.newline()
-        emitter.write(cont_p3)
-        if name_col_offset is None:
-            _emit_node(emitter, source, param)
-        else:
-            _emit_formal_parameter_aligned(
-                emitter, source, param, p3_col + name_col_offset
-            )
-        if index < len(params) - 1:
-            emitter.write(",")
-    emitter.write(")")
+
+    def emit_p3(name_col: int | None) -> None:
+        emitter.write("(")
+        for index, param in enumerate(params):
+            emitter.newline()
+            emitter.write(cont_p3)
+            if name_col is None:
+                _emit_node(emitter, source, param)
+            else:
+                _emit_formal_parameter_aligned(
+                    emitter, source, param, name_col
+                )
+            if index < len(params) - 1:
+                emitter.write(",")
+        emitter.write(")")
+
+    # P3 is the terminal candidate, so this is the spec C1 emit-and-warn
+    # exit for a parameter list. It had no advisory at all: a parameter
+    # wider than the whole budget was written out at any width in total
+    # silence, so a developer chasing a checkstyle LineLength failure
+    # got no output from the formatter and nothing to act on.
+    def emit_p3_and_warn(name_col: int | None) -> None:
+        before = emitter.line_count
+        emit_p3(name_col)
+        _fire_wrap_overflow_advisory(
+            emitter, node, before, "parameter list",
+            remedy=(
+                "Every parameter is already on its own line at the "
+                "deepest available indent. Shorten a type or "
+                "parameter name."
+            ),
+        )
+
+    if name_col_offset is None:
+        emit_p3_and_warn(None)
+        return
+    # Alignment must not be what pushes a line over the limit. P3 is
+    # the terminal candidate — there is no further tier to catch an
+    # overflow here — so an aligned emit that does not fit yields to
+    # the unaligned one rather than committing a line no reformat will
+    # ever repair. The pathological shape is a SHORT type paired with a
+    # long one, because the short type's name is padded out to the long
+    # type's column while still carrying its own full length:
+    #
+    #     void m(
+    #             SomeExtremelyLongQualifiedTypeName  a,
+    #             int                                 aParameterWithALongName)
+    #                                                 ^ 82 cols aligned,
+    #                                                   50 unaligned
+    #
+    # The two candidates are COMPARED rather than the aligned one being
+    # tested against the cap on its own. `last_lines_max_width` starts
+    # at the row that was already open when the parameters began — the
+    # signature row — and that row is frequently the widest thing in
+    # the emit and has nothing to do with alignment. Measuring the
+    # aligned form alone therefore stripped alignment from parameter
+    # lists whose own rows were nowhere near the limit, purely because
+    # the method name above them reached column 80. Both measurements
+    # span the same rows, so the shared one cancels out, and alignment
+    # is given up only when doing so actually buys width back.
+    #
+    # The comparison runs on plain `emit_p3` so a rolled-back candidate
+    # cannot leave an advisory behind; only the shape that survives is
+    # re-emitted through `emit_p3_and_warn`.
+    p3_snap = emitter.snapshot()
+    emit_p3(p3_col + name_col_offset)
+    aligned_width = emitter.last_lines_max_width(p3_snap[0])
+    if aligned_width <= effective_max:
+        emitter.restore(p3_snap)
+        emit_p3_and_warn(p3_col + name_col_offset)
+        return
+    emitter.restore(p3_snap)
+    emit_p3(None)
+    if emitter.last_lines_max_width(p3_snap[0]) >= aligned_width:
+        # Unaligned is no narrower — the overflow is inherent to the
+        # parameters, not to the padding. Keep the aligned form, which
+        # is the shape the spec asks for.
+        emitter.restore(p3_snap)
+        emit_p3_and_warn(p3_col + name_col_offset)
+        return
+    emitter.restore(p3_snap)
+    emit_p3_and_warn(None)
 
 
 def _emit_spread_parameter(
@@ -7875,14 +8057,6 @@ def _emit_cast_expression(
     _emit_node(emitter, source, value_node)
 
 
-_ESTIMATE_VERBATIM_NODE_TYPES: Final[frozenset[str]] = frozenset({
-    "string_literal",
-    "character_literal",
-    "line_comment",
-    "block_comment",
-})
-
-
 def _push_indent_to_col(
     emitter: "Emitter", target_col: int
 ) -> tuple[int, int]:
@@ -8023,59 +8197,32 @@ def _max_source_preserve_line_width(
 
 
 def _arg_list_takes_source_preserve_path(
-    emitter: Emitter,
-    source: bytes,
-    node: Node,
-    column: int | None = None,
+    emitter: Emitter, source: bytes, node: Node
 ) -> bool:
     """Return True when `_emit_argument_list` would emit `node`
-    verbatim from source (`write_raw_lines`) at the supplied
-    emission column, instead of falling through to the wrap
-    engine.
+    verbatim from source (`write_raw_lines`) instead of falling
+    through to the wrap engine.
 
-    Contract: when `column` is `None`, the predicate evaluates
-    against `emitter.column` (the current emit position — what
-    `_emit_argument_list` itself sees). When `column` is
-    supplied, the predicate evaluates against that future
-    column — used by `_emit_method_chain_wrapped`'s P1
-    newline-discriminator, which runs the prediction BEFORE
-    the segment's name + args emit (so `emitter.column` would
-    be stale by the time the predicate runs).
+    Preservation fires when the arg list spans multiple source rows
+    AND one of:
 
-    Sharing the predicate between the arg-list emitter and the
-    chain discriminator is what keeps them in agreement. Two
-    callers, one column-sensitive contract: if a discriminator
-    were to guess from row-count alone (or duplicate the gate
-    without the width opt-out), the wrap-engine fallout case
-    can re-introduce the Bug 1 chain-stranding shape.
+      - It contains interleaved `//` / `/* */` comments. The wrap
+        engine has no concept of an inter-argument comment and would
+        corrupt the output.
+      - It sits inside a `// CSOFF` / `// CSON` region, where the
+        spec's "Formatted Log and Diagnostic Messages" rule opts out
+        of reflow explicitly.
 
-    Source-preservation fires when the arg list spans multiple
-    source rows AND one of:
+    Both are CORRECTNESS reasons — things reflow would break. There
+    is deliberately no third, width-based trigger; 0.7.0 removed the
+    "the source's first line fits, so keep the author's layout"
+    fallback and everything that existed to carve exceptions out of
+    it. Consequently this predicate is now column-insensitive, and
+    the `column` parameter its callers used to pass is gone.
 
-      - The arg list contains interleaved `//` / `/* */`
-        comments (the wrap engine has no concept of inter-arg
-        comments and would corrupt the output). The CSOFF
-        opt-out below shares the unconditional nature: width
-        is irrelevant for both.
-      - The arg list sits inside a `// CSOFF` / `// CSON`
-        region — the spec's "Formatted Log and Diagnostic
-        Messages" rule explicitly opts out of reflow there.
-      - The source-text's first line fits at the supplied
-        emission column (`column + first_line_length
-        <= effective_max`) AND the full args would NOT fit
-        single-line at that column. The full-args-fit check
-        overrides preservation when the author-authored
-        multi-row layout is gratuitous (e.g. a prior format
-        pass split `foo(arg)` across two lines when single-
-        line would have been canonical).
-
-    The "full args fits single-line" override is skipped when
-    any arg itself spans multiple rows (a text block, lambda
-    body, nested multi-row expression) — source-preservation
-    remains the safer path then since single-line emit is
-    unlikely to fit.
+    See the `building/source-preservation-history` FAQ before adding
+    anything here.
     """
-    col = emitter.column if column is None else column
     if not _node_spans_multiple_rows(node):
         return False
 
@@ -9622,7 +9769,7 @@ def _emit_method_chain_wrapped(
         # own emit (which is when the chain has already
         # committed to P1).
         if _arg_list_takes_source_preserve_path(
-            emitter, source, args, column=args_emit_column
+            emitter, source, args
         ):
             return True
         # An argument that OWNS its rows still emits multi-line

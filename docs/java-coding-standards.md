@@ -427,14 +427,34 @@ after the longest parameter type:
 A **single** parameter is never padded — the column exists to line up
 several names, and with one name there is nothing to line it up with,
 so the gutter would read as a mistake. A single parameter takes one
-space after its type on whichever priority it lands. The same applies
-to a list containing a varargs or receiver parameter, whose prefix is
-not a bare type: those lists are emitted one-per-line without padding.
+space after its type on whichever priority it lands. A list containing
+a varargs parameter (`String... rest`) is likewise emitted one-per-line
+without padding, because its prefix is not a bare type and so a single
+measured width does not describe it.
 
 **Priority 3: Double-indented parameters** — when any single
 parameter line under Priority 2 exceeds 80 characters, line-break
 before the first parameter and place each parameter on its own line
-with double indentation (8 spaces from the method declaration).
+with double indentation (8 spaces from the method declaration). Priority 3
+is skipped when it would not actually gain room — that is, when the
+opening parenthesis already sits at or left of the double-indent
+column, breaking after it moves every parameter FURTHER right, so
+Priority 2 remains the narrowest shape and becomes the terminal
+candidate. What decides this is the column of the `(`, not the
+length of the method name: the return type, any modifiers and any
+type parameters all push it right.
+
+```java
+    // paren at column 11, double-indent would be 12 — keep Priority 2
+    void m(SomeExtremelyLongQualifiedTypeName a,
+           int aParameterWithAnExtremelyLongName)
+
+    // paren at column 19 — Priority 3 is genuinely narrower
+    StringBuffer m(
+            SomeExtremelyLongQualifiedTypeName a,
+            int aParameterWithAnExtremelyLongName)
+```
+
 Types are left-aligned vertically; names are aligned on the first
 4-space tab stop after the longest type:
 
@@ -1212,10 +1232,10 @@ at single indentation from the start of the enclosing call's line:
             .build());
 ```
 
-**Rule 2 — skip the greedy tiers (priority 2 and 2b).** Within an embedded call's own
-argument list, the two-line comma-packed tier is not used; the
-cascade goes priority 1 → priority 3 → priority 4. This keeps the
-argument list a single readable column:
+**Rule 2 — skip the greedy tiers (priority 2 and 2b).** Within an
+embedded call's own argument list, neither two-line greedy tier is
+used; the cascade goes priority 1 → priority 3 → priority 4. This
+keeps the argument list a single readable column:
 
 ```java
     reportUpdates.add(
