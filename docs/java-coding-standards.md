@@ -424,6 +424,13 @@ after the longest parameter type:
     }
 ```
 
+A **single** parameter is never padded — the column exists to line up
+several names, and with one name there is nothing to line it up with,
+so the gutter would read as a mistake. A single parameter takes one
+space after its type on whichever priority it lands. The same applies
+to a list containing a varargs or receiver parameter, whose prefix is
+not a bare type: those lists are emitted one-per-line without padding.
+
 **Priority 3: Double-indented parameters** — when any single
 parameter line under Priority 2 exceeds 80 characters, line-break
 before the first parameter and place each parameter on its own line
@@ -1061,10 +1068,35 @@ expression — as a positional argument of another call, or as the
 receiver of a method chain. See
 [Nested-call wrap](#nested-call-wrap) below.
 
+**Priority 2b: Next-line, all arguments on one line** — if priority 2
+overflows because the call's own prefix leaves no useful room at the
+paren-aligned column, but **all** the arguments fit together on a
+single continuation line, break immediately after the opening
+parenthesis and place them there at **single indentation (4 spaces)**
+from the start of the call's line:
+
+```java
+    BadOptionParametersException ex = new BadOptionParametersException(
+        COMMAND_LINE, CONFIG, "--config", List.of());
+```
+
+This is the zero-arguments-on-the-call-line member of the same greedy
+family as priority 2, which is why it is numbered with it and tried
+immediately after it. The rule for the family is **two lines
+maximum**: zero or more arguments on the call line, and all remaining
+arguments on one continuation line. Priority 2 covers the "one or
+more on the call line" case; priority 2b covers "none on the call
+line". If the arguments will not fit on a single continuation line
+either, the greedy family is exhausted and the cascade falls through
+to priority 3.
+
+Like priority 2, this priority is skipped when the call is embedded
+in another expression — see [Nested-call wrap](#nested-call-wrap).
+
 **Priority 3: Paren-aligned, one argument per line** — if the
-argument list cannot fit in priority 2's two-line shape, place each
-argument on its own line, with all arguments left-aligned to the
-first column after the opening parenthesis:
+argument list fits neither two-line greedy shape (priority 2 or 2b),
+place each argument on its own line, with all arguments left-aligned
+to the first column after the opening parenthesis:
 
 ```java
     someVar.someMethod(parameterA,
@@ -1072,30 +1104,6 @@ first column after the opening parenthesis:
                        parameterC,
                        parameterD);
 ```
-
-**Priority 3b: Next-line, all arguments on one line** — if the
-arguments cannot fit at the paren-aligned column but **all** of them
-fit together on a single continuation line, break immediately after
-the opening parenthesis and place them there at **single
-indentation (4 spaces)** from the start of the call's line:
-
-```java
-    BadOptionParametersException ex = new BadOptionParametersException(
-        COMMAND_LINE, CONFIG, "--config", List.of());
-```
-
-This is the zero-arguments-on-the-call-line member of the same
-greedy family as priority 2. The rule for that family is **two
-lines maximum**: zero or more arguments on the call line, and all
-remaining arguments on one continuation line. Priority 2 covers the
-"one or more on the call line" case; this covers "none on the call
-line", which arises when the call's own prefix is so wide that the
-paren-aligned column has no useful room left. If the arguments will
-not fit on a single continuation line either, fall through to
-priority 4.
-
-Like priority 2, this priority is skipped when the call is embedded
-in another expression — see [Nested-call wrap](#nested-call-wrap).
 
 **Priority 4: Next-line, single-indented, one argument per line** —
 if any single argument is too long to fit on a single line at the
@@ -1204,7 +1212,7 @@ at single indentation from the start of the enclosing call's line:
             .build());
 ```
 
-**Rule 2 — skip priority 2.** Within an embedded call's own
+**Rule 2 — skip the greedy tiers (priority 2 and 2b).** Within an embedded call's own
 argument list, the two-line comma-packed tier is not used; the
 cascade goes priority 1 → priority 3 → priority 4. This keeps the
 argument list a single readable column:
