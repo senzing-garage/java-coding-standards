@@ -1180,29 +1180,45 @@ line to render on:
                  () -> mapB.put("key2", "val2"));
 ```
 
-The rule holds at **every** priority, not only where arguments are
-packed onto the call line. Under priority 3 each argument already
-has its own line, but an argument that wraps there puts its own
-continuation at exactly the column its siblings occupy, so the
-continuation reads as another argument:
+The rule holds at every priority above priority 4, which is the
+terminal fallback and where wrapping is permitted of necessity.
+Priority 3 is included even though each argument already has its
+own line there. In the clearest case the argument's continuation
+lands at exactly the column its siblings occupy, so it stops being
+distinguishable from an argument:
 
 ```java
-    // WRONG — is `+ " record not as expected:"` an argument?
-    multilineFormat(rr.getFormat()
-                    + " record not as expected:",
-                    "RECORDS TEXT: ",
-                    recordsText);
+                    // WRONG — is `+ " record not as expected:"`
+                    // an argument or a continuation?
+                    multilineFormat(rr.getFormat()
+                                    + " record not as expected:",
+                                    "RECORDS TEXT: ",
+                                    recordsText,
+                                    "EXPECTED: ",
+                                    expectedText);
 ```
 
 Falling through to priority 4 moves the arguments to their own
 column and leaves the continuation unambiguously subordinate:
 
 ```java
-    multilineFormat(
-        rr.getFormat() + " record not as expected:",
-        "RECORDS TEXT: ",
-        recordsText);
+                    multilineFormat(
+                        rr.getFormat() + " record not as expected:",
+                        "RECORDS TEXT: ",
+                        recordsText,
+                        "EXPECTED: ",
+                        expectedText);
 ```
+
+That example needs its depth to reach priority 3 at all; at
+shallower indentation the same call fits priority 2. The rule
+applies to any argument that wraps, not only to the ambiguous
+case — a nested call's continuation sits at its own paren column,
+strictly deeper than its siblings and so never ambiguous, and it
+still breaks the list. Uniformity is the point: one question is
+asked of every argument at every priority, rather than a
+per-construct judgement about whether a given continuation happens
+to be confusable.
 
 This applies to any argument complex enough to wrap — a nested
 call, a lambda, an object creation, or a compound expression such

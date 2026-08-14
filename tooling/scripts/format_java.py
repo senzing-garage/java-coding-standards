@@ -3827,7 +3827,7 @@ def _emit_javadoc_block(
             #
             # If it does not fit, say so. Reflowing it is not an
             # option: the indent and the markers are the structure,
-            # and merging such a line into its neighbours is what the
+            # and merging such a line into its neighbors is what the
             # structural classification exists to prevent. But the
             # formatter must not decline silently either — otherwise a
             # developer hits a checkstyle LineLength failure, runs the
@@ -5832,7 +5832,8 @@ def _emit_enhanced_for_statement(
     # `emitter.restore(saved)` above also restored `_tail_reserve`,
     # so the inline path's `+ 3` is gone and without this the value
     # emits against the bare limit and the `)` lands in column 81 —
-    # silently, idempotently, and beyond the reach of a reformat.
+    # silently, idempotent on re-run, and so beyond the reach of a
+    # reformat.
     # Every sibling construct reserves for its own closer: basic
     # `for` and `if` reserve 2 for `) {`, this path needs 1 because
     # the Allman brace moves to the next line.
@@ -8582,8 +8583,8 @@ def _emit_argument_list(
             # Taking the max makes TO-TARGET a floor: a deeper author
             # indent is respected and merely re-anchored, but a large
             # negative displacement can never drag continuations left
-            # of the canonical column (and never to column 0, which an
-            # unfloored re-anchor did produce).
+            # of the canonical column (and never to column 0, which a
+            # re-anchor without that floor did produce).
             #
             # Idempotency holds by construction: on a later pass the
             # source column IS the emit column, so RE-ANCHOR is 0 and
@@ -8645,13 +8646,6 @@ def _emit_argument_list(
     # Source-preserved first line wouldn't fit and there
     # are no comments — fall through. The wrap engine
     # below picks a layout that fits at the new column.
-
-    # A multi-line single arg (e.g. a text block) cannot fit
-    # on the call line by definition; the P1 candidate is
-    # omitted so `try_priorities` doesn't fruitlessly emit it.
-    any_multiline_arg = any(
-        _node_spans_multiple_rows(a) for a in args
-    )
 
     # 0.5.0 item 10 — spec C6 extension to method/constructor
     # call parens, restricted to single-arg calls whose only
@@ -8717,10 +8711,10 @@ def _emit_argument_list(
     # break the standards' "Anti-pattern" section forbids: some
     # arguments on the call line, the rest beneath at a different
     # column.
-    p1_illegit_wrap = [False]
+    p1_invalid_wrap = [False]
 
     def emit_p1() -> None:
-        p1_illegit_wrap[0] = False
+        p1_invalid_wrap[0] = False
         emitter.write("(")
         if single_arg_binary:
             arg_col = emitter.column
@@ -8754,7 +8748,7 @@ def _emit_argument_list(
                     emitter.line_count > operand_start
                 )
                 if prev_arg_multi_row and not _arg_owns_its_rows(arg):
-                    p1_illegit_wrap[0] = True
+                    p1_invalid_wrap[0] = True
         emitter.write(")")
 
     def emit_p4_single_arg_block_indent() -> None:
@@ -8954,18 +8948,18 @@ def _emit_argument_list(
             # `Emitter._arg_list_p4_fired`.
             arg_wrapped_via_p4 = emitter._arg_list_p4_fired
             emitter._arg_list_p4_fired = prev_p4 or arg_wrapped_via_p4
-            # 0.7.0: same reasoning as P1's `p1_illegit_wrap`. Packing
+            # 0.7.0: same reasoning as P1's `p1_invalid_wrap`. Packing
             # this arg onto the call line "fits" only because the arg
             # itself wrapped internally — every emitted line is under
             # the cap, so the width check passes and P2 commits a
             # partial break. Break before the arg instead, which
             # usually leaves it room to render whole. Arguments that
             # inherently own multiple rows are exempt.
-            arg_illegit_wrap = (
+            arg_invalid_wrap = (
                 emitter.line_count > operand_start
                 and not _arg_owns_its_rows(arg)
             )
-            if not widths_ok or arg_wrapped_via_p4 or arg_illegit_wrap:
+            if not widths_ok or arg_wrapped_via_p4 or arg_invalid_wrap:
                 emitter.restore(saved)
                 emitter._arg_list_p4_fired = prev_p4
                 emitter.write(",")
@@ -8995,7 +8989,7 @@ def _emit_argument_list(
     # 0.7.0 — an ordinary argument that WRAPPED inside the
     # paren-aligned shape. Same rule P1 and P2 already enforce: if an
     # argument breaks, the argument list breaks.
-    p3_arg_illegit_wrap = [False]
+    p3_arg_invalid_wrap = [False]
 
     def emit_p3_paren_one_per_line() -> None:
         # P3: paren-aligned, one argument per line. Per spec
@@ -9052,7 +9046,7 @@ def _emit_argument_list(
                 and not _arg_owns_its_rows(arg)
                 and not arg_used_raw_rows
             ):
-                p3_arg_illegit_wrap[0] = True
+                p3_arg_invalid_wrap[0] = True
             # 0.7.0 — whole-list escalation. If ANY argument
             # cannot render at `cont_col` without either overflowing
             # or escaping to a shallower anchor, the paren-aligned
@@ -9085,14 +9079,18 @@ def _emit_argument_list(
             # For `index == 0` that is the call line itself, whose
             # indent is the statement indent and so is ALWAYS left of
             # `cont_col`; scanning it made every wrapping first
-            # argument report an escape and pushed the whole list to
-            # P4, which is exactly the paren-aligned shape priority 3
-            # exists to produce:
+            # argument report an escape, so the signal fired on
+            # evidence that was never about the argument at all.
             #
-            #     someMethod(innerCall(alphaArgumentValue,
-            #                          betaArgumentValue,
-            #                          gammaArgumentValue),
-            #                second);            <- fits at 49 cols
+            # Note the escape signal is not what decides this shape
+            # any more. The argument-breaks rule below escalates a
+            # wrapping first argument to P4 on its own, for a
+            # different and valid reason, so correcting this scan
+            # no longer restores the paren-aligned form — see the
+            # `18_arg0_wraps_so_whole_list_breaks` fixture. What the
+            # correction still buys is that the ESCAPE signal means
+            # what it says: a row anchored somewhere this list did
+            # not choose.
             #
             # For `index > 0` the skipped row is the argument's own
             # first row, which the arg list opened at exactly
@@ -9166,8 +9164,9 @@ def _emit_argument_list(
             # statement, say — and those land on the construct's final
             # line only. A middle argument's row is finalized with just
             # its comma, so carrying the parent's reserve there makes
-            # the budget one char too tight and breaks a 79-column
-            # argument that fits:
+            # the budget one char too tight and splits an argument
+            # whose row would have measured 80 columns, comma
+            # included, which is legal:
             #
             #     SzConfigManager.class.getMethod("registerConfig",
             #                                     String.class),
@@ -9432,7 +9431,7 @@ def _emit_argument_list(
         if (
             emitter.last_lines_max_width(initial[0]) <= effective_max
             and not p1_p4_fired
-            and not p1_illegit_wrap[0]
+            and not p1_invalid_wrap[0]
         ):
             emitter._arg_list_p4_fired = prev_p4 or p1_p4_fired
             _fire_wrap_overflow_advisory(
@@ -9514,13 +9513,13 @@ def _emit_argument_list(
         p3_snap = emitter.snapshot()
         p3_arg0_fired_p4[0] = False
         p3_arg_escaped[0] = False
-        p3_arg_illegit_wrap[0] = False
+        p3_arg_invalid_wrap[0] = False
         emit_p3_paren_one_per_line()
         if (
             emitter.last_lines_max_width(p3_snap[0]) <= effective_max
             and not p3_arg0_fired_p4[0]
             and not p3_arg_escaped[0]
-            and not p3_arg_illegit_wrap[0]
+            and not p3_arg_invalid_wrap[0]
         ):
             _fire_wrap_overflow_advisory(
                 emitter, node, cascade_start, "argument list"
@@ -9703,7 +9702,7 @@ def _emit_method_chain_wrapped(
     # The block-relative value is a FLOOR, not an alternative: a
     # chain sitting at a shallower column than its own statement
     # indent (possible when an enclosing construct emitted it at a
-    # dedented position) would otherwise anchor its tail left of
+    # shallower position) would otherwise anchor its tail left of
     # the statement it belongs to. `max` keeps the tail at or
     # right of the canonical continuation column in every case.
     p3_col = 4 * (emitter.indent_level + 1)

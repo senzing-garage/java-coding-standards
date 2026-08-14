@@ -363,9 +363,11 @@ rule applies. The round-2 correction to the escape scan is what made
 priority 3 reachable for a wrapping first argument, which is why this
 gap surfaced now rather than earlier.
 
-Most of what changes is an argument coming back whole where it used to
-be split at the paren-aligned column — a nested call, a chain, or a
-string concatenation:
+The change usually costs a line: of the 126 files that take a different
+shape, 94 grow, 15 shrink and 17 stay the same length. What it buys is
+that an argument comes back whole where it used to be split at the
+paren-aligned column — a nested call, a chain, or a string
+concatenation:
 
 ```java
     // before                            after
@@ -376,13 +378,13 @@ string concatenation:
                     requiredSources);
 ```
 
-Cost: 121 files take a different shape and the corpus grows 660 lines
-(+0.30%). Lines over 80 are unchanged at 1,581, files needing a second
-pass are unchanged at 6, and the count of files reformatted against
-0.6.0 moves only 322 to 324 — those 121 files were already being
-reformatted, so an adopter's diff barely grows.
+Cost: 126 files take a different shape and the corpus grows 606 lines
+(+0.27%). Lines over 80 are unchanged, files needing a second pass are
+unchanged at 6, and the count of files reformatted against 0.6.0 moves
+only 322 to 324 — 124 of those 126 files were already being reformatted,
+so an adopter's diff grows by two files.
 
-### Argument separators are reserved for
+### Argument separators are now reserved for
 
 `emit_p4_multi_arg` appends a `,` after every argument and a `)` after
 the last, and reserved for neither. An argument that measured itself as
@@ -773,7 +775,12 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 723/723 pytest on the pinned tree-sitter 0.26.0. New fixtures
+- 725/725 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+  consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
+  found, so a standalone clone collects 515 and the 210 skipped
+  parametrisations are exactly the AST-equivalence and idempotency
+  checks — the properties this release most needs verified. The new
+  `corpus-gate` CI job exists to supply that corpus. New fixtures
   cover the nested-call wrap's two reachable shapes, a nested
   argument with no chain, a multi-argument enclosing call, the
   all-inline case, and three idempotency regressions: the
