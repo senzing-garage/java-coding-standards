@@ -8980,6 +8980,10 @@ def _emit_argument_list(
     # line starting left of the paren-align column. Read at the
     # commit check to escalate the whole list to P4.
     p3_arg_escaped = [False]
+    # 0.7.0 — an ordinary argument that WRAPPED inside the
+    # paren-aligned shape. Same rule P1 and P2 already enforce: if an
+    # argument breaks, the argument list breaks.
+    p3_arg_illegit_wrap = [False]
 
     def emit_p3_paren_one_per_line() -> None:
         # P3: paren-aligned, one argument per line. Per spec
@@ -9013,6 +9017,25 @@ def _emit_argument_list(
                 emitter._arg_list_p4_fired = False
             arg_start_line = emitter.line_count
             _emit_arg_with_optional_paren_align(arg)
+            # 0.7.0 — "if an argument breaks, the argument list
+            # breaks", applied at P3 as it already is at P1 and P2.
+            # A paren-aligned argument that wrapped internally puts
+            # its own continuation at the column its SIBLINGS use, so
+            # the continuation reads as another argument:
+            #
+            #     multilineFormat(rr.getFormat()
+            #                     + " record not as expected:",
+            #                     "RECORDS TEXT: ",
+            #
+            # Breaking the whole list moves the arguments to their own
+            # column and leaves the continuation clearly subordinate.
+            # Arguments that inherently own rows are exempt, as
+            # everywhere else this rule is applied.
+            if (
+                emitter.line_count > arg_start_line
+                and not _arg_owns_its_rows(arg)
+            ):
+                p3_arg_illegit_wrap[0] = True
             # 0.7.0 — whole-list escalation. If ANY argument
             # cannot render at `cont_col` without either overflowing
             # or escaping to a shallower anchor, the paren-aligned
@@ -9104,7 +9127,36 @@ def _emit_argument_list(
         for index, arg in enumerate(args):
             emitter.newline()
             _emit_p4_write_target_indent(emitter, push_count, extra)
-            _emit_arg_with_optional_paren_align(arg)
+            # Reserve the one character this loop appends after the
+            # argument — `,` for every argument but the last, `)` for
+            # the last. Without it the argument measures itself against
+            # the bare limit, commits at exactly 80, and the separator
+            # lands in column 81. The overflow is invisible to the
+            # argument (which fits) and to this function (which has
+            # already committed), so it survives every reformat.
+            #
+            # The INHERITED reserve is dropped for every argument but
+            # the last. It stands for characters the parent appends
+            # after this whole construct — the `;` of the enclosing
+            # statement, say — and those land on the construct's final
+            # line only. A middle argument's row is finalized with just
+            # its comma, so carrying the parent's reserve there makes
+            # the budget one char too tight and breaks a 79-column
+            # argument that fits:
+            #
+            #     SzConfigManager.class.getMethod("registerConfig",
+            #                                     String.class),
+            # where
+            #     SzConfigManager.class.getMethod("registerConfig", String.class),
+            # is 80 columns and legal.
+            is_last = index == len(args) - 1
+            prev_sep = emitter.set_tail_reserve(
+                (emitter.tail_reserve + 1) if is_last else 1
+            )
+            try:
+                _emit_arg_with_optional_paren_align(arg)
+            finally:
+                emitter.set_tail_reserve(prev_sep)
             if index < len(args) - 1:
                 emitter.write(",")
         emitter.write(")")
@@ -9437,11 +9489,13 @@ def _emit_argument_list(
         p3_snap = emitter.snapshot()
         p3_arg0_fired_p4[0] = False
         p3_arg_escaped[0] = False
+        p3_arg_illegit_wrap[0] = False
         emit_p3_paren_one_per_line()
         if (
             emitter.last_lines_max_width(p3_snap[0]) <= effective_max
             and not p3_arg0_fired_p4[0]
             and not p3_arg_escaped[0]
+            and not p3_arg_illegit_wrap[0]
         ):
             _fire_wrap_overflow_advisory(
                 emitter, node, cascade_start, "argument list"
