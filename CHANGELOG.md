@@ -294,6 +294,47 @@ components have broken every row can sit under the limit; the check
 would pass and commit. It is rejected the same way the argument-list
 cascade rejects an argument that wrapped.
 
+### Escalation exemptions, and array initializers stop preserving
+
+Extending the argument-breaks rule to priority 3 exposed two ways the
+escalation could fire on rows the argument list did not put there.
+
+**Both priority 3 escape signals now share the same exemptions.** A row
+left of the continuation column is evidence of an escape only when this
+argument list's cascade chose that anchor. A text block's content starts
+where the author wrote it — often column 0 — and an argument replaying
+source rows carries its own columns; neither says anything about this
+list. `p3_arg_escaped` was testing every row regardless, which pushed 8
+corpus lines over 80.
+
+**The array-creation source-preserve path is retired.** It replayed a
+multi-row `new Type[] { ... }` verbatim with no re-anchoring, so when the
+escalation moved the argument's first row to `block + 4` the preserved
+continuation stayed where the author left it — the two halves of one
+argument ending 24 columns apart, as a stable fixed point:
+
+```java
+        reporter.reportEverything(
+            alphaArgumentValueNumberOne,
+            new String[] { "aa",
+                                    "bb" },          // stranded
+```
+
+Suppressing the escalation for preserved arguments was tried first and
+rejected: it made the choice of shape depend on whether the array
+happened to be written across rows, which is the history-dependence this
+release exists to remove, and it left one file oscillating. Retiring the
+path instead makes array layout a function of the AST like everything
+else. Two files change; one of them is the stranding defect above, and
+the other loses an author's hand-grouping of `--flag, value` pairs, which
+is what `// CSOFF` is for.
+
+Four preserve channels reachable from argument emission remain — switch
+rules, formal parameters, and the argument-list comment and CSOFF cases.
+The escalation is suppressed for arguments that use them, which is
+correct for the comment and CSOFF cases (those are content, not layout)
+and a stopgap for the other two.
+
 ### The argument-breaks rule now holds at priority 3
 
 "If an argument breaks, the argument list breaks" was enforced at
@@ -776,8 +817,8 @@ same commit. `requirements.txt` now says so in a comment.
   one.
 
 - Lines over 80 characters across the four trees moved from
-  1618 to 1581, and all 25 over-long enhanced-`for` headers are
-  now wrapped. The 1,581 that remain are overwhelmingly content
+  1618 to 1573, and all 25 over-long enhanced-`for` headers are
+  now wrapped. The 1,573 that remain are overwhelmingly content
   a formatter must not reflow: half of them (787) carry a
   javadoc `{@snippet}` / `@highlight` / `@replace` directive
   whose region markup breaks if it is wrapped, 334 are a single
@@ -791,7 +832,7 @@ same commit. `requirements.txt` now says so in a comment.
   fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
-- 324 of 504 trial files are reformatted, a net **+1,491 lines**
+- 324 of 504 trial files are reformatted, a net **+1,437 lines**
   (about +0.7% against 220k). The release trades lines for
   compliance and predictability: rule 1 breaks each nesting
   level of an embedded call onto its own row, and "if an

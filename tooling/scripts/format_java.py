@@ -255,6 +255,7 @@ class Emitter:
         "_arg_list_p4_fired",
         "_array_init_inline_only",
         "_anchor_escaped",
+        "_raw_rows_emitted",
         "warnings",
     )
 
@@ -341,6 +342,13 @@ class Emitter:
         # break-at-`=`, where the construct starts shallow
         # enough that the last resort is not reached.
         self._anchor_escaped: bool = False
+        # Set whenever an emit replays source rows verbatim through
+        # `write_raw_lines`. Readers save-reset-check-restore, like
+        # `_arg_list_p4_fired`. Distinguishes "this construct wrapped"
+        # from "this construct's rows came out of the source", which
+        # look identical in `line_count` but mean opposite things to a
+        # wrap decision.
+        self._raw_rows_emitted: bool = False
         # 0.6.0: when True, `_emit_array_initializer` emits the
         # single-line inline form unconditionally rather than
         # running its own multi-line cascade. Callers that are
@@ -472,7 +480,8 @@ class Emitter:
     def snapshot(
         self,
     ) -> tuple[
-        int, str, int, int, int | None, int | None, bool, bool, bool, int
+        int, str, int, int, int | None, int | None, bool, bool, bool,
+        bool, int
     ]:
         """Capture the emitter state for speculative emission.
 
@@ -518,6 +527,7 @@ class Emitter:
             self._arg_list_p4_fired,
             self._array_init_inline_only,
             self._anchor_escaped,
+            self._raw_rows_emitted,
             len(self.warnings),
         )
 
@@ -525,7 +535,7 @@ class Emitter:
         self,
         snap: tuple[
             int, str, int, int, int | None, int | None, bool, bool,
-            bool, int
+            bool, bool, int
         ],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
@@ -546,6 +556,7 @@ class Emitter:
             arg_list_p4_fired,
             array_init_inline_only,
             anchor_escaped,
+            raw_rows_emitted,
             warnings_count,
         ) = snap
         del self._lines[lines_count:]
@@ -557,6 +568,7 @@ class Emitter:
         self._arg_list_p4_fired = arg_list_p4_fired
         self._array_init_inline_only = array_init_inline_only
         self._anchor_escaped = anchor_escaped
+        self._raw_rows_emitted = raw_rows_emitted
         del self.warnings[warnings_count:]
 
     def last_lines_max_width(self, since: int) -> int:
@@ -605,6 +617,11 @@ class Emitter:
         the last newline) is left open so subsequent `write()` /
         `newline()` calls continue normally.
         """
+        # Any caller of this method is replaying source bytes rather
+        # than laying content out, so the rows it produces are not a
+        # wrap. Wrap decisions that count rows must be able to tell
+        # the difference.
+        self._raw_rows_emitted = True
         parts = text.split("\n")
         # First segment continues the current line.
         self._current += parts[0]
@@ -4634,11 +4651,6 @@ def _emit_array_creation_expression(
     `dimensions_expr` (`[5]`) or `dimensions` (`[]`) nodes,
     optionally followed by an `array_initializer`.
     """
-    if _node_spans_multiple_rows(node):
-        emitter.write_raw_lines(
-            _node_source_text(source, node), strip_trailing_ws=True
-        )
-        return
     emitter.write("new ")
     for child in node.named_children:
         # Spec "Whitespace and Operator Spacing": single space
@@ -9016,7 +9028,11 @@ def _emit_argument_list(
                 saved_p4 = emitter._arg_list_p4_fired
                 emitter._arg_list_p4_fired = False
             arg_start_line = emitter.line_count
+            prev_raw = emitter._raw_rows_emitted
+            emitter._raw_rows_emitted = False
             _emit_arg_with_optional_paren_align(arg)
+            arg_used_raw_rows = emitter._raw_rows_emitted
+            emitter._raw_rows_emitted = prev_raw or arg_used_raw_rows
             # 0.7.0 — "if an argument breaks, the argument list
             # breaks", applied at P3 as it already is at P1 and P2.
             # A paren-aligned argument that wrapped internally puts
@@ -9034,6 +9050,7 @@ def _emit_argument_list(
             if (
                 emitter.line_count > arg_start_line
                 and not _arg_owns_its_rows(arg)
+                and not arg_used_raw_rows
             ):
                 p3_arg_illegit_wrap[0] = True
             # 0.7.0 — whole-list escalation. If ANY argument
@@ -9080,15 +9097,23 @@ def _emit_argument_list(
             # For `index > 0` the skipped row is the argument's own
             # first row, which the arg list opened at exactly
             # `cont_col`, so it can never be an escape either.
-            rows = list(emitter._lines[arg_start_line + 1:])
-            if emitter.line_count > arg_start_line:
-                rows.append(emitter._current)
-            for row in rows:
-                if not row.strip():
-                    continue
-                if len(row) - len(row.lstrip()) < cont_col:
-                    p3_arg_escaped[0] = True
-                    break
+            # Exempt the same arguments the wrap flag exempts. A row
+            # left of `cont_col` is evidence of an escape only when the
+            # ARGUMENT LIST is what put it there. A text block's content
+            # starts wherever the author wrote it — often column 0 — and
+            # a source-preserved argument replays its own columns; in
+            # neither case did this list's cascade choose the anchor, so
+            # neither is evidence about this list.
+            if not _arg_owns_its_rows(arg) and not arg_used_raw_rows:
+                rows = list(emitter._lines[arg_start_line + 1:])
+                if emitter.line_count > arg_start_line:
+                    rows.append(emitter._current)
+                for row in rows:
+                    if not row.strip():
+                        continue
+                    if len(row) - len(row.lstrip()) < cont_col:
+                        p3_arg_escaped[0] = True
+                        break
             if index == 0:
                 if emitter._arg_list_p4_fired:
                     p3_arg0_fired_p4[0] = True
