@@ -55,7 +55,7 @@ jobs:
   # exists when this repo is checked out as a submodule of a consumer
   # project — so in the standalone checkout the `pytest` job above uses,
   # `test_fuzz_corpus.py` and `test_performance.py` silently skip. That
-  # left the AST round-trip and idempotency properties ungated in CI.
+  # left the AST round-trip and idempotency properties not gated in CI.
   # This job supplies a corpus so they actually run.
   corpus-gate:
     name: "Corpus gate: AST round-trip, idempotency, perf"
