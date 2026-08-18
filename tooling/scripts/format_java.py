@@ -7641,7 +7641,10 @@ def _emit_formal_parameters(
         return
     params = [
         c for c in node.children
-        if c.type in ("formal_parameter", "spread_parameter")
+        if c.type in (
+            "formal_parameter", "spread_parameter",
+            "receiver_parameter",
+        )
     ]
     if not force_wrap:
         # Default single-line emit (caller's responsibility to
@@ -7827,6 +7830,29 @@ def _emit_formal_parameters(
         return
     emitter.restore(p3_snap)
     emit_p3_and_warn(None)
+
+
+def _emit_receiver_parameter(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit `[ANNOTATIONS] TYPE [Outer.] this` verbatim.
+
+    A receiver parameter exists only to give annotations somewhere to
+    attach; it declares no name and must come first. Emitting the
+    source text unchanged preserves any annotations exactly and keeps
+    the construct out of the name-alignment machinery, which has
+    nothing to align here — `_formal_param_name_col_offset` already
+    declines a list containing one, because its prefix is not a bare
+    type and a single measured width would not describe it.
+
+    Before this existed the parameter was simply DROPPED: the
+    parameter-list filter kept only `formal_parameter` and
+    `spread_parameter`, so `void m(T this, String s)` emitted as
+    `void m(String s)`. Dropping a bare `T this` is semantically
+    inert, but dropping an annotated one discards the annotation,
+    which is not.
+    """
+    emitter.write(_node_source_text(source, node))
 
 
 def _emit_spread_parameter(
@@ -10798,6 +10824,7 @@ def _emit_variable_declarator(
 # — that's preferable to silently passing source text through
 # (which would propagate non-spec-compliant input).
 _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
+    "receiver_parameter": _emit_receiver_parameter,
     # --- Leaf tokens (Phase 2b) ---
     # Numeric literals — formatted identical to source.
     "decimal_integer_literal": _emit_verbatim,
