@@ -7963,6 +7963,34 @@ def _emit_array_type(
     emitter.write("".join(dim_text.split()))
 
 
+_COMPUTED_RECEIVER_TYPES: Final[frozenset[str]] = frozenset({
+    "method_invocation",
+    "array_access",
+    "object_creation_expression",
+    "parenthesized_expression",
+    "cast_expression",
+})
+"""Receiver forms whose value is computed rather than named.
+
+Only these may be split from a trailing `.field`. Everything else a
+`field_access` can carry — a bare identifier, or a nested
+`field_access` over identifiers — is part of a qualified name or a
+constant reference, where the dots belong to the name.
+"""
+
+
+def _field_access_receiver_is_computed(node: Node) -> bool:
+    """True when `node` is a computed value rather than a name."""
+    if node.type in _COMPUTED_RECEIVER_TYPES:
+        return True
+    if node.type == "field_access":
+        inner = node.child_by_field_name("object")
+        return inner is not None and _field_access_receiver_is_computed(
+            inner
+        )
+    return False
+
+
 def _emit_field_access(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -7985,15 +8013,73 @@ def _emit_field_access(
     # Uses source-text width for the field — for identifiers
     # the source matches the rendered width exactly.
     field_text = _node_source_text(source, field_node)
-    prev_reserve = emitter.set_tail_reserve(
-        emitter.tail_reserve + 1 + len(field_text)
-    )
-    try:
-        _emit_node(emitter, source, object_node)
-    finally:
-        emitter.set_tail_reserve(prev_reserve)
+
+    def emit_inline() -> None:
+        prev = emitter.set_tail_reserve(
+            emitter.tail_reserve + 1 + len(field_text)
+        )
+        try:
+            _emit_node(emitter, source, object_node)
+        finally:
+            emitter.set_tail_reserve(prev)
+        emitter.write(".")
+        _emit_node(emitter, source, field_node)
+
+    saved = emitter.snapshot()
+    line_start_col = _current_line_leading_spaces(emitter)
+    effective_max = _MAX_LINE - emitter.tail_reserve
+    emit_inline()
+    inline_width = emitter.last_lines_max_width(saved[0])
+    if inline_width <= effective_max:
+        return
+    # Only a COMPUTED receiver may be broken away from its field. The
+    # `field_access` node also spells qualified names and constant
+    # references, where the dots are part of one name and breaking them
+    # is meaningless:
+    #
+    #     java                      Boolean
+    #         .util                     .FALSE.equals(...)
+    #         .Objects.requireNonNull(...)
+    #
+    # A receiver that is itself an identifier, or a field access over
+    # identifiers, is such a name. A call, an array index, a cast or a
+    # parenthesized expression is a value that was computed, and there
+    # the dot is a real operator.
+    if not _field_access_receiver_is_computed(object_node):
+        return
+
+    # The inline form does not fit. Break before the `.`, which the
+    # spec's "Operators on continuation lines" rule already names as a
+    # break-before operator, and put the field at single indentation
+    # from the start of this line.
+    #
+    # `field_access` previously had no wrap tier at all. The receiver
+    # emitted under a correct reserve, exhausted its own cascade, and
+    # committed its terminal candidate — after which the field was
+    # appended to a row that was already full:
+    #
+    #     int n = methodBeingCalled(
+    #             argumentOne,
+    #             argumentTwo).someFieldNameHere;    <- 85 cols
+    #
+    # even though breaking the dot fits comfortably. The receiver is
+    # re-emitted at the ORIGINAL reserve, since the field no longer
+    # shares its last row.
+    emitter.restore(saved)
+    _emit_node(emitter, source, object_node)
+    emitter.newline()
+    push_count, extra = _push_indent_to_col(emitter, line_start_col + 4)
+    _emit_p4_write_target_indent(emitter, push_count, extra)
     emitter.write(".")
     _emit_node(emitter, source, field_node)
+    for _ in range(push_count):
+        emitter.pop_indent()
+    if emitter.last_lines_max_width(saved[0]) >= inline_width:
+        # Breaking the dot bought nothing — the receiver overflows on
+        # its own, and moving the field off its last row cannot help.
+        # Prefer the inline form, which costs one line fewer.
+        emitter.restore(saved)
+        emit_inline()
 
 
 def _emit_instanceof_expression(
