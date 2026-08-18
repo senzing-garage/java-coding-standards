@@ -8236,11 +8236,20 @@ def _arg_list_takes_source_preserve_path(
     See the `building/source-preservation-history` FAQ before adding
     anything here.
     """
-    if not _node_spans_multiple_rows(node):
-        return False
-
-    # Unconditional preservation: comments and CSOFF regions
-    # cannot be safely reflowed.
+    # Interleaved comments preserve REGARDLESS of row span. The wrap
+    # engine treats every named child as an argument, and tree-sitter
+    # exposes a comment as a named child, so a comment inside an
+    # argument list is counted as an argument and given a separator —
+    # which emits Java that does not parse:
+    #
+    #     in   outer.call(inner(alphaValue, /* note */ betaValue), tag);
+    #     out  outer.call(inner(alphaValue, /* note */, betaValue), tag);
+    #
+    # Preserving is the existing answer to "the wrap engine has no
+    # concept of an inter-argument comment"; it was simply gated behind
+    # the multi-row test below, so the single-row case fell through to
+    # the engine and corrupted the source. No file in the 504-file
+    # trial corpus contains such a list, which is why this survived.
     has_comment = any(
         c.type in ("line_comment", "block_comment")
         for c in node.children
@@ -8248,6 +8257,9 @@ def _arg_list_takes_source_preserve_path(
     )
     if has_comment:
         return True
+
+    if not _node_spans_multiple_rows(node):
+        return False
     if _is_inside_csoff_region(source, node):
         return True
 
