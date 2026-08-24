@@ -1640,11 +1640,38 @@ def _emit_field_declaration(
     declarators = [
         c for c in node.children if c.type == "variable_declarator"
     ]
+    decl_start = emitter.line_count
     for index, declarator in enumerate(declarators):
         if index > 0:
             emitter.write(", ")
         _emit_node(emitter, source, declarator)
     emitter.write(";")
+    # Advise AFTER the `;` is on the line. The wrap engine's own
+    # emit-and-warn exits run while the semicolon is still unwritten,
+    # and `tail_reserve` does not carry it, so a value that commits at
+    # exactly 80 measures as fitting and the advisory declines to fire
+    # -- then the `;` lands in column 81. The result is idempotent, so
+    # it survives every reformat, and it takes compliant source and
+    # makes it non-compliant with no output at all:
+    #
+    #     in   String s = Option.sourceDescriptor(
+    #              COMMAND_LINE, CONFIG, "--config");
+    #     out  String s
+    #              = Option.sourceDescriptor(COMMAND_LINE, CONFIG, "--config");
+    #
+    # Checking here measures what actually reaches disk. This REPORTS
+    # only; the layout is deliberately unchanged, because threading the
+    # semicolon into `tail_reserve` shifts tier decisions and left
+    # `MessageConsumerFactory.java` changing on every pass. Fixing the
+    # layout is tracked separately.
+    _fire_wrap_overflow_advisory(
+        emitter, node, decl_start, "declaration",
+        remedy=(
+            "The value is wrapped as far as the cascade goes and the "
+            "trailing semicolon does not fit. Shorten a name or split "
+            "the value."
+        ),
+    )
 
 
 # Precedence groups for Java binary operators, used by
