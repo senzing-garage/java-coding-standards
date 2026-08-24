@@ -180,6 +180,66 @@ the argument, which oscillated
 `arguments(Rectangle.class, Set.of(…), …)` between two shapes on
 alternate passes.
 
+### Four pre-existing defects fixed
+
+All four were surfaced by this release's own review rounds, and all four
+reproduce identically at 0.6.0 — none is a regression introduced here.
+Three of them do not occur anywhere in the 504-file trial corpus, which
+is why they survived four rounds of review.
+
+**Inline argument comments produced Java that does not parse.** The wrap
+engine treats every named child of an `argument_list` as an argument, and
+tree-sitter exposes a comment as a named child, so a comment between
+arguments was counted as one and given a separator:
+
+```java
+    // in
+    outer.call(inner(alphaValue, /* note */ betaValue), tag);
+    // out — does not compile
+    outer.call(inner(alphaValue, /* note */, betaValue), tag);
+```
+
+Source preservation was already the answer to "the wrap engine has no
+concept of an inter-argument comment"; it was gated behind a multi-row
+test, so single-row lists fell through. The comment check now runs first.
+
+**Receiver parameters were silently dropped.** `void m(T this, String s)`
+emitted as `void m(String s)`. Discarding a bare `T this` is semantically
+inert — the construct exists only to host annotations — but discarding an
+annotated one is not. They are now emitted verbatim.
+
+**Field access could not break before its dot.** The receiver emitted
+under a correct reserve, exhausted its cascade, committed its terminal
+candidate, and the field was then appended to a row that was already full,
+even though a fitting shape existed:
+
+```java
+    int n = methodBeingCalled(
+            argumentOne,
+            argumentTwo).someFieldNameHere;    // 85 columns
+```
+
+Breaking before `.` is already the documented rule. Restricted to a
+computed receiver — a call, array index, cast, object creation or
+parenthesized expression — because the same node type also spells
+qualified names, and a first attempt shredded `java.util.Objects` into
+three lines.
+
+**A declaration whose semicolon does not fit now reports.** A value that
+commits at exactly 80 leaves the `;` in column 81 and the formatter said
+nothing: its emit-and-warn exits run while the semicolon is unwritten and
+`tail_reserve` does not carry it, so the advisory measured 80 and
+declined. Being idempotent, the result survives every reformat — it takes
+compliant source and makes it non-compliant, silently. The check now runs
+after the `;` is written. 23 declarations in the trial corpus report, at
+81 to 84 columns, none of them checkstyle-exempt.
+
+That last one reports without relaying out. Threading the semicolon into
+`tail_reserve`, so the value's own cascade breaks earlier, was implemented
+and reverted: it double-charged the semicolon against the declarator's
+hardcoded allowance, and once that was corrected it left one file changing
+on every pass. The layout half is deferred to 0.8.
+
 ### Javadoc indentation is structural
 
 An indented javadoc line is now treated as structure rather than
@@ -775,7 +835,7 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 725/725 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 729/729 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
   found, so a standalone clone collects 515 and the 210 skipped
   parametrisations are exactly the AST-equivalence and idempotency
