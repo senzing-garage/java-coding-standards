@@ -2772,8 +2772,8 @@ Javadoc comment lines must conform to the 80-character line limit.
 ### Prose Paragraphs
 
 Reflow prose text to fill lines as close to 80 characters as possible.
-Do **not** leave orphaned short words (1-3 words) on a line by
-themselves unless it is the very last line of the paragraph.
+Do **not** leave an orphaned short line (1-3 words) in the MIDDLE of
+a paragraph — a short line followed by more prose is always wrong:
 
 **Bad:**
 
@@ -2789,10 +2789,50 @@ themselves unless it is the very last line of the paragraph.
 
 ```java
     /**
-     * The number of milliseconds to sleep between checks on the
-     * locks required for tasks that have been postponed.
+     * The number of milliseconds to sleep between checks on the locks required
+     * for tasks that have been postponed.
      */
 ```
+
+A short LAST line is not an error — packing the first line tight is a
+perfectly good answer, and a paragraph whose last line already
+carries a real clause is left alone. But when the formatter is
+reflowing a paragraph anyway and a greedy fill WOULD strand a 1-3
+word fragment at the end, it balances the breaks instead — across
+the whole paragraph, however many lines it runs to. From this
+source:
+
+```java
+    /**
+     * Returns the total number of milliseconds that elapsed from the moment this batch was first created until the point at which it was finally closed.
+     */
+```
+
+greedy strands the last line, and balancing spreads the same three
+lines evenly:
+
+```java
+    // greedy
+     * Returns the total number of milliseconds that elapsed from the moment
+     * this batch was first created until the point at which it was finally
+     * closed.
+    // balanced
+     * Returns the total number of milliseconds that
+     * elapsed from the moment this batch was first created
+     * until the point at which it was finally closed.
+```
+
+Balancing never costs a line: if the content fits in fewer lines,
+fewer lines are used.
+
+Note for adopters: the formatter balances only when it is already
+reflowing a paragraph — because a line overflows, or because the
+first word of the next line would have fitted on the line before it.
+A paragraph already wrapped tidily inside the limit is left as the
+author wrote it rather than rewritten for evenness alone, so
+adopting this release does not churn existing javadoc. The greedy
+block above is itself such a paragraph: fed back to the formatter it
+comes out unchanged.
 
 ### Tag Descriptions (@param, @return, @throws)
 
@@ -2801,22 +2841,69 @@ align with the start of the description text (not the tag keyword):
 
 ```java
     /**
-     * @param category  The category for the report.
-     * @param startDate The start date, or <code>null</code>
-     *                  if no start date filter is applied.
-     * @return The generated report, or <code>null</code> if
-     *         the specified parameter is <code>null</code> or
-     *         an empty string.
-     * @throws IllegalArgumentException If the specified category
-     *         is not a recognized report category.
+     * @param category The category for the report.
+     * @param startDate The start date, or <code>null</code> if no start date
+     *                  filter is applied.
+     * @return The generated report, or <code>null</code> if the specified
+     *         parameter is <code>null</code> or an empty string.
+     * @throws IllegalArgumentException If the specified category is not a
+     *                                  recognized report category.
      */
 ```
+
+Note that the continuation column follows the tag and its parameter
+name, so it differs per tag — `@throws` with a long exception type
+indents further than `@param`. Earlier revisions of this document
+showed every continuation at a single shared column, which
+contradicted the rule stated just above it.
 
 ### HTML and Inline Tags
 
 Lines containing `{@link ...}`, `{@code ...}`, `<code>...</code>`,
 `<p>`, `<ul>`, `<li>`, `<pre>`, etc. should be treated as part of the
 prose flow and not left as orphaned short lines.
+
+An inline tag is **one unit** and is not broken across a line
+boundary. Javadoc renders the broken form correctly, but it reads
+badly:
+
+**Bad:**
+
+```java
+    /**
+     * The identifier of the {@link
+     * SampleRequestHandler} that accepted this particular request.
+     */
+```
+
+**Good:**
+
+```java
+    /**
+     * The identifier of the {@link SampleRequestHandler}
+     * that accepted this particular request.
+     */
+```
+
+A tag wider than the available line is the one exception — holding
+it together would overflow the limit, which is worse than the
+break, so it stays split.
+
+There is a second, subtler limit. A line that STARTS with `{@` or
+`<` splits a paragraph, and a line that is not prose at all — a
+leading `@` block tag, an `<li>`, an indent of its own — ends the
+paragraph entirely. Moving any of those to the head of a line
+changes how the paragraph is grouped on the next formatting pass,
+and the pass after that can reflow it differently. A layout that
+would do this is rejected in favour of the previous one, because a
+stable layout beats a prettier one that does not survive being
+formatted twice. In practice this leaves a small number of
+paragraphs — those whose tag is long enough that it can only sit on
+a line of its own — reflowed greedily with the tag still split.
+
+This limit does not apply to `@param` / `@return` / `@throws`
+descriptions, which are re-flowed by their own handler and are never
+split at a tag, so no boundary can arise there.
 
 ### Reflow invariants
 

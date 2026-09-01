@@ -338,23 +338,158 @@ three words or fewer — because the rule is "pack the first line
 tight OR balance the breaks", and packing tight is a perfectly good
 answer when nothing is left stranded:
 
+Reflowing the unwrapped sentence
+`Implemented to return a diagnostic {@link String} describing this instance.`:
+
 ```java
-    // before
+    // 0.6.0
      * Implemented to return a diagnostic {@link String} describing this
      * instance.
-    // after
+    // 0.7.0
      * Implemented to return a diagnostic
      * {@link String} describing this instance.
 ```
 
-Scoped to two-line paragraphs. The soft-target rebuild balances the
-first N-1 lines and lets the last take what remains, which is only
-reliably better at two lines; at three or more it can hand the last
-line MORE than greedy did and split an inline `{@link ...}` tag
-across rows on the way. Distributing N >= 3 properly needs a real
-line-breaking algorithm and inline-tag atomicity, which is left for
-its own change. `//` comment reflow keeps its unconditional balance
-and is untouched. 95 files in the trial corpus gain a fixed orphan.
+The soft-target rebuild that does this is only reliably better at
+two lines; at three or more it can hand the last line MORE than
+greedy did, and split an inline `{@link ...}` tag across rows on the
+way. Both are now fixed — see the next section. `//` comment reflow
+keeps its unconditional balance and is untouched. 95 files in the
+trial corpus gain a fixed orphan.
+
+### Javadoc documentation corrections
+
+Two examples in `docs/java-coding-standards.md` did not match what
+the formatter produces, and one contradicted the rule stated beside
+it. The `### Tag Descriptions` example showed every continuation at
+one shared column, while the rule above it — and the formatter —
+align each continuation after its own tag and parameter name, so
+`@throws IllegalArgumentException` indents further than `@param`.
+The `### Prose Paragraphs` "Good" example was also not a formatter
+fixed point. Both now show verified output.
+
+### Javadoc paragraphs of any length distribute, and inline tags stay whole
+
+Two related limitations, both carried on the 0.8 backlog and both
+resolved here.
+
+**Distribution at three or more lines.** A new minimum-raggedness
+pass replaces the soft-target rebuild for javadoc. It charges the
+slack of EVERY line, the last one included — classic minimum
+raggedness leaves the last line free, which packs the early lines
+and produces exactly the orphan being removed. Correct at any line
+count. Given this source:
+
+```java
+    /**
+     * Returns the total number of milliseconds that elapsed from the moment this batch was first created until the point at which it was finally closed.
+     */
+```
+
+0.7.0 emitted a stranded last line; this release distributes the
+same three lines evenly:
+
+```java
+    // 0.7.0
+     * Returns the total number of milliseconds that elapsed from the moment
+     * this batch was first created until the point at which it was finally
+     * closed.
+    // now
+     * Returns the total number of milliseconds that
+     * elapsed from the moment this batch was first created
+     * until the point at which it was finally closed.
+```
+
+**Inline-tag atomicity.** Reflow splits on whitespace, so
+`{@link Foo#bar(int, Map)}` arrived as several words and greedy
+fill broke between them. An inline tag is one semantic unit and is
+now one token:
+
+```java
+    // 0.7.0
+     * The identifier of the {@link
+     * SampleRequestHandler} that accepted this particular request.
+    // now
+     * The identifier of the {@link SampleRequestHandler}
+     * that accepted this particular request.
+```
+
+A tag wider than the line budget stays split — holding it whole
+would overflow, which no later tier could repair.
+
+**Only where the formatter already reflows.** Both improvements
+ride on the existing `_javadoc_needs_reflow` gate, which fires on
+an over-long line or an orphan continuation. A paragraph already
+wrapped tidily by a previous greedy pass is NOT rewritten: feeding
+the "0.7.0" block above back in leaves it alone, because all three
+lines are inside 80 and the first word of each line would not have
+fitted on the line before it. That is deliberate — it keeps the
+release from churning every javadoc comment in an adopting code
+base to buy a cosmetic gain — but it does mean the improvement
+only reaches a paragraph when something else already required it
+to be reflowed.
+Code bases already formatted by 0.7.0 do pick up the tag fix
+retroactively, because greedy's split-tag output leaves an orphan
+continuation and so trips the gate on its own.
+
+**0.7.0's layout is the floor.** The new pass is a candidate, not a
+replacement: it is adopted only when it removes an orphan or a split
+tag **without** introducing either, never costs a line, never
+overflows, and survives the stability check below. So it can improve
+on the previous layout but never regress it. An earlier attempt that
+simply replaced the algorithm regressed 11 paragraphs, because its
+fallback went to plain greedy rather than to the balanced result.
+
+**The stability check, and what it still leaves undone.** A line
+that starts with `{@` or `<` splits a paragraph, and a line the
+prose-line predicate rejects — a leading `@` block tag, `<li>`, an
+indent of its own — ends the run entirely. Moving any of those to
+the head of a line changes how the NEXT pass groups the paragraph,
+so the formatter's output becomes a function of its own previous
+output: the failure family this release exists to remove. A
+candidate is therefore replayed through one simulated following
+pass and adopted only if it reproduces itself. Without the check,
+seven corpus files stopped converging; with the check modelling
+only `{@`/`<` and not the `@` block tag, ordinary prose containing
+a word like `@Override` fails to converge on the second pass — see
+`javadoc_reflow/25_block_tag_word_is_a_boundary`. That construct
+does not occur in the trial corpus at all, which is why five rounds
+of corpus measurement did not surface it, and why the guard is
+pinned by a fixture and unit tests rather than by corpus figures.
+
+The check does not apply to `@param` / `@return` / `@throws`
+descriptions. That path selects itself on the tag keyword, cannot
+flip to the prose-splitting path, and re-flattens its lines rather
+than splitting them at a tag, so no boundary can materialise there;
+applying the check anyway refused four good layouts for a boundary
+that does not exist. Those four converge either way, so this is a
+quality gain rather than a convergence fix.
+
+Where the check does bite is a tag long enough that it can only sit
+on a line of its own, with multi-line prose ahead of it. 10 corpus
+paragraphs are refused for this reason and keep the greedy layout
+with the tag still split — for example
+`{@link TaskHandler#handleTask(String, Map, int, Scheduler)}` at 59
+columns. Fixing those means retiring the paragraph splitter's
+`{@`-at-line-start rule, which would reflow paragraphs authors
+deliberately laid out tag-per-line; that is deferred, and is now
+the only javadoc item on the backlog.
+
+Corpus effect: 210 paragraphs improved (146 orphans removed, 56
+split tags joined, 8 both), 164 of them at three or more lines,
+across 68 files. By path, 146 go through the stability check (86
+orphan-only, 52 split-only, 8 both) and 64 take the tag-description
+path (60 orphan-only, 4 split-only) — the two 146s are a
+coincidence, not the same set.
+
+No paragraph regressed on the four guarded axes — line count, line
+width, orphan introduction and split-tag introduction — verified
+across all 210 adoptions and, per file, across all 504. 39 of the
+210 are measurably more ragged than before, and all 39 are
+split-tag-only fixes, so the raggedness is purely the price of
+letting tag atomicity outrank evenness; no orphan-fixing adoption
+is more ragged than what it replaced. Lines over 80, total line
+count, advisory count and convergence are all unchanged.
 
 ### Line comments the author split are left alone
 
@@ -888,9 +1023,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 737/737 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 783/783 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 527 and the 210 missing
+  found, so a standalone clone collects 573 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -902,10 +1037,17 @@ same commit. `requirements.txt` now says so in a comment.
   and a first argument that wraps while the paren-aligned shape
   still fits. Two more lock the lambda-body boundary: an
   expression-bodied lambda whose inner call drops the greedy
-  tiers, and a block-bodied one that keeps them. Deleting the
-  single-line width estimator removed the 18 unit tests that
-  covered it, so the count is not comparable with 0.6.0's on a
-  like-for-like basis.
+  tiers, and a block-bodied one that keeps them. Five more cover
+  the javadoc reflow: a three-line paragraph that distributes, an
+  inline tag held whole, a candidate refused by the stability
+  check, a block-tag word (`@Override`) inside prose, and a
+  `@param` description that distributes. 41 new unit tests cover
+  the reflow helpers directly. Each of the three convergence
+  guards was verified by reverting it and confirming the suite
+  goes red.
+  Deleting the single-line width estimator removed the 18 unit
+  tests that covered it, so the count is not comparable with
+  0.6.0's on a like-for-like basis.
 - Trial-formatted `senzing-commons-java`, `sz-sdk-java`,
   `sz-sdk-java-grpc` and `data-mart-replicator` — 504 files,
   comparing the output of 0.6.0 against the output of this
@@ -955,7 +1097,7 @@ same commit. `requirements.txt` now says so in a comment.
   fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
-- 324 of 504 trial files are reformatted, a net **+1,514 lines**
+- 336 of 504 trial files are reformatted, a net **+1,514 lines**
   (about +0.7% against 220k). The release trades lines for
   compliance and predictability: rule 1 breaks each nesting
   level of an embedded call onto its own row, and "if an

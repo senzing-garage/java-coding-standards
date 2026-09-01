@@ -42,7 +42,7 @@ Coverage
 --------
 
 `format_source()` handles every Java construct exercised by
-the 224 fixture pairs under `tooling/scripts/tests/fixtures/`
+the 229 fixture pairs under `tooling/scripts/tests/fixtures/`
 and every file in the senzing-commons-java consumer codebase
 (106 files, 0 refusals). Constructs deliberately out-of-scope
 for 0.3.0:
@@ -3484,16 +3484,7 @@ def _balanced_reflow_words(
     # longer than the budget cannot be made to fit; it goes on its own
     # line and the overflow surfaces per spec C1 emit-and-warn rather
     # than looping forever trying to place it.
-    greedy: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        candidate = current + " " + word
-        if len(candidate) <= max_content:
-            current = candidate
-        else:
-            greedy.append(current)
-            current = word
-    greedy.append(current)
+    greedy = _greedy_fill(words, max_content)
     if len(greedy) <= 1:
         return greedy
     # Only rebalance when greedy actually orphaned. The rule is "pack
@@ -3560,15 +3551,344 @@ def _balanced_reflow_words(
 
 
 def _javadoc_reflow_words(
-    words: list[str], prefix: str
+    words: list[str], prefix: str,
+    splits_at_boundaries: bool = True,
 ) -> list[str]:
     """Reflow javadoc prose words to fit under
     `_MAX_LINE - len(prefix)`, balanced per
-    `_balanced_reflow_words`. Returns content strings with no prefix
-    and no trailing newline."""
-    return _balanced_reflow_words(
-        words, _MAX_LINE - len(prefix), only_when_orphaned=True
+    `_balanced_reflow_words`, then improved by
+    `_javadoc_balanced_reflow` where it can do better without
+    regressing. Returns content strings with no prefix and no
+    trailing newline.
+
+    `splits_at_boundaries=False` marks a caller whose NEXT pass
+    re-flattens these lines rather than splitting them at
+    `{@`/`<`/`@` boundaries — currently the
+    `@param`/`@return`/`@throws` description path. The stability
+    check is inapplicable there and is skipped; applying it anyway
+    refused good layouts for a boundary that never materialises.
+
+    That path is safe for a specific reason worth stating, because
+    nothing else records it. Every reflowed continuation is emitted
+    at `cont_prefix`, which is `star_prefix` plus at least one space
+    of tag padding, and is never empty. So after the `* ` strip its
+    content begins with whitespace, and the next pass re-collects it
+    as a CONTINUATION — never as a new tag, block tag or paragraph —
+    recovering the same word list and producing the same split. The
+    safety therefore rests on continuations always being emitted
+    INDENTED and non-empty; a change that emitted them flush-left
+    would break it silently.
+    """
+    return _javadoc_balanced_reflow(
+        words, prefix, splits_at_boundaries=splits_at_boundaries
     )
+
+
+def _greedy_fill(words: list[str], max_content: int) -> list[str]:
+    """Plain greedy fill of `words` into lines of at most
+    `max_content` characters. A single word wider than the budget
+    takes a line of its own and the overflow surfaces per spec C1
+    emit-and-warn rather than looping."""
+    if not words:
+        return []
+    out: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = current + " " + word
+        if len(candidate) <= max_content:
+            current = candidate
+        else:
+            out.append(current)
+            current = word
+    out.append(current)
+    return out
+
+
+def _group_inline_tags(
+    words: list[str], max_content: int
+) -> list[str]:
+    """Join each `{@tag …}` run into ONE atomic token.
+
+    Reflow splits on whitespace, so `{@link Foo#bar(int, Map)}`
+    arrives as several words and greedy fill happily breaks between
+    them, leaving `{@link` dangling at the end of one line and
+    `Foo#bar(int, Map)}` starting the next. Javadoc renders that
+    correctly, but it reads badly and the tag is a single semantic
+    unit, so it is treated as one token here.
+
+    A run is only grouped when the joined token still FITS in
+    `max_content`. An over-wide tag stays split, because forcing it
+    whole would overflow the line — a worse outcome than the break,
+    and one no later tier could repair.
+
+    Brace depth, not a closing-brace test, decides where the run
+    ends: `{@code {a, b}}` nests.
+    """
+    grouped: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        depth = word.count("{") - word.count("}")
+        if not word.startswith("{@") or depth <= 0:
+            grouped.append(word)
+            index += 1
+            continue
+        parts = [word]
+        scan = index + 1
+        while scan < len(words) and depth > 0:
+            parts.append(words[scan])
+            depth += words[scan].count("{") - words[scan].count("}")
+            scan += 1
+        joined = " ".join(parts)
+        if depth == 0 and len(joined) <= max_content:
+            grouped.append(joined)
+            index = scan
+        else:
+            grouped.append(word)
+            index += 1
+    return grouped
+
+
+def _splits_inline_tag(lines: list[str]) -> bool:
+    """True when an inline `{@…}` tag opens on one line of
+    `lines` and closes on a later one.
+
+    Only depth opened by a `{@` counts. Prose can carry an
+    unbalanced brace of its own — an array-initializer example, a
+    stray `{` in a sentence — and counting those would report a
+    split tag where there is no tag, refusing a good candidate
+    through the "must not introduce a split" guard.
+    """
+    depth = 0
+    for line in lines:
+        if depth > 0:
+            return True
+        index = 0
+        while index < len(line):
+            if depth == 0:
+                # Outside a tag: only `{@` starts counting.
+                if line.startswith("{@", index):
+                    depth = 1
+                    index += 2
+                    continue
+                index += 1
+                continue
+            # Inside a tag: track TRUE brace depth, so a nested
+            # body closes where it really closes. Cancelling on the
+            # first `}` instead reports `{@code new int[]{1, 2}`
+            # as closed on its own line when its real closer is on
+            # the next one, and would disagree with
+            # `_group_inline_tags`, which uses true depth.
+            if line[index] == "{":
+                depth += 1
+            elif line[index] == "}":
+                depth -= 1
+            index += 1
+    return False
+
+
+def _min_ragged_lines(
+    tokens: list[str], max_content: int, max_lines: int
+) -> list[str] | None:
+    """Break `tokens` into at most `max_lines` lines, minimising the
+    sum of squared slack.
+
+    The slack of EVERY line counts, the last one included. Classic
+    minimum-raggedness leaves the last line free, which packs the
+    early lines and is exactly the orphan this is meant to remove;
+    charging the last line equalises instead, which is what "balance
+    the breaks" asks for.
+
+    Returns None when no arrangement fits — the caller then keeps
+    whatever it already had.
+
+    The `end > start` guard lets a single token wider than
+    `max_content` occupy a line by itself rather than making the
+    problem unsolvable. In this caller that outcome is always
+    discarded — `_javadoc_balanced_reflow` rejects any candidate
+    with an over-wide line — so the branch is defensive, keeping the
+    function total for any future caller that wants spec C1
+    emit-and-warn behaviour.
+    """
+    count = len(tokens)
+    if count == 0:
+        return []
+    widths = [len(token) for token in tokens]
+    unreachable = float("inf")
+    # best[i][k] = least cost for tokens[i:] using at most k lines.
+    best: list[list[float]] = [
+        [unreachable] * (max_lines + 1) for _ in range(count + 1)
+    ]
+    split_at: list[list[int]] = [
+        [-1] * (max_lines + 1) for _ in range(count + 1)
+    ]
+    for k in range(max_lines + 1):
+        best[count][k] = 0.0
+    for start in range(count - 1, -1, -1):
+        for k in range(1, max_lines + 1):
+            length = -1
+            for end in range(start, count):
+                length += widths[end] + 1
+                if length > max_content and end > start:
+                    break
+                slack = max_content - length
+                cost = slack * slack + best[end + 1][k - 1]
+                if cost < best[start][k]:
+                    best[start][k] = cost
+                    split_at[start][k] = end + 1
+    for k in range(1, max_lines + 1):
+        if best[0][k] == unreachable:
+            continue
+        lines: list[str] = []
+        index, remaining = 0, k
+        while index < count and remaining > 0:
+            stop = split_at[index][remaining]
+            lines.append(" ".join(tokens[index:stop]))
+            index, remaining = stop, remaining - 1
+        return lines if index >= count else None
+    return None
+
+
+def _javadoc_reflow_is_stable(
+    lines: list[str], prefix: str
+) -> bool:
+    """True when re-running the javadoc paragraph machinery over
+    `lines` reproduces them.
+
+    `_emit_javadoc_block` breaks a prose run at every boundary line
+    — see `_javadoc_reflow_is_boundary` for the full set — emitting
+    such a line verbatim and reflowing the runs between them
+    separately. So moving an inline tag, or any other boundary
+    starter, to the head of a line changes how the NEXT pass groups
+    the paragraph,
+    and the pass after that can reflow it differently — the
+    formatter's output becoming a function of its own previous
+    output, which is the oscillation this project has been bitten by
+    repeatedly (see `building/source-preservation-history`).
+
+    Rather than forbid a tag at line start — `{@`-leading lines are
+    frequently harmless, and 0.7.0 already emits them where each
+    split piece happens to fit — this simulates one following pass
+    and demands a fixed point. Sub-runs are reflowed with the
+    candidate generator only, never recursively through this check,
+    so the simulation is one level deep and always terminates. A
+    candidate whose next pass cannot be predicted that simply is
+    rejected, which is conservative in the safe direction.
+    """
+    replay: list[str] = []
+    run: list[str] = []
+    for line in lines:
+        if _javadoc_reflow_is_boundary(line):
+            if run:
+                replay.extend(_javadoc_reflow_candidate(run, prefix))
+                run = []
+            replay.append(line)
+        else:
+            run.append(line)
+    if run:
+        replay.extend(_javadoc_reflow_candidate(run, prefix))
+    return replay == lines
+
+
+def _javadoc_reflow_is_boundary(line: str) -> bool:
+    """True when `line` would end a prose run on the next pass.
+
+    Mirrors BOTH boundary mechanisms in `_emit_javadoc_block`: a
+    paragraph run stops at any line `_javadoc_is_prose_line`
+    rejects (a leading `@` block tag, `<li>`, a block-level HTML
+    token, `{@snippet`, CSOFF/CSON, or an indent of its own), and
+    within a run the `{@`/`<` starters split into sub-paragraphs.
+
+    Modelling only the `{@`/`<` starters is not enough. Reflow can
+    move an `@`-prefixed word — `@Override` in ordinary prose, say
+    — to the head of a line, which the next pass reads as a block
+    tag and treats as structural, repacking the lines above it.
+    """
+    return (
+        line.startswith("{@")
+        or line.startswith("<")
+        or not _javadoc_is_prose_line(line)
+    )
+
+
+def _javadoc_reflow_candidate(
+    lines: list[str], prefix: str
+) -> list[str]:
+    """The candidate layout for an already-split run of prose
+    `lines`: reflowed when `_javadoc_needs_reflow` says so, else
+    left exactly as given. Mirrors `_emit_javadoc_sub_paragraph`
+    without emitting, for the stability simulation above."""
+    if not _javadoc_needs_reflow(lines, prefix):
+        return list(lines)
+    words: list[str] = []
+    for line in lines:
+        words.extend(line.split())
+    return _javadoc_balanced_reflow(words, prefix, simulate=True)
+
+
+def _javadoc_balanced_reflow(
+    words: list[str], prefix: str, simulate: bool = False,
+    splits_at_boundaries: bool = True,
+) -> list[str]:
+    """Reflow javadoc prose, improving on `_balanced_reflow_words`
+    for paragraphs of three or more lines and for inline tags split
+    across a row boundary.
+
+    `_balanced_reflow_words` balances only two-line paragraphs: its
+    soft-target rebuild is reliable at N == 2 and, at N >= 3, can
+    hand the last line MORE than greedy did. This adds a
+    minimum-raggedness pass that is correct at any N, plus inline-tag
+    atomicity.
+
+    The result of `_balanced_reflow_words` is the FLOOR. The
+    candidate is adopted only when it removes an orphan or an
+    inline-tag split without introducing either, never costs a line,
+    never overflows, and survives `_javadoc_reflow_is_stable`. So
+    this can improve on the 0.7.0 layout but never regress it, which
+    is what keeps the release's convergence guarantee intact.
+
+    `simulate=True` is the stability simulation's entry point: it
+    stops before the stability check, so the check never recurses
+    into itself.
+    """
+    max_content = _MAX_LINE - len(prefix)
+    legacy = _balanced_reflow_words(
+        words, max_content, only_when_orphaned=True
+    )
+    if len(legacy) <= 1:
+        return legacy
+    legacy_orphan = (
+        len(legacy[-1].split()) <= _REFLOW_ORPHAN_MAX_WORDS
+    )
+    legacy_split = _splits_inline_tag(legacy)
+    if not legacy_orphan and not legacy_split:
+        # Adoption below requires fixing one of the two, so no
+        # candidate could win. Skip the grouping and the DP.
+        return legacy
+    tokens = _group_inline_tags(words, max_content)
+    candidate = _min_ragged_lines(tokens, max_content, len(legacy))
+    if candidate is None or len(candidate) > len(legacy):
+        return legacy
+    if any(len(line) > max_content for line in candidate):
+        return legacy
+    candidate_orphan = (
+        len(candidate) > 1
+        and len(candidate[-1].split()) <= _REFLOW_ORPHAN_MAX_WORDS
+    )
+    candidate_split = _splits_inline_tag(candidate)
+    if candidate_orphan and not legacy_orphan:
+        return legacy
+    if candidate_split and not legacy_split:
+        return legacy
+    fixes_orphan = legacy_orphan and not candidate_orphan
+    fixes_split = legacy_split and not candidate_split
+    if not (fixes_orphan or fixes_split):
+        return legacy
+    if simulate or not splits_at_boundaries:
+        return candidate
+    if not _javadoc_reflow_is_stable(candidate, prefix):
+        return legacy
+    return candidate
 
 
 def _emit_javadoc_sub_paragraph(
@@ -3837,7 +4157,8 @@ def _emit_javadoc_block(
                 star_prefix + tag_prefix + " ".join(line_words)
             )
             cont_text = _javadoc_reflow_words(
-                desc_words[wi:], cont_prefix
+                desc_words[wi:], cont_prefix,
+                splits_at_boundaries=False,
             )
             for cont in cont_text:
                 emitter.newline()
@@ -11133,7 +11454,7 @@ def format_source(
 ) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Handles every Java construct exercised by the 224 fixture
+    Handles every Java construct exercised by the 229 fixture
     pairs and every file in the consumer codebases pre-flight
     diff exercise — including classes, interfaces, enums,
     records, methods, constructors, fields, type parameters,
