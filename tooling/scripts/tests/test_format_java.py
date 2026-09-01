@@ -4161,3 +4161,302 @@ class TestIsAnonymousClass:
         assert (
             format_java._is_anonymous_class(tree.root_node) is False
         )
+
+
+class TestGroupInlineTags:
+    """`{@tag …}` runs become one atomic token — when they fit."""
+
+    def test_link_with_signature_is_one_token(self) -> None:
+        words = "call to {@link Foo#bar(int, Map)} now".split()
+        assert format_java._group_inline_tags(words, 60) == [
+            "call", "to", "{@link Foo#bar(int, Map)}", "now",
+        ]
+
+    def test_nested_braces_close_by_depth(self) -> None:
+        words = "see {@code {a, b}} here".split()
+        assert format_java._group_inline_tags(words, 60) == [
+            "see", "{@code {a, b}}", "here",
+        ]
+
+    def test_oversize_tag_is_left_split(self) -> None:
+        """Grouping a tag wider than the budget would overflow the
+        line, which no later tier could repair — so it stays split."""
+        words = "x {@link Very#long(Signature, Here)} y".split()
+        assert format_java._group_inline_tags(words, 12) == words
+
+    def test_tag_spanning_two_words_is_joined(self) -> None:
+        words = "a {@code x} b".split()
+        assert format_java._group_inline_tags(words, 60) == [
+            "a", "{@code x}", "b",
+        ]
+
+    def test_self_contained_tag_untouched(self) -> None:
+        """Already one token, so depth never opens."""
+        words = "a {@code} b".split()
+        assert format_java._group_inline_tags(words, 60) == words
+
+    def test_unterminated_tag_does_not_consume_rest(self) -> None:
+        words = "a {@link Foo bar baz".split()
+        assert format_java._group_inline_tags(words, 60) == words
+
+
+class TestSplitsInlineTag:
+    """Detect a `{@…}` opening on one line and closing on another."""
+
+    @pytest.mark.parametrize(
+        "lines, expected",
+        [
+            (["a {@link", "Foo} b"], True),
+            (["a {@link Foo} b"], False),
+            (["a", "b"], False),
+            (["{@code {x,", "y}}"], True),
+            (["plain", "{@link Foo} tail"], False),
+            # Prose braces are not a tag: counting every brace
+            # reported a split here and refused good candidates.
+            (["the set {a,", "b} of things"], False),
+            # A nested body closes where it REALLY closes —
+            # cancelling on the first `}` called these unsplit.
+            (["{@code new int[]{1, 2}", "}"], True),
+            (["{@code {a, b}", "tail}"], True),
+            (["{@code Map<K, {V}>", "extra}"], True),
+        ],
+    )
+    def test_detection(
+        self, lines: list[str], expected: bool
+    ) -> None:
+        assert format_java._splits_inline_tag(lines) is expected
+
+
+class TestMinRaggedLines:
+    """Minimum-raggedness fill charges the LAST line too."""
+
+    def test_equalises_rather_than_packing(self) -> None:
+        """Greedy packs 3/3/1 and strands a lone token; charging
+        the last line's slack too spreads it 2/2/3 instead."""
+        tokens = ["aaaa"] * 7
+        assert format_java._greedy_fill(tokens, 14) == [
+            "aaaa aaaa aaaa", "aaaa aaaa aaaa", "aaaa",
+        ]
+        assert format_java._min_ragged_lines(tokens, 14, 3) == [
+            "aaaa aaaa", "aaaa aaaa", "aaaa aaaa aaaa",
+        ]
+
+    def test_uses_fewer_lines_when_they_suffice(self) -> None:
+        """Balance never buys evenness at the cost of a line: six
+        tokens fit two full lines, so two is the answer."""
+        assert format_java._min_ragged_lines(["aaaa"] * 6, 14, 3) == [
+            "aaaa aaaa aaaa", "aaaa aaaa aaaa",
+        ]
+
+    def test_respects_the_hard_cap(self) -> None:
+        lines = format_java._min_ragged_lines(["aaaa"] * 7, 14, 3)
+        assert all(len(line) <= 14 for line in lines)
+
+    def test_never_exceeds_max_lines(self) -> None:
+        lines = format_java._min_ragged_lines(["aaaa"] * 7, 14, 3)
+        assert len(lines) <= 3
+
+    def test_empty_input(self) -> None:
+        assert format_java._min_ragged_lines([], 40, 3) == []
+
+    def test_infeasible_returns_none(self) -> None:
+        """Six 4-char tokens cannot be placed in one 14-char line."""
+        assert (
+            format_java._min_ragged_lines(["aaaa"] * 6, 14, 1)
+            is None
+        )
+
+    def test_oversize_token_gets_its_own_line(self) -> None:
+        """Per spec C1 the overflow is emitted and warned, not
+        looped on — so a solution must still be produced."""
+        tokens = ["short", "x" * 40, "tail"]
+        lines = format_java._min_ragged_lines(tokens, 20, 3)
+        assert lines is not None
+        assert "x" * 40 in lines
+
+
+class TestJavadocBalancedReflow:
+    """0.7.0's layout is the FLOOR: the candidate is adopted only
+    when it strictly improves, so this can never regress."""
+
+    PREFIX = "     * "
+
+    def _legacy(self, words: list[str]) -> list[str]:
+        return format_java._balanced_reflow_words(
+            words,
+            format_java._MAX_LINE - len(self.PREFIX),
+            only_when_orphaned=True,
+        )
+
+    def test_three_line_orphan_is_distributed(self) -> None:
+        text = (
+            "Returns the total number of milliseconds that elapsed "
+            "from the moment this batch was first created until the "
+            "point at which it was finally closed."
+        )
+        words = text.split()
+        legacy = self._legacy(words)
+        new = format_java._javadoc_balanced_reflow(
+            words, self.PREFIX
+        )
+        assert len(legacy) == 3
+        assert len(legacy[-1].split()) == 1        # the orphan
+        assert new != legacy
+        assert len(new) == 3                       # costs no line
+        assert len(new[-1].split()) > 3            # orphan gone
+
+    def test_split_inline_tag_is_joined(self) -> None:
+        words = (
+            "The identifier of the {@link SampleRequestHandler} "
+            "that accepted this particular request."
+        ).split()
+        legacy = self._legacy(words)
+        new = format_java._javadoc_balanced_reflow(
+            words, self.PREFIX
+        )
+        assert format_java._splits_inline_tag(legacy)
+        assert not format_java._splits_inline_tag(new)
+
+    def test_paragraph_without_orphan_is_left_alone(self) -> None:
+        """No orphan and no split tag means nothing to fix —
+        rewriting it would churn a code base to buy nothing."""
+        words = (
+            "The number of milliseconds to sleep between checks on "
+            "the locks required for tasks that have been postponed."
+        ).split()
+        assert format_java._javadoc_balanced_reflow(
+            words, self.PREFIX
+        ) == self._legacy(words)
+
+    def test_never_costs_a_line(self) -> None:
+        for text in (
+            "Returns the total number of milliseconds that elapsed "
+            "from the moment this batch was first created until the "
+            "point at which it was finally closed.",
+            "The identifier of the {@link SampleRequestHandler} "
+            "that accepted this particular request.",
+            "Indicates whether the pending request should be "
+            "retried automatically after a transient failure has "
+            "been detected by the surrounding retry policy.",
+        ):
+            words = text.split()
+            new = format_java._javadoc_balanced_reflow(
+                words, self.PREFIX
+            )
+            assert len(new) <= len(self._legacy(words))
+            assert all(
+                len(line)
+                <= format_java._MAX_LINE - len(self.PREFIX)
+                for line in new
+            )
+
+    def test_unstable_candidate_is_rejected(self) -> None:
+        """A candidate that puts a long tag at the head of a line
+        can change how the NEXT pass groups the paragraph, because
+        `_emit_javadoc_block` splits there. Such a candidate is
+        refused however good it looks."""
+        words = (
+            "Checks whether this element can be merged with other "
+            "mergeable elements that are identical to it for a "
+            "single call to "
+            "{@link SampleHandler#handleElement(String, Map, int, "
+            "Registry)} with an incrementally increased "
+            "multiplicity."
+        ).split()
+        assert format_java._javadoc_balanced_reflow(
+            words, self.PREFIX
+        ) == self._legacy(words)
+
+    def test_stability_check_sees_the_oscillation(self) -> None:
+        """The rejected layout above really is unstable — replaying
+        one pass over it does not reproduce it."""
+        candidate = [
+            "Checks whether this element can be merged with other",
+            "mergeable elements that are identical to it for a",
+            "single call to",
+            "{@link SampleHandler#handleElement(String, Map, int, "
+            "Registry)}",
+            "with an incrementally increased multiplicity.",
+        ]
+        assert not format_java._javadoc_reflow_is_stable(
+            candidate, self.PREFIX
+        )
+
+
+class TestJavadocReflowIsBoundary:
+    """A candidate line that would end a prose run on the next pass.
+
+    Mirrors both boundary mechanisms in `_emit_javadoc_block`. The
+    `@`-block-tag case is the one that matters: modelling only the
+    `{@`/`<` starters let reflow move a word like `@Override` to the
+    head of a line, which the next pass read as structural and
+    repacked around — output becoming a function of previous output.
+    """
+
+    @pytest.mark.parametrize(
+        "line, expected",
+        [
+            ("{@link Foo} leads the line", True),
+            ("<p>", True),
+            ("<li>an item", True),
+            ("@Override so the compiler can verify", True),
+            ("@param name The thing", True),
+            ("  an indent of its own is structural", True),
+            ("", True),
+            ("ordinary prose continues here", False),
+            ("prose mentioning {@link Foo} mid-line", False),
+            ("prose mentioning @Override mid-line", False),
+        ],
+    )
+    def test_boundary(self, line: str, expected: bool) -> None:
+        assert (
+            format_java._javadoc_reflow_is_boundary(line) is expected
+        )
+
+    def test_agrees_with_the_prose_predicate(self) -> None:
+        """Every non-prose line is a boundary, by construction."""
+        for line in (
+            "@since 1.0", "<ul>", "  hanging", "CSOFF: LineLength",
+        ):
+            assert not format_java._javadoc_is_prose_line(line)
+            assert format_java._javadoc_reflow_is_boundary(line)
+
+
+class TestTagDescriptionSkipsStabilityCheck:
+    """`@param`/`@return`/`@throws` descriptions are re-flattened by
+    their own handler rather than split at `{@`/`<`/`@`, so the
+    prose-path stability check does not apply to them."""
+
+    PREFIX = "     *                  "
+
+    WORDS = (
+        "The principle to filter on which can be <code>null</code> "
+        "to indicate only the counts not associated with a specific "
+        "principle should be included, or <code>\"*\"</code> to "
+        "indicate no filtering, or a specific principle."
+    ).split()
+
+    def test_skip_changes_the_outcome(self) -> None:
+        """Guards the flag: with the check applied this candidate is
+        refused, so the two calls must differ."""
+        with_skip = format_java._javadoc_balanced_reflow(
+            self.WORDS, self.PREFIX, splits_at_boundaries=False
+        )
+        with_check = format_java._javadoc_balanced_reflow(
+            self.WORDS, self.PREFIX, splits_at_boundaries=True
+        )
+        assert with_skip != with_check
+
+    def test_skip_still_respects_the_floor(self) -> None:
+        """Skipping the stability check does not skip the floor: no
+        extra line, nothing over budget."""
+        max_content = format_java._MAX_LINE - len(self.PREFIX)
+        legacy = format_java._balanced_reflow_words(
+            self.WORDS, max_content, only_when_orphaned=True
+        )
+        result = format_java._javadoc_balanced_reflow(
+            self.WORDS, self.PREFIX, splits_at_boundaries=False
+        )
+        assert len(result) <= len(legacy)
+        assert all(len(line) <= max_content for line in result)
+        assert sorted(" ".join(result).split()) == sorted(self.WORDS)
