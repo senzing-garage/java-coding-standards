@@ -42,7 +42,7 @@ Coverage
 --------
 
 `format_source()` handles every Java construct exercised by
-the 83 fixture pairs under `tooling/scripts/tests/fixtures/`
+the 224 fixture pairs under `tooling/scripts/tests/fixtures/`
 and every file in the senzing-commons-java consumer codebase
 (106 files, 0 refusals). Constructs deliberately out-of-scope
 for 0.3.0:
@@ -8513,7 +8513,17 @@ def _is_nested_or_chained_call(arg_list: Node) -> bool:
 
       1. a positional argument of ANOTHER call, or
       2. the receiver of a method chain — i.e. one or more
-         `.segment()` calls follow it.
+         `.segment()` calls follow it, or
+      3. either of the above reached through the body of one or
+         more EXPRESSION-bodied lambdas, which are transparent
+         here. Block-bodied lambdas are not — see the loop below.
+
+    Only rule 2 consults this predicate. Rules 1 and 3 gate on
+    their own one-step tests (the sole argument being a call; the
+    chain's parent being an argument list), and a lambda defeats
+    both — deliberately. The resulting layout for those two
+    aspects matches what 0.6.0 produced, which is why widening
+    them is a separate, still-deferred change.
 
     0.7.0 nested-call wrap (rule 2): in both positions the
     P2 "two-line paren-aligned comma-packed" shape reads
@@ -8556,7 +8566,30 @@ def _is_nested_or_chained_call(arg_list: Node) -> bool:
         "object_creation_expression",
     ):
         return False
-    outer = call.parent
+    # An EXPRESSION-bodied lambda is transparent for this test.
+    # `forEach(x -> record(a, b, c))` embeds `record(…)` exactly as
+    # `forEach(record(a, b, c))` does — the reader still has to hold
+    # the enclosing call in mind while reading the inner argument
+    # list, which is the whole reason rule 2 withdraws the greedy
+    # family. Loop rather than step once so curried lambdas
+    # (`a -> b -> call(…)`) resolve to the construct that actually
+    # encloses them.
+    #
+    # A BLOCK-bodied lambda is deliberately opaque: its call sits
+    # in a statement inside the block (`expression_statement`, but
+    # `return_statement` and `local_variable_declaration` occur
+    # too), standing at its own statement indent with no enclosing
+    # construct sharing the line, so the greedy shapes read fine
+    # there. Such a call never enters this loop, because the
+    # lambda's body is the BLOCK, not the call.
+    inner = call
+    outer = inner.parent
+    while outer is not None and outer.type == "lambda_expression":
+        body = outer.child_by_field_name("body")
+        if body is None or body.id != inner.id:
+            return False
+        inner = outer
+        outer = inner.parent
     if outer is None:
         return False
     if outer.type == "argument_list":
@@ -8567,7 +8600,7 @@ def _is_nested_or_chained_call(arg_list: Node) -> bool:
         # instead the enclosing call's argument, the
         # `argument_list` branch above already caught it.
         receiver = outer.child_by_field_name("object")
-        return receiver is not None and receiver.id == call.id
+        return receiver is not None and receiver.id == inner.id
     return False
 
 
@@ -11100,7 +11133,7 @@ def format_source(
 ) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Handles every Java construct exercised by the 83 fixture
+    Handles every Java construct exercised by the 224 fixture
     pairs and every file in the consumer codebases pre-flight
     diff exercise — including classes, interfaces, enums,
     records, methods, constructors, fields, type parameters,

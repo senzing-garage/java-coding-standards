@@ -4072,11 +4072,25 @@ class TestIsNestedOrChainedCall:
             # Constructors count as calls in both positions.
             ("outer(new Foo(a, b));", True),
             ("new Foo(a, b).bar();", True),
+            # An EXPRESSION-bodied lambda is transparent: the inner
+            # call is still embedded in `run(…)`, and the reader
+            # still has to track both at once.
+            ("run(() -> inner(a, b));", True),
+            ("run(x, () -> inner(a, b));", True),
+            ("run(() -> new Foo(a, b));", True),
+            # Curried lambdas resolve to the enclosing construct.
+            ("run(a -> b -> inner(a, b));", True),
+            # A BLOCK-bodied lambda is opaque: the call is a
+            # statement at its own indent, sharing its line with
+            # nothing, so the greedy shapes read fine.
+            ("run(() -> { inner(a, b); });", False),
+            ("run(() -> { var y = inner(a, b); });", False),
+            # A lambda that is not itself embedded stays False.
+            ("var f = () -> inner(a, b);", False),
             # Parent shapes the rules deliberately do not reach.
             ("var x = (inner(a, b));", False),
             ("var x = (Cast) inner(a, b);", False),
             ("var x = flag ? inner(a, b) : other;", False),
-            ("run(() -> inner(a, b));", False),
             ("var x = inner(a, b) + other;", False),
             ("var x = inner(a, b).field;", False),
             ("var x = inner(a, b)[0];", False),
