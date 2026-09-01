@@ -102,6 +102,59 @@ A chain that is one of several arguments and whose receiver is
 a plain identifier is not treated as embedded — its
 dot-aligned form reads well and is retained.
 
+An **expression-bodied lambda is transparent to rule 2**. The
+embedded test previously stepped exactly one parent up from the
+call, and a lambda interposes itself there; the greedy tiers
+therefore survived in `assertThrows(Ex.class, () -> call(a, b,
+c))` even though the reader has to track the enclosing call
+just as much as in `assertThrows(Ex.class, call(a, b, c))`.
+Curried lambdas (`a -> b -> call(…)`) resolve to whatever
+encloses the outermost lambda.
+
+Before:
+
+```java
+        assertThrows(
+            NullPointerException.class,
+            () -> new SzReportUpdate(SzReportCode.DATA_SOURCE_SUMMARY, null,
+                                     100L));
+```
+
+After:
+
+```java
+        assertThrows(
+            NullPointerException.class,
+            () -> new SzReportUpdate(SzReportCode.DATA_SOURCE_SUMMARY,
+                                     null,
+                                     100L));
+```
+
+**Rules 1 and 3 keep their own one-step tests** and do not see
+through a lambda: rule 1 gates on the sole argument itself being
+a call, which a `lambda_expression` is not, and rule 3 gates on
+the chain's parent being an argument list, which a lambda
+displaces. So `add(() -> builderFor(a, b).records(-1).build())`
+gets rule 2's single column but still leaves its chain tail at
+the statement indent. That **tail placement** is what is
+unchanged — 0.6.0 put the tail in the same column. (In this
+particular example rule 2 was already reaching the inner call
+through the chain-receiver branch, so its argument list is not
+what the lambda traversal changed; the example is here to show
+the tail.) Extending rules 1 and 3 through lambdas is a separate
+change, and remains deferred.
+
+A **block-bodied lambda remains opaque**, and deliberately so:
+its statements stand at their own indent and share their line
+with no enclosing construct, which is exactly the condition
+that makes the greedy tiers readable. Fixture
+`nested_call_wrap/09_block_lambda_body_keeps_greedy` locks
+that boundary.
+
+Across the 504-file trial corpus this changed 12 files and
+added 77 lines, with no movement in lines over 80, advisory
+count, or convergence.
+
 ### Class and interface body trailing comments
 
 `_emit_class_body_members` and `_emit_interface_body_members`
@@ -835,9 +888,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 729/729 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 737/737 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 515 and the 210 skipped
+  found, so a standalone clone collects 527 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -847,9 +900,12 @@ same commit. `requirements.txt` now says so in a comment.
   `Boolean.FALSE.equals(result.get(x).getProcessedValue())`
   column oscillation, the chain back-off test reading source rows,
   and a first argument that wraps while the paren-aligned shape
-  still fits. Deleting the single-line width estimator removed the
-  18 unit tests that covered it, so the count is not comparable
-  with 0.6.0's on a like-for-like basis.
+  still fits. Two more lock the lambda-body boundary: an
+  expression-bodied lambda whose inner call drops the greedy
+  tiers, and a block-bodied one that keeps them. Deleting the
+  single-line width estimator removed the 18 unit tests that
+  covered it, so the count is not comparable with 0.6.0's on a
+  like-for-like basis.
 - Trial-formatted `senzing-commons-java`, `sz-sdk-java`,
   `sz-sdk-java-grpc` and `data-mart-replicator` — 504 files,
   comparing the output of 0.6.0 against the output of this
@@ -899,7 +955,7 @@ same commit. `requirements.txt` now says so in a comment.
   fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
-- 324 of 504 trial files are reformatted, a net **+1,437 lines**
+- 324 of 504 trial files are reformatted, a net **+1,514 lines**
   (about +0.7% against 220k). The release trades lines for
   compliance and predictability: rule 1 breaks each nesting
   level of an embedded call onto its own row, and "if an

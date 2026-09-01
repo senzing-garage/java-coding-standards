@@ -1250,7 +1250,30 @@ from a call at statement top level. "Embedded" means either of:
 - the call is the receiver of a method chain — one or more
   `.segment()` calls follow it.
 
-Rules 1 and 2 below use that definition as written. Rule 3 is
+An **expression-bodied lambda is transparent to rule 2**: in
+`assertThrows(Ex.class, () -> record(a, b, c))` the inner
+`record(…)` is embedded just as surely as in
+`assertThrows(Ex.class, record(a, b, c))`, because the reader is
+still holding the enclosing call in mind while reading the inner
+argument list. Curried lambdas (`a -> b -> record(…)`) resolve to
+whatever construct encloses the outermost lambda. Rules 1 and 3
+are not affected: rule 1 requires the sole argument to be a call,
+which a lambda is not, and rule 3 requires the chain's parent to
+be an argument list, which a lambda displaces.
+
+A **block-bodied lambda is opaque**. Its statements stand at their
+own indent and share their line with nothing, so the greedy tiers
+read perfectly well there:
+
+```java
+    assertThrows(SampleException.class, () -> {
+        consumerFactory.createConsumer(ConsumerKind.DATABASE,
+                                       configuration, 250L);
+    });
+```
+
+Rules 1 and 2 below use that definition as written, with the
+lambda carve-out noted above applying to rule 2 only. Rule 3 is
 narrower: it governs the chain tail only when the chain is the
 **sole** argument of its enclosing call — the position rule 1 has
 already broken out onto its own line. A chain that is one of
