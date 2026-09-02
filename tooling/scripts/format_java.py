@@ -8105,13 +8105,15 @@ def _emit_formal_parameters(
     `_emit_spread_parameter`; they are excluded from name
     alignment because their prefix is not a bare type.
 
-    Receiver parameters (`Foo this`) are NOT supported and,
-    worse, are silently DROPPED: the `params` filter below keeps
-    only `formal_parameter` and `spread_parameter`, and no
-    emitter is registered for `receiver_parameter`. A method
-    declaring one would lose it from the output. Pre-existing
-    and not yet fixed; recorded here so the next reader finds it
-    rather than trusting the filter.
+    Receiver parameters (`Foo this`) ARE supported as of 0.7.0:
+    `receiver_parameter` is kept by the `params` filter below and
+    emitted verbatim by `_emit_receiver_parameter`. Before that the
+    filter kept only `formal_parameter` and `spread_parameter`, no
+    emitter was registered, and a method declaring a receiver
+    parameter silently lost it from the output. They are excluded
+    from name-column padding, though — see
+    `_formal_param_name_col_offset`, whose measurement assumes each
+    prefix is a bare type.
     """
     if not force_wrap and _node_spans_multiple_rows(node):
         # Preserve developer-authored multi-line params from
@@ -9597,6 +9599,17 @@ def _emit_argument_list(
                 emitter.line_count > operand_start
                 and not _arg_owns_its_rows(arg)
             )
+            # Patched in place rather than escalating the whole
+            # candidate, which is what P1 and P3 do. That asymmetry
+            # is safe because of the caller's two-line cap
+            # (`p2_line_count <= 1`) combined with its width check:
+            # if moving the argument to the continuation line still
+            # leaves it wrapping, the emission spills to a second
+            # continuation line and the cap rejects the whole tier;
+            # if it fits but overflows, the width check rejects it.
+            # Either way the cascade escalates. So the only P2
+            # outputs that survive are two lines and within budget —
+            # there is no locally-patched shape that slips through.
             if not widths_ok or arg_wrapped_via_p4 or arg_invalid_wrap:
                 emitter.restore(saved)
                 emitter._arg_list_p4_fired = prev_p4
@@ -10854,9 +10867,14 @@ def _emit_method_chain_wrapped(
     # chains (`getX().getX().getX()` — extremely unusual) also
     # keep one-per-line because the canonical motivation
     # (builder pattern with named receiver) doesn't apply.
+    # No `not chain_is_sole_arg` clause here, unlike the P3F and P2
+    # tiers below: `chain_is_sole_arg` is only ever assigned inside
+    # `if chain_is_positional_arg and head is None`, so it cannot be
+    # True while `head is not None` holds. Including it read as
+    # though headless sole-argument chains were being excluded from
+    # this tier too, when they can never reach it.
     if (
-        not chain_is_sole_arg
-        and head is not None
+        head is not None
         and _chain_segments_share_method_name(source, segments)
     ):
         greedy_saved = emitter.snapshot()

@@ -5,8 +5,9 @@ wrong, the decision taken on each, and what shipped. Census covered 504
 files across `senzing-commons-java`, `sz-sdk-java`, `sz-sdk-java-grpc`
 and `data-mart-replicator`.
 
-**All four are resolved in 0.7.0.** Nothing in this document is
-outstanding; work that was deliberately deferred is listed at the end.
+**All four census findings are resolved in 0.7.0**, as are three of
+the four items this document originally deferred — see the two
+sections at the end for what shipped and what remains.
 
 ## 1. Deep orphan — a construct emitted left of the `(` it belongs to
 
@@ -101,17 +102,38 @@ reflowed differently.
   it requires splitting the literal, which is a code change and outside
   what an AST-preserving formatter may do.
 
-## Deferred to 0.8
+## Folded into 0.7.0 after this census was written
 
-- Shape B via lambda bodies (~179 sites): `_is_nested_or_chained_call`
-  does not traverse `lambda_expression`, so a call embedded in a lambda
-  body is not treated as embedded.
-- Javadoc reflow distribution for paragraphs of three or more lines,
-  including inline-tag atomicity.
-- The six files that still need a second pass to settle. All converge on
-  pass 2 and all are pre-existing 0.6.0 behaviors: the Tier 1 braced-`if`
-  collapse ordering, basic-`for` header wrapping, and one
-  chain-with-lambda re-shape.
+These three were deferred when the census was first written, then
+folded into 0.7.0 later in the release. They are recorded here as
+resolved so this document does not contradict `CHANGELOG.md`.
+
+- **Shape B via lambda bodies.** `_is_nested_or_chained_call` now
+  traverses `lambda_expression` when the call is the lambda's body, so
+  an expression-bodied lambda is transparent to nested-call rule 2.
+  Block-bodied lambdas stay opaque. 544 argument lists changed
+  classification, none in the other direction.
+- **Javadoc reflow at three or more lines**, including inline-tag
+  atomicity. A minimum-raggedness pass charging every line — the last
+  one included — replaced the soft-target rebuild, with 0.7.0's own
+  layout as the floor so it can improve but not regress. 210
+  paragraphs improved, zero regressions.
+- **Five of the six second-pass files.** Two more layout-reading
+  decisions were retired: the basic-`for` header now escalates when a
+  clause wraps rather than only on overflow, and the Tier 1 brace
+  collapse no longer gates on the SOURCE condition's row span.
+  Second-pass files 6 to 1.
+
+## Still deferred to 0.8
+
+- The last second-pass file, `AbstractSchedulingService.java`, a
+  chain-with-lambda that settles on pass 2. It is layout-dependent —
+  pristine source and pass-1 output share an AST yet format
+  differently — but the responsible read has NOT been identified. A
+  predicate trace diverges inside
+  `_arg_list_takes_source_preserve_path`, yet preservation fires zero
+  times on that file, so that answer is discarded and cannot be the
+  cause. Do not assume the chain cascade.
 - Optional: surface the 23 line-comment orphan candidates as advisories
   through the existing `FormatterWarning` channel, leaving the judgment
   to a human.

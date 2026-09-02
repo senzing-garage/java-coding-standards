@@ -4512,8 +4512,11 @@ class TestDeclarationSemicolonReserve:
         )
         assert "variable declarator" in message
         # 86, not 87, because a declarator-level advisory for the
-        # same construct de-duplicates the post-semicolon one away and the
-        # survivor reports one column short. Pre-existing.
+        # same construct de-duplicates the post-semicolon one away
+        # and the survivor reports one column short. Pre-existing,
+        # and tracked as its own task — when it is fixed this
+        # assertion must move to 87. It is asserted rather than
+        # left loose so the fix cannot land unnoticed.
         assert "max line width 86" in message
 
     def test_array_rhs_also_reserves_the_semicolon(self) -> None:
