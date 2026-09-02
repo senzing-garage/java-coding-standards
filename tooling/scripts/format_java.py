@@ -5846,17 +5846,13 @@ def _emit_catch_clause(
             "grammar shape unexpected."
         )
 
-    # Look for a multi-type catch. Refuse annotations /
-    # modifiers on the parameter here (same rule as
-    # `_emit_catch_formal_parameter`); reserved for a future
-    # annotation-aware pass.
+    # Look for a multi-type catch. The annotations / modifiers
+    # refusal is shared with the single-type path via
+    # `_refuse_catch_parameter_modifiers` rather than repeated, so
+    # the two cannot drift when annotation support lands.
+    _refuse_catch_parameter_modifiers(cfp)
     catch_type: Node | None = None
     for child in cfp.named_children:
-        if child.type == "modifiers":
-            raise NotImplementedError(
-                "catch_formal_parameter with modifiers or "
-                "annotations is not yet supported."
-            )
         if child.type == "catch_type":
             catch_type = child
     name_node = cfp.child_by_field_name("name")
@@ -5920,6 +5916,22 @@ def _emit_catch_clause(
     _emit_node(emitter, source, body)
 
 
+def _refuse_catch_parameter_modifiers(cfp: Node) -> None:
+    """Raise for a `catch_formal_parameter` carrying modifiers or
+    annotations, which no catch path emits yet.
+
+    Shared by the multi-type wrap engine and
+    `_emit_catch_formal_parameter` so the refusal cannot be relaxed
+    in one place and left in force in the other.
+    """
+    for child in cfp.named_children:
+        if child.type == "modifiers":
+            raise NotImplementedError(
+                "catch_formal_parameter with modifiers or "
+                "annotations is not yet supported."
+            )
+
+
 def _emit_catch_formal_parameter(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -5930,12 +5942,7 @@ def _emit_catch_formal_parameter(
     Refuses modifiers / annotations on the parameter (those
     land with the annotation phase).
     """
-    for child in node.named_children:
-        if child.type == "modifiers":
-            raise NotImplementedError(
-                "catch_formal_parameter with modifiers or "
-                "annotations is not yet supported."
-            )
+    _refuse_catch_parameter_modifiers(node)
     catch_type: Node | None = None
     for child in node.named_children:
         if child.type == "catch_type":
@@ -9818,7 +9825,7 @@ def _emit_argument_list(
         for _ in range(push_count):
             emitter.pop_indent()
 
-    def emit_p4_packed() -> None:
+    def emit_p2b_packed() -> None:
         # 0.7.0 — "P4-packed": break right after `(` and put EVERY
         # argument on a single continuation line at `line_start + 4`.
         #
@@ -10014,7 +10021,7 @@ def _emit_argument_list(
         #     line at `line_start + 4`. Same two-line
         #     invariant as P2 — the other member of the greedy
         #     family, tried immediately after it and BEFORE
-        #     P3. Named `emit_p4_packed` for historical
+        #     P3. Named `emit_p2b_packed` for historical
         #     reasons; the spec calls it priority 2b.
         #   - P3 (paren-aligned one-per-line): each arg on
         #     its own line at the paren-align column.
@@ -10129,7 +10136,7 @@ def _emit_argument_list(
             # spills past one continuation line, so this stays greedy
             # rather than becoming a second one-per-line shape.
             packed_snap = emitter.snapshot()
-            emit_p4_packed()
+            emit_p2b_packed()
             packed_line_count = emitter.line_count - packed_snap[0]
             if (
                 emitter.last_lines_max_width(packed_snap[0])
