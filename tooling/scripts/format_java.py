@@ -42,7 +42,7 @@ Coverage
 --------
 
 `format_source()` handles every Java construct exercised by
-the 229 fixture pairs under `tooling/scripts/tests/fixtures/`
+the 232 fixture pairs under `tooling/scripts/tests/fixtures/`
 and every file in the senzing-commons-java consumer codebase
 (106 files, 0 refusals). Constructs deliberately out-of-scope
 for 0.3.0:
@@ -1659,11 +1659,29 @@ def _emit_field_declaration(
     #     out  String s
     #              = Option.sourceDescriptor(COMMAND_LINE, CONFIG, "--config");
     #
-    # Checking here measures what actually reaches disk. This REPORTS
-    # only; the layout is deliberately unchanged, because threading the
-    # semicolon into `tail_reserve` shifts tier decisions and left
-    # `MessageConsumerFactory.java` changing on every pass. Fixing the
-    # layout is tracked separately.
+    # Checking here measures what reaches disk far more closely than
+    # the wrap engine's own exits do. It is not exact: when the
+    # declarator-level advisory has already fired for the same
+    # construct, `_fire_wrap_overflow_advisory` dedups this one away
+    # and the surviving message reports one column short (86 for an
+    # 87-column line). That under-report is pre-existing and tracked
+    # separately.
+    #
+    # As of 0.7.0 the LAYOUT is fixed too: `_emit_variable_declarator`
+    # and `_emit_variable_declarator_with_array_rhs` each raise
+    # `tail_reserve` around their value emission, so the value's own
+    # wrap engine reserves the semicolon. What remains reports where
+    # the formatter genuinely cannot place the value — most often a
+    # single over-long token or literal. The four corpus declarations
+    # that reported at exactly 81 columns are gone; the 19 that remain
+    # report at 84 to 94.
+    #
+    # Assignment statements need no equivalent, and the asymmetry is
+    # worth recording so it is not re-derived: `_emit_expression_
+    # statement` already raises `tail_reserve` by 1 around the
+    # expression, so `_emit_assignment_with_array_rhs` inherits the
+    # semicolon reserve from one level up. Declarations have no such
+    # enclosing statement emitter, which is why they needed it here.
     _fire_wrap_overflow_advisory(
         emitter, node, decl_start, "declaration",
         remedy=(
@@ -10863,19 +10881,31 @@ def _emit_method_invocation(
     # any wrap engine running inside the receiver (chain
     # wrap on a sub-expression, a binary expression, etc.)
     # accounts for the trailing `.NAME(ARGS)` it can't see.
-    # The reserve is computed from the source-text length of
-    # name + arguments — for single-line args this matches
-    # the rendered length; for multi-line args we cap at the
-    # first source line so a long multi-line literal doesn't
-    # force overly-aggressive wrapping upstream.
+    # The reserve is `.NAME(` — the prefix that is CERTAIN to follow
+    # the receiver on its line. The arguments are deliberately not
+    # counted: the argument list wraps under its own engine, with
+    # this reserve already restored, so charging its width here
+    # would reserve budget twice for the same characters.
+    #
+    # 0.7.0: this used to add the arguments' FIRST SOURCE LINE,
+    # which made the reserve — and so the receiver's wrap — a
+    # function of how the arguments happened to be typed.
+    # `.append(\n    consumerType)` reserved 8 while
+    # `.append(consumerType)` reserved 21, so the formatter mapped
+    # each layout onto the other and a declaration in
+    # `MessageConsumerFactory.java` alternated FOREVER — a
+    # two-cycle, not a file that settles on a second pass.
+    #
+    # Collapsing the argument text's line breaks was measured as an
+    # alternative and rejected: it is layout-independent but removes
+    # the cap the first-line rule provided, over-reserving for
+    # arguments that will wrap anyway and costing 19 extra
+    # advisories for no line-length gain (324 against the pre-fix
+    # baseline of 305; 322 against the 301 this release ships).
     object_node = node.child_by_field_name("object")
     if object_node is not None:
         name_text = _node_source_text(source, name_node)
-        args_text = _node_source_text(source, arguments_node)
-        args_first_line = (
-            args_text.split("\n", 1)[0]
-        )
-        trailing = 1 + len(name_text) + len(args_first_line)
+        trailing = 1 + len(name_text) + 1
         prev_reserve = emitter.set_tail_reserve(
             emitter.tail_reserve + trailing
         )
@@ -11029,7 +11059,16 @@ def _emit_variable_declarator_with_array_rhs(
     # Priority 3+: no break-at-`=`, dispatch and let the array's
     # own cascade choose P3 or P4.
     emitter.write(" = ")
-    _emit_node(emitter, source, value)
+    # Same semicolon reserve as `_emit_variable_declarator`'s own
+    # cascade: this final tier lets the array literal wrap under its
+    # own engine, which sees only `tail_reserve` and would otherwise
+    # pack to exactly 80 and leave the `;` in column 81 —
+    # idempotently, so it survives every reformat.
+    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
+    try:
+        _emit_node(emitter, source, value)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     _fire_wrap_overflow_advisory(
         emitter, node, cascade_start, "variable declarator"
     )
@@ -11156,7 +11195,20 @@ def _emit_variable_declarator(
     # field/local-variable declaration will write), commit.
     saved = emitter.snapshot()
     emitter.write(" = ")
-    _emit_node(emitter, source, value)
+    # 0.7.0: the VALUE must wrap knowing a `;` follows it. The
+    # cascade's own checks below add `+ 1` for that semicolon, but
+    # they only decide between shapes -- the value's internal wrap
+    # engine (argument list, binary chain, ternary) sees only
+    # `tail_reserve`, so without this it packs to exactly 80 and the
+    # `;` lands in column 81. Raising the reserve only around the
+    # value emission is what keeps this from double-charging: the
+    # checks measure `emitter.column` after the reserve is restored,
+    # so the `+ 1` there and this `+ 1` constrain different things.
+    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
+    try:
+        _emit_node(emitter, source, value)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     inline_fits = (
         emitter.line_count == saved[0]
         and emitter.column + 1 <= effective_max
@@ -11173,7 +11225,20 @@ def _emit_variable_declarator(
     emitter.push_indent()
     emitter.write_indent()
     emitter.write("= ")
-    _emit_node(emitter, source, value)
+    # 0.7.0: the VALUE must wrap knowing a `;` follows it. The
+    # cascade's own checks below add `+ 1` for that semicolon, but
+    # they only decide between shapes -- the value's internal wrap
+    # engine (argument list, binary chain, ternary) sees only
+    # `tail_reserve`, so without this it packs to exactly 80 and the
+    # `;` lands in column 81. Raising the reserve only around the
+    # value emission is what keeps this from double-charging: the
+    # checks measure `emitter.column` after the reserve is restored,
+    # so the `+ 1` there and this `+ 1` constrain different things.
+    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
+    try:
+        _emit_node(emitter, source, value)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     p2_fits = (
         emitter.line_count == p2_saved[0] + 1
         and emitter.column + 1 <= effective_max
@@ -11201,7 +11266,20 @@ def _emit_variable_declarator(
     emitter.write(" = ")
     prev_escaped = emitter._anchor_escaped
     emitter._anchor_escaped = False
-    _emit_node(emitter, source, value)
+    # 0.7.0: the VALUE must wrap knowing a `;` follows it. The
+    # cascade's own checks below add `+ 1` for that semicolon, but
+    # they only decide between shapes -- the value's internal wrap
+    # engine (argument list, binary chain, ternary) sees only
+    # `tail_reserve`, so without this it packs to exactly 80 and the
+    # `;` lands in column 81. Raising the reserve only around the
+    # value emission is what keeps this from double-charging: the
+    # checks measure `emitter.column` after the reserve is restored,
+    # so the `+ 1` there and this `+ 1` constrain different things.
+    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
+    try:
+        _emit_node(emitter, source, value)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     # 0.7.0: an inline RHS whose emission left a line starting LEFT of
     # where the value began has orphaned part of itself — typically a
     # chain whose tail could not fit at the deep column the inline
@@ -11272,7 +11350,20 @@ def _emit_variable_declarator(
     emitter.push_indent()
     emitter.write_indent()
     emitter.write("= ")
-    _emit_node(emitter, source, value)
+    # 0.7.0: the VALUE must wrap knowing a `;` follows it. The
+    # cascade's own checks below add `+ 1` for that semicolon, but
+    # they only decide between shapes -- the value's internal wrap
+    # engine (argument list, binary chain, ternary) sees only
+    # `tail_reserve`, so without this it packs to exactly 80 and the
+    # `;` lands in column 81. Raising the reserve only around the
+    # value emission is what keeps this from double-charging: the
+    # checks measure `emitter.column` after the reserve is restored,
+    # so the `+ 1` there and this `+ 1` constrain different things.
+    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
+    try:
+        _emit_node(emitter, source, value)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
     emitter.pop_indent()
     # Spec C1 emit-and-warn: the break-at-`=` shape may still
     # overflow when the value is a single atomic token
@@ -11454,7 +11545,7 @@ def format_source(
 ) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Handles every Java construct exercised by the 229 fixture
+    Handles every Java construct exercised by the 232 fixture
     pairs and every file in the consumer codebases pre-flight
     diff exercise — including classes, interfaces, enums,
     records, methods, constructors, fields, type parameters,
