@@ -42,7 +42,7 @@ Coverage
 --------
 
 `format_source()` handles every Java construct exercised by
-the 232 fixture pairs under `tooling/scripts/tests/fixtures/`
+the 234 fixture pairs under `tooling/scripts/tests/fixtures/`
 and every file in the senzing-commons-java consumer codebase
 (106 files, 0 refusals). Constructs deliberately out-of-scope
 for 0.3.0:
@@ -3250,8 +3250,26 @@ def _emit_if_statement(
         alternative is None
         and short_circuit is not None
         and not _is_else_branch_if(node)
-        and not _node_spans_multiple_rows(condition)
     ):
+        # No source-row gate. Earlier releases also required
+        # `not _node_spans_multiple_rows(condition)`, on the reading
+        # that an author who spread a condition over several rows
+        # wanted the Allman brace that a multi-line condition
+        # triggers. But this emitter then collapses that condition
+        # onto one line whenever it fits and emits it with no brace
+        # at all, so the gate contradicted the emitter's own
+        # behaviour — and, being
+        # a source read, it made the answer depend on layout the
+        # formatter was about to rewrite: pass 1 declined the
+        # collapse and rewrote the condition to one row, pass 2 saw
+        # a single-row condition and collapsed. Three corpus files
+        # settled only on a second format for exactly this reason.
+        #
+        # The speculation below already decides on RENDERED widths,
+        # which is the honest test, so the gate was redundant for
+        # correctness. Across the trial corpus it blocked 70 of 1402
+        # Tier 1 candidates, of which only 5 fit once collapsed —
+        # and those 5 are what the second pass produced anyway.
         # Tier 1 is structurally eligible. Speculatively emit
         # the would-be single-line `if (cond) STMT;` form;
         # commit if the line fits and the condition/statement
@@ -6079,11 +6097,25 @@ def _emit_for_statement(
             emitter.set_tail_reserve(prev_reserve)
         emitter.write(")")
 
-        # If the header ended up too wide on a single line —
-        # no inner wrap fired (e.g. no `&&`/`||` for the
-        # condition wrap to break at) but the rendered text
-        # still exceeds `_MAX_LINE` — backtrack and emit a
-        # paren-aligned wrap at the `for (` column.
+        # Backtrack to a paren-aligned wrap at the `for (` column
+        # when EITHER the single-line attempt overflows, or one of
+        # the clauses wrapped internally.
+        #
+        # 0.7.0: the second condition is new, and it is the same
+        # rule as "if an argument breaks, the argument list breaks".
+        # A clause that wraps on its own leaves the shape the
+        # standards' Anti-pattern section forbids — some clauses
+        # packed on the header line, one broken beneath at an
+        # unrelated column:
+        #
+        #     for (String line = br.readLine(); line != null; line
+        #         = br.readLine())
+        #
+        # The old gate required `single_line_header`, so exactly
+        # that case skipped the backtrack and committed. It was also
+        # non-convergent: the next pass saw multi-row source, took
+        # the branch above, and produced the correct one-clause-per-
+        # line form, so the file only settled on a second format.
         effective_max = _MAX_LINE - emitter.tail_reserve
         single_line_header = (
             emitter.line_count == header_start[0]
@@ -6092,7 +6124,7 @@ def _emit_for_statement(
             emitter.last_lines_max_width(header_start[0])
             > effective_max
         )
-        if single_line_header and header_too_wide:
+        if not single_line_header or header_too_wide:
             emitter.restore(header_start)
             emitter.write("for (")
             emit_header_paren_aligned()
@@ -11559,7 +11591,7 @@ def format_source(
 ) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Handles every Java construct exercised by the 232 fixture
+    Handles every Java construct exercised by the 234 fixture
     pairs and every file in the consumer codebases pre-flight
     diff exercise — including classes, interfaces, enums,
     records, methods, constructors, fields, type parameters,

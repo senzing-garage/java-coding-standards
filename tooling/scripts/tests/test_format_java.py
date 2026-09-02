@@ -4588,3 +4588,76 @@ class TestReceiverReserveIgnoresArgumentLayout:
                 once, warnings_out=[]
             )
             assert once == twice
+
+
+class TestSecondPassConvergence:
+    """Two shapes that only settled on a SECOND format.
+
+    Both were decisions that read source layout the formatter then
+    rewrote, so pass 1 answered from the author's layout and pass 2
+    answered from pass 1's output. Neither fix changes the fixed
+    point — they reach it one pass sooner.
+    """
+
+    def _passes(self, body: str, n: int = 3) -> list[bytes]:
+        out = [body.encode()]
+        for _ in range(n):
+            out.append(
+                format_java.format_source(
+                    out[-1], warnings_out=[]
+                )
+            )
+        return out[1:]
+
+    _FIXTURES = (
+        Path(__file__).resolve().parent / "fixtures"
+    )
+
+    @property
+    def FOR_HEADER(self) -> str:
+        """Read from the fixture so the two cannot drift apart."""
+        return (
+            self._FIXTURES
+            / "condition_wrap"
+            / "12_for_clause_wrap_escalates_whole_header"
+            / "input.java"
+        ).read_text()
+
+    @property
+    def MULTIROW_CONDITION(self) -> str:
+        return (
+            self._FIXTURES
+            / "need_braces"
+            / "23_multirow_source_condition_still_collapses"
+            / "input.java"
+        ).read_text()
+
+    def test_for_header_converges_on_the_first_pass(self) -> None:
+        first, second, third = self._passes(self.FOR_HEADER)
+        assert first == second == third
+
+    def test_for_clause_wrap_breaks_the_whole_header(self) -> None:
+        """Not the partial break the Anti-pattern section forbids —
+        two clauses packed and one stranded beneath."""
+        text = self._passes(self.FOR_HEADER)[0].decode()
+        assert "line != null;\n" in text
+        assert "; line\n" not in text
+
+    def test_multirow_condition_converges_on_the_first_pass(
+        self,
+    ) -> None:
+        first, second, third = self._passes(self.MULTIROW_CONDITION)
+        assert first == second == third
+
+    def test_multirow_condition_still_collapses_to_tier_1(
+        self,
+    ) -> None:
+        """The emitter collapses the condition to one row regardless,
+        so declining Tier 1 because the SOURCE spanned rows only
+        deferred the collapse to the next pass."""
+        text = self._passes(self.MULTIROW_CONDITION)[0].decode()
+        assert (
+            "if (obj == null || this.getClass() != obj.getClass()) "
+            "return false;" in text
+        )
+
