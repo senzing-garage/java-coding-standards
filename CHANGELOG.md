@@ -354,9 +354,9 @@ The reserve is now `1 + len(name) + 1` — the `.NAME(` that is certain to
 follow, with no dependence on argument layout. Two alternatives were
 measured and rejected: collapsing the argument text's line breaks is
 layout-independent but removes the cap the first-line rule existed to
-provide, over-reserving and costing **19 extra advisories** with no
-line-length benefit — 324 measured against the pre-fix baseline of 305,
-or 322 against the 301 this release ships; and normalising the text
+provide, over-reserving for arguments that will wrap anyway and buying
+no line-length benefit — **324 advisories measured against the pre-fix
+baseline of 305, or 322 against the 301 this release ships**; and normalising the text
 further reintroduces the
 comma-spacing trap documented in `building/source-preservation-history`.
 On its own the accepted form leaves both aggregate counts exactly

@@ -1664,8 +1664,8 @@ def _emit_field_declaration(
     # declarator-level advisory has already fired for the same
     # construct, `_fire_wrap_overflow_advisory` dedups this one away
     # and the surviving message reports one column short (86 for an
-    # 87-column line). That under-report is pre-existing and tracked
-    # separately.
+    # 87-column line). That under-report is pre-existing and
+    # unchanged here.
     #
     # As of 0.7.0 the LAYOUT is fixed too: `_emit_variable_declarator`
     # and `_emit_variable_declarator_with_array_rhs` each raise
@@ -1677,11 +1677,25 @@ def _emit_field_declaration(
     # report at 84 to 94.
     #
     # Assignment statements need no equivalent, and the asymmetry is
-    # worth recording so it is not re-derived: `_emit_expression_
-    # statement` already raises `tail_reserve` by 1 around the
-    # expression, so `_emit_assignment_with_array_rhs` inherits the
-    # semicolon reserve from one level up. Declarations have no such
-    # enclosing statement emitter, which is why they needed it here.
+    # worth recording so it is not re-derived — nor mis-derived.
+    #
+    # `local_variable_declaration` dispatches HERE too, so this
+    # function IS the enclosing statement emitter for declarations. A
+    # reserve raised around the declarator loop below was therefore
+    # available, and it is wrong: the declarator cascade already
+    # carries its own semicolon allowance (its tier checks add `+ 1`,
+    # and `_emit_variable_declarator_with_array_rhs` measures against
+    # `effective_max_with_semi`, which is `_MAX_LINE - tail_reserve -
+    # 1`). A statement-level reserve compounds with those and
+    # double-charges — measured: it wraps a legal 80-column
+    # declaration down to 66. That is the double-charge that sank the
+    # first attempt at this fix.
+    #
+    # `_emit_expression_statement` can raise the reserve safely only
+    # because the assignment emitters carry no such allowance —
+    # `_emit_assignment_with_array_rhs` measures against a plain
+    # `effective_max`. Hence the reserve goes around each VALUE
+    # emission, where the tier checks have already been restored.
     _fire_wrap_overflow_advisory(
         emitter, node, decl_start, "declaration",
         remedy=(
@@ -10899,9 +10913,9 @@ def _emit_method_invocation(
     # Collapsing the argument text's line breaks was measured as an
     # alternative and rejected: it is layout-independent but removes
     # the cap the first-line rule provided, over-reserving for
-    # arguments that will wrap anyway and costing 19 extra
-    # advisories for no line-length gain (324 against the pre-fix
-    # baseline of 305; 322 against the 301 this release ships).
+    # arguments that will wrap anyway and costing extra advisories
+    # for no line-length gain: 324 against the pre-fix baseline of
+    # 305, or 322 against the 301 this release ships.
     object_node = node.child_by_field_name("object")
     if object_node is not None:
         name_text = _node_source_text(source, name_node)

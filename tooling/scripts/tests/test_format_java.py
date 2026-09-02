@@ -4544,8 +4544,8 @@ class TestReceiverReserveIgnoresArgumentLayout:
     declaration alternated between them forever — a true two-cycle,
     not merely a second pass.
 
-    Note these two inputs converge at 0.7.0 and produce identical
-    output there: the shapes only diverge once the receiver sits
+    Note these two inputs are both fixpoints at the pre-fix
+    baseline AND produce identical output there: the shapes only diverge once the receiver sits
     close to the margin, which reserving the declaration semicolon
     is what pushed it into. So this class guards the reserve
     computation, and goes red when that computation alone is
