@@ -834,11 +834,26 @@ def _fire_wrap_overflow_advisory(
     # match what checkstyle's LineLength check will actually
     # see, so compute per-line on-disk widths instead of
     # uniformly applying `tail_reserve` to every line.
+    #
+    # Lines checkstyle's `LineLength` check would skip do not count
+    # toward the width. Advising about a line the build will not
+    # reject is noise, and noise in a per-build advisory channel is
+    # how the channel stops being read. Excluding them here rather
+    # than at each call site means every wrap engine inherits the
+    # exemption, and an advisory whose only over-long lines are
+    # exempt never fires at all — `max_on_disk` stays within the
+    # limit and the early return below takes it.
     max_finalized_width = 0
     for line in emitter._lines[since_line_count:]:
+        if _line_length_exempt(line):
+            continue
         if len(line) > max_finalized_width:
             max_finalized_width = len(line)
-    current_on_disk = len(emitter._current) + emitter.tail_reserve
+    current = emitter._current
+    if _line_length_exempt(current):
+        current_on_disk = 0
+    else:
+        current_on_disk = len(current) + emitter.tail_reserve
     max_on_disk = max(max_finalized_width, current_on_disk)
     if max_on_disk <= _MAX_LINE:
         return
@@ -1673,8 +1688,11 @@ def _emit_field_declaration(
     # wrap engine reserves the semicolon. What remains reports where
     # the formatter genuinely cannot place the value — most often a
     # single over-long token or literal. The four corpus declarations
-    # that reported at exactly 81 columns are gone; the 19 that remain
-    # report at 84 to 94.
+    # that reported at exactly 81 columns are gone; the 12 that remain
+    # report at 84 to 85. (Was 19 at 84 to 94 before
+    # `_fire_wrap_overflow_advisory` began honouring checkstyle's
+    # LineLength exemptions — seven of those were `static final`
+    # declarations with a generic type, which the build ignores.)
     #
     # Assignment statements need no equivalent, and the asymmetry is
     # worth recording so it is not re-derived — nor mis-derived.
@@ -3393,8 +3411,27 @@ cost is that the two can drift, which is why both sides name each other.
 
 
 def _line_length_exempt(text: str) -> bool:
-    """True when checkstyle's `LineLength` check would skip `text`."""
-    return any(m in text for m in _LINE_LENGTH_EXEMPT_MARKERS)
+    """True when checkstyle's `LineLength` check would skip `text`.
+
+    Three of the `ignorePattern` alternatives are not plain
+    substrings and so cannot live in `_LINE_LENGTH_EXEMPT_MARKERS`;
+    they are matched structurally here instead. `^package.*` and
+    `^import.*` are anchored, so they are tested with `startswith`
+    on the raw text rather than on a stripped copy — a `package`
+    keyword indented inside a line is not a package declaration.
+    `static final.*<.*>` covers a constant whose generic type
+    makes the declaration unbreakable.
+    """
+    if any(m in text for m in _LINE_LENGTH_EXEMPT_MARKERS):
+        return True
+    if text.startswith("package ") or text.startswith("import "):
+        return True
+    index = text.find("static final")
+    if index >= 0:
+        angle = text.find("<", index)
+        if angle > index and text.find(">", angle) > angle:
+            return True
+    return False
 
 
 def _looks_like_snippet_file_attr(stripped: str) -> bool:
@@ -10362,7 +10399,7 @@ def _emit_method_chain_wrapped(
     p1_segment_break_seen = [False]
 
     def _segment_emit_is_legitimately_multi_line(
-        seg: Node, args_emit_column: int
+        seg: Node
     ) -> bool:
         """Predict at the segment's pre-emit position whether
         any newlines its emit introduces will come from a
@@ -10373,12 +10410,12 @@ def _emit_method_chain_wrapped(
         case actually strands subsequent chain segments
         mid-call.
 
-        `args_emit_column` is the emitter column at the moment
-        the segment's args open — captured BEFORE the segment
-        emits, since the source-preserve gate is column-
-        sensitive and the emitter's column is already past
-        the args by the time the post-emit discriminator
-        runs.
+        Takes no emission column: this used to receive one,
+        because the source-preserve gate was column-sensitive and
+        the emitter's column is already past the args by the time
+        the post-emit discriminator runs. That gate lost its
+        column parameter when preservation was reduced to the
+        comment and CSOFF cases, so the argument became dead.
         """
         args = seg.child_by_field_name("arguments")
         if args is None:
@@ -10483,19 +10520,6 @@ def _emit_method_chain_wrapped(
 
         def emit_seg_strict(seg: Node) -> None:
             before = emitter.line_count
-            # Capture the column AT the segment's args open
-            # (one past the `name` token). emit_segment writes
-            # name + args; the args open at `emitter.column +
-            # len(name)`. Source-preserve's first_line_fits
-            # check needs that column, not the post-emit
-            # column.
-            name_node = seg.child_by_field_name("name")
-            name_text = (
-                _node_source_text(source, name_node)
-                if name_node is not None
-                else ""
-            )
-            args_emit_column = emitter.column + len(name_text)
             emit_segment(seg)
             if emitter.line_count > before:
                 # Newlines introduced. Acceptable only if BOTH:
@@ -10522,7 +10546,7 @@ def _emit_method_chain_wrapped(
                 # .get()` (4 segments) which read better as a
                 # dot-aligned wrap.
                 legit = _segment_emit_is_legitimately_multi_line(
-                    seg, args_emit_column
+                    seg
                 )
                 if (not legit) or len(segments) > 2:
                     p1_segment_break_seen[0] = True
@@ -10557,13 +10581,6 @@ def _emit_method_chain_wrapped(
 
         def emit_seg_track_wrap(seg: Node) -> None:
             before = emitter.line_count
-            name_node = seg.child_by_field_name("name")
-            name_text = (
-                _node_source_text(source, name_node)
-                if name_node is not None
-                else ""
-            )
-            args_emit_column = emitter.column + len(name_text)
             emit_segment(seg)
             if emitter.line_count > before:
                 # Newlines introduced. Only flag as
@@ -10575,7 +10592,7 @@ def _emit_method_chain_wrapped(
                 # backoff decision matches P1's newline-based
                 # rejection.
                 legit = _segment_emit_is_legitimately_multi_line(
-                    seg, args_emit_column
+                    seg
                 )
                 if not legit:
                     p2_segment_wrapped[0] = True
@@ -10946,8 +10963,8 @@ def _emit_method_invocation(
     # alternative and rejected: it is layout-independent but removes
     # the cap the first-line rule provided, over-reserving for
     # arguments that will wrap anyway and costing extra advisories
-    # for no line-length gain: 324 against the pre-fix baseline of
-    # 305, or 322 against the 301 this release ships.
+    # for no line-length gain: 309 advisories against the 288 this
+    # release ships.
     object_node = node.child_by_field_name("object")
     if object_node is not None:
         name_text = _node_source_text(source, name_node)

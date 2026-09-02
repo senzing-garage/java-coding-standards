@@ -311,7 +311,7 @@ constrain wrapping, so the two allowances measure different things and
 do not compound.
 
 The four corpus declarations that reported at exactly 81 columns are
-gone; 19 still report, at 84 to 94 columns. Those are values the
+gone; 12 still report, at 84 to 85 columns. Those are values the
 formatter genuinely cannot place — most often a single over-long token
 or literal, whose only remedy is a source change and so outside what an
 AST-preserving formatter may do.
@@ -355,13 +355,14 @@ follow, with no dependence on argument layout. Two alternatives were
 measured and rejected: collapsing the argument text's line breaks is
 layout-independent but removes the cap the first-line rule existed to
 provide, over-reserving for arguments that will wrap anyway and buying
-no line-length benefit — **324 advisories measured against the pre-fix
-baseline of 305, or 322 against the 301 this release ships**; and normalising the text
+no line-length benefit — **309 advisories against the 288 this
+release ships**; and normalising the text
 further reintroduces the
 comma-spacing trap documented in `building/source-preservation-history`.
-On its own the accepted form leaves both aggregate counts exactly
-where they were — 1573 over-long lines, 305 advisories — with layout
-changes confined to 2 files. The unchanged counts, not output identity,
+On its own the accepted form left both aggregate counts exactly
+where they were at the time it was measured — 1573 over-long lines
+and the 305 advisories that preceded the LineLength-exemption fix
+below — with layout changes confined to 2 files. The unchanged counts, not output identity,
 are the evidence that it under-reserves nothing that mattered.
 
 Fixture `method_chain_wrap/26_receiver_reserve_ignores_arg_layout` locks
@@ -437,7 +438,7 @@ Two more decisions were reading source layout the formatter then
 rewrites, so pass 1 answered from the author's layout and pass 2
 answered from pass 1's own output. Neither fix changes the fixed
 point — both reach it one pass sooner. Lines over 80 (1571) and
-advisory count (301) are identical in single-pass and converged
+advisory count (288) are identical in single-pass and converged
 output alike, and the CONVERGED line count is identical at 221,082.
 Single-pass output is 8 lines shorter, which is the five Tier 1
 collapses (two lines each) less the two `for` escalations (one line
@@ -509,6 +510,43 @@ chain cascade is at fault.
 
 Files needing a second pass: **6 to 1**. Nothing in the corpus fails
 to converge.
+
+### Advisories now honour checkstyle's LineLength exemptions
+
+The advisory channel exists so adopters see the shapes the formatter
+could not fit. Warning about a line the build will not reject is
+noise, and noise in a per-build channel is how the channel stops
+being read — which this release already said, while only half doing
+it.
+
+`_LINE_LENGTH_EXEMPT_MARKERS` mirrored five of the eight
+`ignorePattern` alternatives in `checkstyle/senzing-checkstyle.xml`.
+The three it omitted are not plain substrings, so they could not live
+in a substring list: `^package.*`, `^import.*` and
+`static final.*<.*>`. They are now matched structurally in
+`_line_length_exempt` — the two anchored ones with `startswith` on
+the raw text, since a `package` keyword occurring inside a line is
+not a package declaration.
+
+More consequentially, `_line_length_exempt` was consulted at exactly
+one call site, in the javadoc path. Every wrap engine reaches the
+advisory through `_fire_wrap_overflow_advisory`, which did not
+consult it at all. It now excludes exempt lines from the width
+accounting, so the exemption is inherited by every site at once and
+an advisory whose only over-long lines are exempt does not fire —
+`max_on_disk` stays inside the limit and the existing early return
+takes it.
+
+Corpus advisories: **301 to 288**. The exemption suppresses 257
+advisory SITES, but most were already being deduplicated away by an
+overlapping advisory, so thirteen is the net change. By rule, 250 of
+the suppressed sites are a `static final` constant whose generic type
+makes the declaration unbreakable and seven are URLs; those are the
+only two rules that fire on this corpus. Declaration advisories drop
+from 19 to 12, and the widths they report narrow from 84-94 to
+84-85 — the `static final` declarations were the wide ones, at 88 and
+93 columns. Lines over 80 (1571), total line count and convergence
+are unchanged.
 
 ### Javadoc documentation corrections
 

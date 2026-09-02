@@ -4547,9 +4547,10 @@ class TestReceiverReserveIgnoresArgumentLayout:
     Note these two inputs are both fixed points at the pre-fix
     baseline AND produce identical output there: the shapes only
     diverge once the receiver sits close to the margin, which
-    reserving the declaration semicolon is what pushed it into. So this class guards the reserve
-    computation, and goes red when that computation alone is
-    reverted — not when the whole release is.
+    reserving the declaration semicolon is what pushed it into. So
+    this class guards the reserve computation, and goes red when
+    that computation alone is reverted — not when the whole release
+    is.
     """
 
     WRAPPED = (
