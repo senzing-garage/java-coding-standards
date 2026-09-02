@@ -16,7 +16,7 @@ Formatting release. Started as a bug-fix pass over defects
 surfaced by running 0.6.0 across four consumer source bases,
 and grew into a minor release: it adds normative rules to the
 standards document, removes two behaviors that document had
-described, and reformats 322 of the 504 files in the trial
+described, and reformats 337 of the 504 files in the trial
 corpus. Adopters should expect a substantial reformat commit
 when they bump the pin, and should bump it on its own commit
 for that reason.
@@ -430,6 +430,85 @@ greedy did, and split an inline `{@link ...}` tag across rows on the
 way. Both are now fixed — see the next section. `//` comment reflow
 keeps its unconditional balance and is untouched. 95 files in the
 trial corpus gain a fixed orphan.
+
+### Five of the six files that needed a second pass now settle on the first
+
+Two more decisions were reading source layout the formatter then
+rewrites, so pass 1 answered from the author's layout and pass 2
+answered from pass 1's own output. Neither fix changes the fixed
+point — both reach it one pass sooner. Lines over 80 (1571) and
+advisory count (301) are identical in single-pass and converged
+output alike, and the CONVERGED line count is identical at 221,082.
+Single-pass output is 8 lines shorter, which is the five Tier 1
+collapses (two lines each) less the two `for` escalations (one line
+each) — and single-pass is what `format_file.py` runs, so that is the
+figure adopters see.
+
+**Basic-`for` headers (2 files).** The single-row path tried the
+header on one line and backtracked to the paren-aligned
+one-clause-per-line form only when `single_line_header and
+header_too_wide`. When a CLAUSE wrapped internally the first
+conjunct was false, so the backtrack was skipped and the header
+committed in exactly the partial-break shape the standards'
+Anti-pattern section forbids:
+
+```java
+            for (String line = br.readLine(); line != null; line
+                = br.readLine())
+```
+
+The escalation now fires when the header overflows **or** any clause
+wrapped — the same rule as "if an argument breaks, the argument list
+breaks", applied to header clauses:
+
+```java
+            for (String line = br.readLine();
+                 line != null;
+                 line = br.readLine())
+```
+
+The old shape was also why those files needed a second pass: the next
+run saw multi-row source, took the preserve-the-author's-rows branch,
+and produced the correct form.
+
+**Tier 1 brace collapse (3 files).** The collapse was gated on
+`not _node_spans_multiple_rows(condition)`, on the reading that an
+author who spread a condition over rows wanted the Allman brace a
+multi-line condition triggers. But the emitter collapses that
+condition onto one line anyway and uses a same-line brace, so the
+gate contradicted its own behaviour — and being a source read, it
+made the answer depend on layout about to be rewritten. Pass 1
+declined the collapse and rewrote the condition to one row; pass 2
+saw a single-row condition and collapsed it.
+
+The Tier 1 branch already decides by speculatively emitting and
+measuring RENDERED widths, so the gate was redundant for
+correctness. Removing it flips 5 of the corpus's 1,402 Tier 1
+candidates — the gate blocked 70, of which only those 5 fit once
+collapsed, and all 5 are what the second pass already produced.
+(Counted per distinct `if_statement` node; counting raw predicate
+invocations gives 1,586 and 86, because the speculative cascades
+revisit nodes.)
+
+**The sixth file is deferred, and its mechanism is not yet
+established.** `AbstractSchedulingService.java` carries a
+chain-with-lambda where pass 1 breaks `getBackingTasks()` /
+`.forEach(task -> {`, pushing the lambda body to column 32 and
+forcing everything inside it to wrap; pass 2 packs the chain and the
+body fits at a normal indent. Pass 2's output is markedly better, and
+the file settles there.
+
+It is layout-dependent — the pristine source and the pass-1 output
+share an AST yet format differently — but which read is responsible
+has not been pinned down. A predicate trace does diverge inside
+`_arg_list_takes_source_preserve_path`, but preservation fires zero
+times on this file, so that answer is discarded and cannot be the
+cause. Anyone picking this up should start by finding the read whose
+result actually reaches a layout decision, and should not assume the
+chain cascade is at fault.
+
+Files needing a second pass: **6 to 1**. Nothing in the corpus fails
+to converge.
 
 ### Javadoc documentation corrections
 
@@ -986,10 +1065,7 @@ same reason. Structurally-owned rows are the only rows the wrap
 engine cannot reclaim, so they are the only ones that legitimately
 strand a chain tail.
 
-Three constructs in the corpus still take a second pass to settle —
-the Tier 1 braced-`if` collapse, basic-`for` header wrapping, and one
-chain-with-lambda re-shape — but all of them converge on that second
-pass. What this release eliminates is the harder case: output that
+One construct in the corpus still takes a second pass to settle — a chain-with-lambda re-shape. What this release eliminates is the harder case: output that
 never settles at all.
 
 ### Argument lists: all-on-one-continuation-line tier (priority 2b)
@@ -1097,9 +1173,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 791/791 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 797/797 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 581 and the 210 missing
+  found, so a standalone clone collects 587 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -1141,28 +1217,31 @@ same commit. `requirements.txt` now says so in a comment.
   in the corpus gains a parse error.
 - Corpus idempotency, measured the same way for both releases
   (format pristine source once, format again, compare): **26
-  files needed a second pass under 0.6.0, 6 under this release**.
-  All six converge on the second pass, and every one is a
-  pre-existing 0.6.0 behavior this release does not touch — the
-  Tier 1 braced-`if` collapse, basic-`for` header wrapping, and one
-  chain-with-lambda re-shape. **Nothing in the corpus fails to
-  converge**; the one file that used to take four passes was the
-  javadoc case fixed above.
+  files needed a second pass under 0.6.0, 1 under this release**.
+  Five of the six that remained mid-release were fixed by the
+  convergence work above — the Tier 1 braced-`if` collapse and
+  basic-`for` header wrapping, both of which were reading source
+  layout. The one that remains is the chain-with-lambda re-shape in
+  `AbstractSchedulingService.java`, which settles on its second
+  pass. **Nothing in the corpus fails to converge**; the one file
+  that used to take four passes was the javadoc case fixed above.
 
   Note for anyone re-measuring: taking the 0.6.0 _output_ as the
   starting point instead of pristine source reports fewer, because
   the first pass of the new release absorbs the second-pass changes
-  those six files needed anyway. The pristine baseline is the honest
+  that file needed anyway. The pristine baseline is the honest
   one.
 
 - Lines over 80 characters across the four trees moved from
-  1618 to 1573, and all 25 over-long enhanced-`for` headers are
-  now wrapped. The 1,573 that remain are overwhelmingly content
+  1618 to 1571, and all 25 over-long enhanced-`for` headers are
+  now wrapped. The 1,571 that remain are overwhelmingly content
   a formatter must not reflow: half of them (787) carry a
   javadoc `{@snippet}` / `@highlight` / `@replace` directive
-  whose region markup breaks if it is wrapped, 334 are a single
-  string literal already longer than the limit on its own, and
-  365 more are javadoc or line-comment prose. 595 sit in one
+  whose region markup breaks if it is wrapped, with the bulk of the
+  remainder either a single string literal already longer than the
+  limit on its own or javadoc / line-comment prose. (The per-category
+  counts were taken at 1,573 and the categories overlap, so they are
+  no longer quoted individually.) 595 sit in one
   file, `SzEngineDemo.java`. Only 110 are code carrying no
   string literal, and most of those are unwrappable by nature —
   long `import` statements and `@ValueSource` annotations. The
@@ -1171,7 +1250,7 @@ same commit. `requirements.txt` now says so in a comment.
   fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
-- 336 of 504 trial files are reformatted, a net **+1,514 lines**
+- 337 of 504 trial files are reformatted, a net **+1,565 lines**
   (about +0.7% against 220k). The release trades lines for
   compliance and predictability: rule 1 breaks each nesting
   level of an embedded call onto its own row, and "if an
