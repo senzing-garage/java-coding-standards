@@ -1662,7 +1662,7 @@ def _emit_field_declaration(
     # Checking here measures what reaches disk far more closely than
     # the wrap engine's own exits do. It is not exact: when the
     # declarator-level advisory has already fired for the same
-    # construct, `_fire_wrap_overflow_advisory` dedups this one away
+    # construct, `_fire_wrap_overflow_advisory` de-duplicates this one away
     # and the surviving message reports one column short (86 for an
     # 87-column line). That under-report is pre-existing and
     # unchanged here.
@@ -3258,7 +3258,7 @@ def _emit_if_statement(
         # triggers. But this emitter then collapses that condition
         # onto one line whenever it fits and emits it with no brace
         # at all, so the gate contradicted the emitter's own
-        # behaviour — and, being
+        # behavior — and, being
         # a source read, it made the answer depend on layout the
         # formatter was about to rewrite: pass 1 declined the
         # collapse and rewrote the condition to one row, pass 2 saw
@@ -3616,7 +3616,7 @@ def _javadoc_reflow_words(
     `{@`/`<`/`@` boundaries — currently the
     `@param`/`@return`/`@throws` description path. The stability
     check is inapplicable there and is skipped; applying it anyway
-    refused good layouts for a boundary that never materialises.
+    refused good layouts for a boundary that never materializes.
 
     That path is safe for a specific reason worth stating, because
     nothing else records it. Every reflowed continuation is emitted
@@ -3740,13 +3740,13 @@ def _splits_inline_tag(lines: list[str]) -> bool:
 def _min_ragged_lines(
     tokens: list[str], max_content: int, max_lines: int
 ) -> list[str] | None:
-    """Break `tokens` into at most `max_lines` lines, minimising the
+    """Break `tokens` into at most `max_lines` lines, minimizing the
     sum of squared slack.
 
     The slack of EVERY line counts, the last one included. Classic
     minimum-raggedness leaves the last line free, which packs the
     early lines and is exactly the orphan this is meant to remove;
-    charging the last line equalises instead, which is what "balance
+    charging the last line equalizes instead, which is what "balance
     the breaks" asks for.
 
     Returns None when no arrangement fits — the caller then keeps
@@ -3758,7 +3758,7 @@ def _min_ragged_lines(
     discarded — `_javadoc_balanced_reflow` rejects any candidate
     with an over-wide line — so the branch is defensive, keeping the
     function total for any future caller that wants spec C1
-    emit-and-warn behaviour.
+    emit-and-warn behavior.
     """
     count = len(tokens)
     if count == 0:
@@ -11109,7 +11109,7 @@ def _emit_variable_declarator_with_array_rhs(
     # cascade: this final tier lets the array literal wrap under its
     # own engine, which sees only `tail_reserve` and would otherwise
     # pack to exactly 80 and leave the `;` in column 81 —
-    # idempotently, so it survives every reformat.
+    # and the result is idempotent, so it survives every reformat.
     prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
     try:
         _emit_node(emitter, source, value)

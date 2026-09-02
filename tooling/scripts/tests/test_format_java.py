@@ -4512,7 +4512,7 @@ class TestDeclarationSemicolonReserve:
         )
         assert "variable declarator" in message
         # 86, not 87, because a declarator-level advisory for the
-        # same construct dedups the post-semicolon one away and the
+        # same construct de-duplicates the post-semicolon one away and the
         # survivor reports one column short. Pre-existing.
         assert "max line width 86" in message
 
@@ -4520,7 +4520,7 @@ class TestDeclarationSemicolonReserve:
         """`_emit_variable_declarator_with_array_rhs` runs its own
         cascade and returns before the four sites above, so it needs
         the reserve independently. Without it this emits an
-        81-character line — idempotently."""
+        81-character line, and the result is idempotent."""
         src = (
             "class T\n{\n    private static final String[] NAME = "
             "new String[] { \"e0zzzzzz\", \"e1zzzzzz\" };\n}\n"
@@ -4544,10 +4544,10 @@ class TestReceiverReserveIgnoresArgumentLayout:
     declaration alternated between them forever — a true two-cycle,
     not merely a second pass.
 
-    Note these two inputs are both fixpoints at the pre-fix
-    baseline AND produce identical output there: the shapes only diverge once the receiver sits
-    close to the margin, which reserving the declaration semicolon
-    is what pushed it into. So this class guards the reserve
+    Note these two inputs are both fixed points at the pre-fix
+    baseline AND produce identical output there: the shapes only
+    diverge once the receiver sits close to the margin, which
+    reserving the declaration semicolon is what pushed it into. So this class guards the reserve
     computation, and goes red when that computation alone is
     reverted — not when the whole release is.
     """
@@ -4624,7 +4624,7 @@ class TestSecondPassConvergence:
         ).read_text()
 
     @property
-    def MULTIROW_CONDITION(self) -> str:
+    def WRAPPED_CONDITION(self) -> str:
         return (
             self._FIXTURES
             / "need_braces"
@@ -4646,7 +4646,7 @@ class TestSecondPassConvergence:
     def test_multirow_condition_converges_on_the_first_pass(
         self,
     ) -> None:
-        first, second, third = self._passes(self.MULTIROW_CONDITION)
+        first, second, third = self._passes(self.WRAPPED_CONDITION)
         assert first == second == third
 
     def test_multirow_condition_still_collapses_to_tier_1(
@@ -4655,7 +4655,7 @@ class TestSecondPassConvergence:
         """The emitter collapses the condition to one row regardless,
         so declining Tier 1 because the SOURCE spanned rows only
         deferred the collapse to the next pass."""
-        text = self._passes(self.MULTIROW_CONDITION)[0].decode()
+        text = self._passes(self.WRAPPED_CONDITION)[0].decode()
         assert (
             "if (obj == null || this.getClass() != obj.getClass()) "
             "return false;" in text

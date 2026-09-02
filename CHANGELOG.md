@@ -288,7 +288,7 @@ silently.
 
 Both halves are fixed. The advisory now runs after the `;` is written,
 so it measures far closer to what reaches disk — not exactly, because a
-declarator-level advisory for the same construct dedups this one away
+declarator-level advisory for the same construct de-duplicates this one away
 and the survivor reports one column short. That under-report is
 pre-existing and unchanged here. And `_emit_variable_declarator` raises
 `tail_reserve` by one **around the value emission only**, so the value's
@@ -319,7 +319,7 @@ AST-preserving formatter may do.
 The array-initializer right-hand side runs its own cascade and returns
 before those four sites, so it needed the reserve independently. Without
 it, `private static final String[] NAME = new String[] { … };` emitted an
-81-column line and — being idempotent — kept it forever. Fixture
+81-column line and, the result being idempotent, kept it forever. Fixture
 `array_initializer/15_array_rhs_reserves_semicolon` locks that.
 
 ### A method chain's receiver reserve stopped reading source layout
@@ -476,7 +476,7 @@ and produced the correct form.
 author who spread a condition over rows wanted the Allman brace a
 multi-line condition triggers. But the emitter collapses that
 condition onto one line anyway and uses a same-line brace, so the
-gate contradicted its own behaviour — and being a source read, it
+gate contradicted its own behavior — and being a source read, it
 made the answer depend on layout about to be rewritten. Pass 1
 declined the collapse and rewrote the condition to one row; pass 2
 saw a single-row condition and collapsed it.
@@ -941,7 +941,7 @@ The wrapped enhanced-`for` path emitted the iterable with no budget
 for the `)` that follows it, because the inline attempt's reserve was
 discarded along with everything else when the emitter rolled back. A
 header whose iterable ended near the limit therefore closed in column
-81 — silently, with no advisory, and idempotently, so no number of
+81 — silently, with no advisory, and the result is idempotent, so no number of
 reformats would repair it. The path now reserves one character,
 matching every sibling construct (basic `for` and `if` reserve two for
 `) {`; this needs one because the Allman brace moves to the next
