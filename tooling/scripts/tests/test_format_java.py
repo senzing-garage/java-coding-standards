@@ -4230,7 +4230,7 @@ class TestSplitsInlineTag:
 class TestMinRaggedLines:
     """Minimum-raggedness fill charges the LAST line too."""
 
-    def test_equalises_rather_than_packing(self) -> None:
+    def test_equalizes_rather_than_packing(self) -> None:
         """Greedy packs 3/3/1 and strands a lone token; charging
         the last line's slack too spreads it 2/2/3 instead."""
         tokens = ["aaaa"] * 7
@@ -4491,7 +4491,7 @@ class TestDeclarationSemicolonReserve:
             (len(x), x) for x in lines if len(x) > 80
         ]
 
-    def test_still_reports_a_genuinely_unsplittable_value(
+    def test_still_reports_a_value_with_no_split_point(
         self,
     ) -> None:
         """The reserve fixes off-by-one overflow, not impossibility.
@@ -4628,7 +4628,7 @@ class TestSecondPassConvergence:
         return (
             self._FIXTURES
             / "need_braces"
-            / "23_multirow_source_condition_still_collapses"
+            / "23_wrapped_source_condition_still_collapses"
             / "input.java"
         ).read_text()
 
@@ -4643,13 +4643,13 @@ class TestSecondPassConvergence:
         assert "line != null;\n" in text
         assert "; line\n" not in text
 
-    def test_multirow_condition_converges_on_the_first_pass(
+    def test_wrapped_condition_converges_on_the_first_pass(
         self,
     ) -> None:
         first, second, third = self._passes(self.WRAPPED_CONDITION)
         assert first == second == third
 
-    def test_multirow_condition_still_collapses_to_tier_1(
+    def test_wrapped_condition_still_collapses_to_tier_1(
         self,
     ) -> None:
         """The emitter collapses the condition to one row regardless,
