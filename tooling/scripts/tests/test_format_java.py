@@ -4460,3 +4460,131 @@ class TestTagDescriptionSkipsStabilityCheck:
         assert len(result) <= len(legacy)
         assert all(len(line) <= max_content for line in result)
         assert sorted(" ".join(result).split()) == sorted(self.WORDS)
+
+
+class TestDeclarationSemicolonReserve:
+    """A declaration's value must wrap knowing a `;` follows it.
+
+    The declarator cascade's own tier checks always added `+ 1` for
+    the semicolon, but those only choose between shapes — the
+    value's INTERNAL wrap engine saw only `tail_reserve`, packed to
+    exactly 80, and the `;` landed in column 81. The result was
+    idempotent, so it survived every reformat and silently turned
+    compliant source non-compliant.
+    """
+
+    def _format(self, body: str) -> list[str]:
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src, warnings_out=[])
+        return out.decode().split("\n")
+
+    def test_semicolon_does_not_land_in_column_81(self) -> None:
+        lines = self._format(
+            "        String fromStatic = SpecifiedOption"
+            ".sourceDescriptor(COMMAND_LINE, CONFIG, \"--config\");"
+        )
+        assert all(len(line) <= 80 for line in lines), [
+            (len(x), x) for x in lines if len(x) > 80
+        ]
+
+    def test_still_reports_a_genuinely_unsplittable_value(
+        self,
+    ) -> None:
+        """The reserve fixes off-by-one overflow, not impossibility.
+        A single over-long token must still emit-and-warn — and the
+        warning must be the declarator's own, not any warning from
+        anywhere in the file."""
+        warnings: list[object] = []
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            "        String single = "
+            "ThisIsOneExtremelyLongAtomicIdentifierThatCannot"
+            "BeSplitAnywhereAtAllEver;\n    }\n}\n"
+        ).encode()
+        format_java.format_source(src, warnings_out=warnings)
+        assert len(warnings) == 1
+        message = str(
+            getattr(warnings[0], "message", warnings[0])
+        )
+        assert "variable declarator" in message
+        # 86, not 87, because a declarator-level advisory for the
+        # same construct dedups the post-semicolon one away and the
+        # survivor reports one column short. Pre-existing.
+        assert "max line width 86" in message
+
+    def test_array_rhs_also_reserves_the_semicolon(self) -> None:
+        """`_emit_variable_declarator_with_array_rhs` runs its own
+        cascade and returns before the four sites above, so it needs
+        the reserve independently. Without it this emits an
+        81-character line — idempotently."""
+        src = (
+            "class T\n{\n    private static final String[] NAME = "
+            "new String[] { \"e0zzzzzz\", \"e1zzzzzz\" };\n}\n"
+        ).encode()
+        warnings: list[object] = []
+        out = format_java.format_source(src, warnings_out=warnings)
+        lines = out.decode().split("\n")
+        assert all(len(line) <= 80 for line in lines), [
+            (len(x), x) for x in lines if len(x) > 80
+        ]
+        assert not warnings
+
+
+class TestReceiverReserveIgnoresArgumentLayout:
+    """The reserve a chain receiver wraps against must not depend on
+    how the trailing call's arguments were laid out in source.
+
+    It used to be `1 + len(name) + len(FIRST SOURCE LINE of args)`,
+    so `.append(\\n    x)` reserved 8 while `.append(x)` reserved 21.
+    The formatter mapped each layout onto the other and a
+    declaration alternated between them forever — a true two-cycle,
+    not merely a second pass.
+
+    Note these two inputs converge at 0.7.0 and produce identical
+    output there: the shapes only diverge once the receiver sits
+    close to the margin, which reserving the declaration semicolon
+    is what pushed it into. So this class guards the reserve
+    computation, and goes red when that computation alone is
+    reverted — not when the whole release is.
+    """
+
+    WRAPPED = (
+        "public class T\n{\n    void t()\n    {\n        if (x)\n"
+        "        {\n            StringBuilder errorMessage\n"
+        "                = new StringBuilder(\n"
+        "                    \"Invalid message consumer specified: \""
+        ").append(\n                        consumerType);\n"
+        "        }\n    }\n}\n"
+    )
+    INLINE = (
+        "public class T\n{\n    void t()\n    {\n        if (x)\n"
+        "        {\n            StringBuilder errorMessage = "
+        "new StringBuilder(\n"
+        "                \"Invalid message consumer specified: \""
+        ").append(consumerType);\n        }\n    }\n}\n"
+    )
+
+    def test_both_layouts_reach_the_same_output(self) -> None:
+        a = format_java.format_source(
+            self.WRAPPED.encode(), warnings_out=[]
+        )
+        b = format_java.format_source(
+            self.INLINE.encode(), warnings_out=[]
+        )
+        assert a == b
+
+    def test_each_layout_is_a_fixed_point_after_one_pass(
+        self,
+    ) -> None:
+        for text in (self.WRAPPED, self.INLINE):
+            once = format_java.format_source(
+                text.encode(), warnings_out=[]
+            )
+            twice = format_java.format_source(
+                once, warnings_out=[]
+            )
+            assert once == twice

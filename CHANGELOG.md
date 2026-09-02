@@ -278,20 +278,94 @@ parenthesized expression — because the same node type also spells
 qualified names, and a first attempt shredded `java.util.Objects` into
 three lines.
 
-**A declaration whose semicolon does not fit now reports.** A value that
-commits at exactly 80 leaves the `;` in column 81 and the formatter said
-nothing: its emit-and-warn exits run while the semicolon is unwritten and
-`tail_reserve` does not carry it, so the advisory measured 80 and
-declined. Being idempotent, the result survives every reformat — it takes
-compliant source and makes it non-compliant, silently. The check now runs
-after the `;` is written. 23 declarations in the trial corpus report, at
-81 to 84 columns, none of them checkstyle-exempt.
+**A declaration whose semicolon does not fit is now laid out to fit.**
+A value that commits at exactly 80 leaves the `;` in column 81, and the
+formatter said nothing: its emit-and-warn exits run while the semicolon
+is unwritten and `tail_reserve` does not carry it, so the advisory
+measured 80 and declined. Being idempotent, the result survives every
+reformat — it takes compliant source and makes it non-compliant,
+silently.
 
-That last one reports without relaying out. Threading the semicolon into
-`tail_reserve`, so the value's own cascade breaks earlier, was implemented
-and reverted: it double-charged the semicolon against the declarator's
-hardcoded allowance, and once that was corrected it left one file changing
-on every pass. The layout half is deferred to 0.8.
+Both halves are fixed. The advisory now runs after the `;` is written,
+so it measures far closer to what reaches disk — not exactly, because a
+declarator-level advisory for the same construct dedups this one away
+and the survivor reports one column short. That under-report is
+pre-existing and unchanged here. And `_emit_variable_declarator` raises
+`tail_reserve` by one **around the value emission only**, so the value's
+own wrap engine — argument list, binary chain, ternary — breaks a
+character earlier and leaves room for the semicolon.
+
+Reserving the semicolon does move shape selection, not just wrapping:
+a value that now wraps a character earlier can satisfy the inline tier
+where it previously backtracked to break-at-`=`. One golden file changes
+for that reason, `method_chain_wrap/25_field_access_breaks_before_dot`,
+which loses a line and a level of indent. Both shapes place the argument
+continuations and the chain tail in the same column, so nothing is given
+up in exchange.
+
+Raising the reserve only around the value is what avoids the
+double-charge that sank an earlier attempt. The cascade's three tier
+checks each add their own `+ 1` for the semicolon, but they run after
+the reserve is restored and they decide between shapes rather than
+constrain wrapping, so the two allowances measure different things and
+do not compound.
+
+The four corpus declarations that reported at exactly 81 columns are
+gone; 19 still report, at 84 to 94 columns. Those are values the
+formatter genuinely cannot place — most often a single over-long token
+or literal, whose only remedy is a source change and so outside what an
+AST-preserving formatter may do.
+
+The array-initializer right-hand side runs its own cascade and returns
+before those four sites, so it needed the reserve independently. Without
+it, `private static final String[] NAME = new String[] { … };` emitted an
+81-column line and — being idempotent — kept it forever. Fixture
+`array_initializer/15_array_rhs_reserves_semicolon` locks that.
+
+### A method chain's receiver reserve stopped reading source layout
+
+Fixing the declaration semicolon exposed a separate, pre-existing
+defect, and it is the more serious of the two.
+
+`_emit_method_invocation` bumps `tail_reserve` while emitting a chain
+receiver, so any wrap engine running inside the receiver accounts for
+the trailing `.NAME(ARGS)` it cannot see. That reserve was computed from
+the arguments' **first source line**:
+
+```python
+    args_first_line = (
+        args_text.split("\n", 1)[0]
+    )
+    trailing = 1 + len(name_text) + len(args_first_line)
+```
+
+So `.append(consumerType)` reserved 21 while the same call written as
+`.append(\n    consumerType)` reserved 8 — the receiver's layout became
+a function of how the arguments happened to be typed. The formatter
+mapped each of two layouts onto the other, and a declaration in
+`MessageConsumerFactory.java` alternated between them **forever**: a
+true two-cycle, not a file that settles on a second pass.
+
+It stayed hidden because the two shapes only diverge when the receiver
+is close to the margin. Reserving the semicolon moved this construct
+across that line, which is how it surfaced.
+
+The reserve is now `1 + len(name) + 1` — the `.NAME(` that is certain to
+follow, with no dependence on argument layout. Two alternatives were
+measured and rejected: collapsing the argument text's line breaks is
+layout-independent but removes the cap the first-line rule existed to
+provide, over-reserving and costing **19 extra advisories** with no
+line-length benefit — 324 measured against the pre-fix baseline of 305,
+or 322 against the 301 this release ships; and normalising the text
+further reintroduces the
+comma-spacing trap documented in `building/source-preservation-history`.
+On its own the accepted form leaves both aggregate counts exactly
+where they were — 1573 over-long lines, 305 advisories — with layout
+changes confined to 2 files. The unchanged counts, not output identity,
+are the evidence that it under-reserves nothing that mattered.
+
+Fixture `method_chain_wrap/26_receiver_reserve_ignores_arg_layout` locks
+it, and goes red if the reserve computation alone is reverted.
 
 ### Javadoc indentation is structural
 
@@ -1023,9 +1097,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 783/783 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 791/791 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 573 and the 210 missing
+  found, so a standalone clone collects 581 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
