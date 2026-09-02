@@ -95,6 +95,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Final, TextIO
@@ -488,8 +489,9 @@ class Emitter:
         Returns a tuple `(lines_count, current, indent,
         tail_reserve, paren_align_col, paren_expr_col,
         arg_list_p4_fired, array_init_inline_only,
-        anchor_escaped, warnings_count)` suitable for
-        `restore()`. The
+        anchor_escaped, raw_rows_emitted, warnings_count)`
+        suitable for `restore()` — eleven fields, in the order
+        `restore()` unpacks them. The
         wrap-priority engines use the pattern:
 
             saved = emitter.snapshot()
@@ -3669,6 +3671,29 @@ def _javadoc_reflow_words(
     return _javadoc_balanced_reflow(
         words, prefix, splits_at_boundaries=splits_at_boundaries
     )
+
+
+@contextmanager
+def _extra_tail_reserve(emitter: "Emitter", extra: int):
+    """Raise `emitter.tail_reserve` by `extra` for the duration.
+
+    The declarator cascades need the VALUE to wrap knowing a `;`
+    follows it: their tier checks add `+ 1` for that semicolon, but
+    those only choose between shapes — the value's internal wrap
+    engine (argument list, binary chain, ternary) sees only
+    `tail_reserve`, so without this it packs to exactly 80 and the
+    `;` lands in column 81.
+
+    Raising the reserve only around the value emission is what keeps
+    this from double-charging: the tier checks measure
+    `emitter.column` after the reserve is restored, so the `+ 1`
+    there and the `+ 1` here constrain different things.
+    """
+    previous = emitter.set_tail_reserve(emitter.tail_reserve + extra)
+    try:
+        yield
+    finally:
+        emitter.set_tail_reserve(previous)
 
 
 def _greedy_fill(words: list[str], max_content: int) -> list[str]:
@@ -9813,6 +9838,20 @@ def _emit_argument_list(
         # Because `line_start + 4` is far shallower than the
         # paren-align column, this tier frequently fits where P2
         # cannot.
+        # Deliberately does NOT take the per-argument tail reserve
+        # that `emit_p4_multi_arg` does. There, each argument owns
+        # its line, so what follows it is known — a separator, or
+        # the closing `)` plus the parent's reserve. Here every
+        # argument shares ONE line, so what follows argument N is
+        # the rest of the packed line, whose width is not known
+        # until it is emitted. The tier therefore relies on the
+        # post-hoc `last_lines_max_width <= effective_max` check,
+        # which is sound: an under-reserved candidate that
+        # overflows is rejected and the cascade falls to P3, still
+        # a valid shape. Reserving only for the LAST argument (the
+        # one the `)` really does follow) was implemented and
+        # measured: zero change across the 504-file corpus, so it
+        # is left out rather than carried as speculative code.
         emitter._arg_list_p4_fired = True
         line_start_col = _current_line_leading_spaces(emitter)
         target_col = line_start_col + 4
@@ -11122,16 +11161,11 @@ def _emit_variable_declarator_with_array_rhs(
     # Priority 3+: no break-at-`=`, dispatch and let the array's
     # own cascade choose P3 or P4.
     emitter.write(" = ")
-    # Same semicolon reserve as `_emit_variable_declarator`'s own
-    # cascade: this final tier lets the array literal wrap under its
-    # own engine, which sees only `tail_reserve` and would otherwise
-    # pack to exactly 80 and leave the `;` in column 81 —
-    # and the result is idempotent, so it survives every reformat.
-    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
-    try:
+    # This cascade runs BEFORE `_emit_variable_declarator`'s own
+    # sites and returns, so it needs the semicolon reserve
+    # independently — see `_extra_tail_reserve`.
+    with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
-    finally:
-        emitter.set_tail_reserve(prev_reserve)
     _fire_wrap_overflow_advisory(
         emitter, node, cascade_start, "variable declarator"
     )
@@ -11258,20 +11292,8 @@ def _emit_variable_declarator(
     # field/local-variable declaration will write), commit.
     saved = emitter.snapshot()
     emitter.write(" = ")
-    # 0.7.0: the VALUE must wrap knowing a `;` follows it. The
-    # cascade's own checks below add `+ 1` for that semicolon, but
-    # they only decide between shapes -- the value's internal wrap
-    # engine (argument list, binary chain, ternary) sees only
-    # `tail_reserve`, so without this it packs to exactly 80 and the
-    # `;` lands in column 81. Raising the reserve only around the
-    # value emission is what keeps this from double-charging: the
-    # checks measure `emitter.column` after the reserve is restored,
-    # so the `+ 1` there and this `+ 1` constrain different things.
-    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
-    try:
+    with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
-    finally:
-        emitter.set_tail_reserve(prev_reserve)
     inline_fits = (
         emitter.line_count == saved[0]
         and emitter.column + 1 <= effective_max
@@ -11288,20 +11310,8 @@ def _emit_variable_declarator(
     emitter.push_indent()
     emitter.write_indent()
     emitter.write("= ")
-    # 0.7.0: the VALUE must wrap knowing a `;` follows it. The
-    # cascade's own checks below add `+ 1` for that semicolon, but
-    # they only decide between shapes -- the value's internal wrap
-    # engine (argument list, binary chain, ternary) sees only
-    # `tail_reserve`, so without this it packs to exactly 80 and the
-    # `;` lands in column 81. Raising the reserve only around the
-    # value emission is what keeps this from double-charging: the
-    # checks measure `emitter.column` after the reserve is restored,
-    # so the `+ 1` there and this `+ 1` constrain different things.
-    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
-    try:
+    with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
-    finally:
-        emitter.set_tail_reserve(prev_reserve)
     p2_fits = (
         emitter.line_count == p2_saved[0] + 1
         and emitter.column + 1 <= effective_max
@@ -11329,20 +11339,8 @@ def _emit_variable_declarator(
     emitter.write(" = ")
     prev_escaped = emitter._anchor_escaped
     emitter._anchor_escaped = False
-    # 0.7.0: the VALUE must wrap knowing a `;` follows it. The
-    # cascade's own checks below add `+ 1` for that semicolon, but
-    # they only decide between shapes -- the value's internal wrap
-    # engine (argument list, binary chain, ternary) sees only
-    # `tail_reserve`, so without this it packs to exactly 80 and the
-    # `;` lands in column 81. Raising the reserve only around the
-    # value emission is what keeps this from double-charging: the
-    # checks measure `emitter.column` after the reserve is restored,
-    # so the `+ 1` there and this `+ 1` constrain different things.
-    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
-    try:
+    with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
-    finally:
-        emitter.set_tail_reserve(prev_reserve)
     # 0.7.0: an inline RHS whose emission left a line starting LEFT of
     # where the value began has orphaned part of itself — typically a
     # chain whose tail could not fit at the deep column the inline
@@ -11413,20 +11411,8 @@ def _emit_variable_declarator(
     emitter.push_indent()
     emitter.write_indent()
     emitter.write("= ")
-    # 0.7.0: the VALUE must wrap knowing a `;` follows it. The
-    # cascade's own checks below add `+ 1` for that semicolon, but
-    # they only decide between shapes -- the value's internal wrap
-    # engine (argument list, binary chain, ternary) sees only
-    # `tail_reserve`, so without this it packs to exactly 80 and the
-    # `;` lands in column 81. Raising the reserve only around the
-    # value emission is what keeps this from double-charging: the
-    # checks measure `emitter.column` after the reserve is restored,
-    # so the `+ 1` there and this `+ 1` constrain different things.
-    prev_reserve = emitter.set_tail_reserve(emitter.tail_reserve + 1)
-    try:
+    with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
-    finally:
-        emitter.set_tail_reserve(prev_reserve)
     emitter.pop_indent()
     # Spec C1 emit-and-warn: the break-at-`=` shape may still
     # overflow when the value is a single atomic token
