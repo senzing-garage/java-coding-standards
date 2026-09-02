@@ -134,14 +134,25 @@ point with a bounded loop and flag anything still changing when
 the bound is hit:
 
 ```bash
+converged=0
 for pass in 1 2 3 4; do
   python3 .java-coding-standards/tooling/scripts/format_file.py \
       src/main/java src/test/java src/demo/java
-  git diff --quiet && break
+  if git diff --quiet; then converged=1; break; fi
   git commit -aqm "format pass $pass"
 done
-git diff --quiet || echo "NOT CONVERGED after 4 passes — blocking"
+if [ "$converged" -eq 0 ]; then
+  echo "NOT CONVERGED after 4 passes — blocking"
+  git show --stat HEAD
+fi
 ```
+
+Note the `converged` flag. An earlier version of this snippet ended
+with `git diff --quiet || echo "NOT CONVERGED..."`, which can never
+fire: the loop commits after every pass that changed something, so
+the working tree is clean by the time the loop exits — whether it
+broke early on a quiet diff or fell through all four passes. The
+flag records WHY the loop ended, which is the thing being tested.
 
 ## What changed in 0.5.0 → 0.5.1
 

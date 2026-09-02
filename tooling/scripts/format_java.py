@@ -6065,9 +6065,27 @@ def _emit_for_statement(
     # canonical multi-row for-header shape); just skip the
     # single-line attempt and go straight to paren-aligned
     # when the source was already multi-row.
-    source_was_multi_row = (
-        body.start_point[0] != node.start_point[0]
-    )
+    #
+    # 0.7.0: this measures the HEADER's own span, as the paragraph
+    # above always claimed. It used to be
+    # `body.start_point[0] != node.start_point[0]`, which is the
+    # BODY BRACE's row — a different question, and one that is true
+    # for every Allman-braced `for` no matter how short its header:
+    #
+    #     for (int i = 0; i < arr.length; i++)
+    #     {
+    #
+    # A 36-column header like that was skipped past the single-line
+    # attempt and exploded into three paren-aligned clauses. It also
+    # self-perpetuated: the reformatted header really is multi-row,
+    # so the next pass took the same branch and reproduced it. The
+    # Allman decision below keeps the body-row test under its own
+    # name, `body_on_new_row`, which is what that test is for.
+    header_end_row = node.start_point[0]
+    for part in (*inits, condition, *updates):
+        if part is not None:
+            header_end_row = max(header_end_row, part.end_point[0])
+    source_was_multi_row = header_end_row != node.start_point[0]
 
     # Single-row source: build the header inline. After
     # emission, check whether wrapping inside the
@@ -8452,6 +8470,7 @@ _COMPUTED_RECEIVER_TYPES: Final[frozenset[str]] = frozenset({
     "object_creation_expression",
     "parenthesized_expression",
     "cast_expression",
+    "array_creation_expression",
 })
 """Receiver forms whose value is computed rather than named.
 
@@ -8529,6 +8548,17 @@ def _emit_field_access(
     # parenthesized expression is a value that was computed, and there
     # the dot is a real operator.
     if not _field_access_receiver_is_computed(object_node):
+        # A named receiver has no break point worth taking, but the
+        # line can still overflow — advise rather than commit
+        # silently, matching every sibling wrap engine.
+        _fire_wrap_overflow_advisory(
+            emitter, node, saved[0], "field access",
+            remedy=(
+                "The receiver is a plain name, so there is no "
+                "computed sub-expression to break before. Shorten a "
+                "name or extract the receiver to a local."
+            ),
+        )
         return
 
     # The inline form does not fit. Break before the `.`, which the
@@ -8563,6 +8593,18 @@ def _emit_field_access(
         # Prefer the inline form, which costs one line fewer.
         emitter.restore(saved)
         emit_inline()
+        # Same reasoning as the named-receiver exit above: the inline
+        # form is preferred but may still overflow, and a silent
+        # commit is exactly the gap 0.7.0's advisory work closed
+        # elsewhere.
+        _fire_wrap_overflow_advisory(
+            emitter, node, saved[0], "field access",
+            remedy=(
+                "Breaking before the dot does not help — the receiver "
+                "overflows on its own. Split the receiver or extract "
+                "it to a local."
+            ),
+        )
 
 
 def _emit_instanceof_expression(
@@ -9159,133 +9201,19 @@ def _emit_argument_list(
                 src_text, strip_trailing_ws=True
             )
             return
-        if emitter.paren_align_col is not None:
-            target_col = emitter.paren_align_col + 4
-        else:
-            target_col = emitter.indent_level * 4 + 4
-        lines = src_text.split("\n")
-
-        def _shift(rows: list[str], delta: int) -> list[str]:
-            """Shift every continuation row by `delta` columns.
-
-            The first row is untouched — it continues the current
-            in-progress line, whose column the caller already set.
-            Internal alignment (paren-aligned operators, dot-aligned
-            chains inside the preserved block) survives because every
-            row moves by the same amount.
-            """
-            out: list[str] = [rows[0]]
-            for row in rows[1:]:
-                stripped = row.lstrip()
-                if not stripped:
-                    out.append("")
-                    continue
-                leading = len(row) - len(stripped)
-                out.append(" " * max(0, leading + delta) + stripped)
-            return out
-
-        # Find the source's first non-empty continuation col.
-        source_first_cont_col = None
-        for line in lines[1:]:
-            if line.lstrip():
-                source_first_cont_col = len(line) - len(
-                    line.lstrip()
-                )
-                break
-        if source_first_cont_col is None:
-            # No continuation lines to shift.
-            final_lines = lines
-        else:
-            # Shift every continuation line by one delta so internal
-            # alignment (paren-aligned operators, dot-aligned chains
-            # inside the preserved block) survives the move.
-            #
-            # The delta is the larger of two candidates:
-            #
-            #  - RE-ANCHOR: the construct's own displacement,
-            #    `emit column - source column`. The author's
-            #    continuation column was chosen relative to where the
-            #    construct sat in the source, so preserving that
-            #    relationship is what keeps a deliberately-deeper
-            #    indent meaningful. Preserving the ABSOLUTE column
-            #    instead leaves it aligned with nothing once the
-            #    statement is re-indented:
-            #
-            #        // source: statement col 20, paren-align 33
-            #        // emitted at col 16 -> paren-align is now 29,
-            #        // but the continuation kept its absolute 33
-            #        assertEquals(customersConfig, configJson,
-            #                         "Unexpected definition.");
-            #
-            #  - TO-TARGET: whatever lands the first continuation on
-            #    the canonical target column.
-            #
-            # Taking the max makes TO-TARGET a floor: a deeper author
-            # indent is respected and merely re-anchored, but a large
-            # negative displacement can never drag continuations left
-            # of the canonical column (and never to column 0, which a
-            # re-anchor without that floor did produce).
-            #
-            # Idempotency holds by construction: on a later pass the
-            # source column IS the emit column, so RE-ANCHOR is 0 and
-            # TO-TARGET is <= 0 for an already-deep continuation —
-            # the max is 0 and nothing moves.
-            delta = max(
-                emitter.column - node.start_point[1],
-                target_col - source_first_cont_col,
-            )
-            shifted = _shift(lines, delta)
-            # 0.5.2 F — shift-overflow guard. When the shift pushes a
-            # line past 80 (the source's indent had it fitting, the
-            # new column does not), decline source-preserve entirely
-            # so the wrap engine can pick a layout that fits. Without
-            # this the formatter mechanically shifts a fitting source
-            # into an overflowing shape and only reports it via the
-            # post-emit advisory, leaving a LineLength violation the
-            # wrap engine would have avoided.
-            shifted_max = _max_source_preserve_line_width(
-                shifted, emitter.column, emitter.tail_reserve,
-            )
-            if shifted_max > _MAX_LINE:
-                # Signal fall-through to wrap engine.
-                final_lines = None
-            else:
-                final_lines = shifted
-        if final_lines is not None:
-            # Width-check fires per-line so the advisory matches
-            # what checkstyle's LineLength will actually see on
-            # disk. Per-line accounting mirrors
-            # `_fire_wrap_overflow_advisory`; without it, an
-            # intermediate line at exactly `_MAX_LINE` chars
-            # (≤ 80 on disk) but `> _MAX_LINE - tail_reserve`
-            # would spuriously fire an advisory.
-            max_line_width = _max_source_preserve_line_width(
-                final_lines,
-                emitter.column,
-                emitter.tail_reserve,
-            )
-            if max_line_width > _MAX_LINE:
-                emitter.warnings.append(FormatterWarning(
-                    line=node.start_point[0] + 1,
-                    column=node.start_point[1] + 1,
-                    message=(
-                        "source-preserved arg list overflows 80 "
-                        f"chars (max line width {max_line_width}). "
-                        "Split the contained literal or expression "
-                        "into smaller chunks so the formatter can "
-                        "re-indent within the line limit."
-                    ),
-                ))
-            emitter.write_raw_lines(
-                "\n".join(final_lines),
-                strip_trailing_ws=True,
-            )
-            return
-        # Fall through to wrap engine — shift-up would have
-        # overflowed, so let the wrap engine choose a shape.
-    # Source-preserved first line wouldn't fit and there
-    # are no comments — fall through. The wrap engine
-    # below picks a layout that fits at the new column.
+        # Nothing follows. Reaching this `if` at all means the
+        # predicate found a comment or a CSOFF region, and the
+        # check just above re-tests exactly those two, so every
+        # path here has already returned.
+        #
+        # Roughly 124 lines used to sit below: a column-remap that
+        # re-anchored preserved rows to the current paren column,
+        # with its own overflow advisory. It became unreachable when
+        # 0.7.0 narrowed preservation to the comment and CSOFF cases
+        # — everything it handled now goes to the wrap engine
+        # instead. What it did, and why re-adding anything like it
+        # is a mistake, is recorded in the
+        # `building/source-preservation-history` FAQ.
 
     # 0.5.0 item 10 — spec C6 extension to method/constructor
     # call parens, restricted to single-arg calls whose only

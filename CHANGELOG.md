@@ -438,7 +438,7 @@ Two more decisions were reading source layout the formatter then
 rewrites, so pass 1 answered from the author's layout and pass 2
 answered from pass 1's own output. Neither fix changes the fixed
 point — both reach it one pass sooner. Lines over 80 (1571) and
-advisory count (288) are identical in single-pass and converged
+advisory count (289) are identical in single-pass and converged
 output alike, and the CONVERGED line count is identical at 221,082.
 Single-pass output is 8 lines shorter, which is the five Tier 1
 collapses (two lines each) less the two `for` escalations (one line
@@ -537,7 +537,7 @@ an advisory whose only over-long lines are exempt does not fire —
 `max_on_disk` stays inside the limit and the existing early return
 takes it.
 
-Corpus advisories: **301 to 288**. The exemption suppresses 257
+Corpus advisories: **301 to 289**. The exemption suppresses 257
 advisory SITES, but most were already being deduplicated away by an
 overlapping advisory, so thirteen is the net change. By rule, 250 of
 the suppressed sites are a `static final` constant whose generic type
@@ -547,6 +547,58 @@ from 19 to 12, and the widths they report narrow from 84-94 to
 84-85 — the `static final` declarations were the wide ones, at 88 and
 93 columns. Lines over 80 (1571), total line count and convergence
 are unchanged.
+
+### Field access, `for` headers, and a dead preservation path
+
+Five findings from CI's review of the release branch, four in the
+formatter and one in the trial checklist.
+
+**A short `for` header was exploded whenever its brace was Allman.**
+`_emit_for_statement` decided "was the source header multi-row?" with
+`body.start_point[0] != node.start_point[0]` — which is the BODY
+BRACE's row, a different question, and true for every Allman-braced
+`for` however short its header. So
+
+```java
+        for (int i = 0; i < arr.length; i++)
+        {
+```
+
+skipped the single-line attempt and came out as three paren-aligned
+clauses. It also self-perpetuated: the reformatted header really is
+multi-row, so the next pass took the same branch. The test suite had
+a golden file enshrining the wrong shape, which is how it survived.
+The check now measures the header's own span; the Allman decision
+keeps the body-row test under its own name, which is what that test
+is for.
+
+**~124 unreachable lines removed from the source-preserve path.**
+Once 0.7.0 narrowed preservation to the comment and CSOFF cases, the
+branch's first act was to re-test exactly those two and return — so
+the column-remap logic below it, and its own overflow advisory, could
+never run. Verified by poisoning the block and formatting all 504
+corpus files: zero reached it. The release notes had been describing
+it as live behavior. What it did is recorded in the
+`building/source-preservation-history` FAQ.
+
+**`array_creation_expression` is a computed field-access receiver.**
+It was missing from `_COMPUTED_RECEIVER_TYPES` despite being a
+separately dispatched node, so `new int[computeSize()].length` was
+classified as a plain name and the break-before-dot tier declined.
+
+**Field access now advises when it declines.** Both silent exits —
+a named receiver with no break point, and "breaking bought nothing,
+revert to inline" — committed a possibly-overflowing line with no
+advisory, which is precisely the gap the release's own advisory work
+closed for parameter lists and javadoc. One corpus overflow that was
+previously silent now reports, taking advisories to 289.
+
+**The convergence detector in the trial checklist could not
+detect non-convergence.** It committed after every changed pass, so
+the working tree was clean when the loop exited and its final
+`git diff --quiet ||` check never fired — including for exactly the
+oscillating file it exists to catch. It now records why the loop
+ended rather than inspecting a tree it has already cleaned.
 
 ### Javadoc documentation corrections
 
@@ -1213,7 +1265,7 @@ same commit. `requirements.txt` now says so in a comment.
 
 - 797/797 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 587 and the 210 missing
+  found, so a standalone clone collects 584 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -1288,7 +1340,7 @@ same commit. `requirements.txt` now says so in a comment.
   fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
-- 337 of 504 trial files are reformatted, a net **+1,565 lines**
+- 337 of 504 trial files are reformatted, a net **+1,563 lines**
   (about +0.7% against 220k). The release trades lines for
   compliance and predictability: rule 1 breaks each nesting
   level of an embedded call onto its own row, and "if an
