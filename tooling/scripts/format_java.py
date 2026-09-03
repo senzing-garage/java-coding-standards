@@ -8593,18 +8593,23 @@ def _emit_field_access(
         # Prefer the inline form, which costs one line fewer.
         emitter.restore(saved)
         emit_inline()
-        # Same reasoning as the named-receiver exit above: the inline
-        # form is preferred but may still overflow, and a silent
-        # commit is exactly the gap 0.7.0's advisory work closed
-        # elsewhere.
-        _fire_wrap_overflow_advisory(
-            emitter, node, saved[0], "field access",
-            remedy=(
-                "Breaking before the dot does not help — the receiver "
-                "overflows on its own. Split the receiver or extract "
-                "it to a local."
-            ),
-        )
+    # Commit-and-warn, unconditionally, matching every other terminal
+    # commit point in this file. Both shapes can still overflow: the
+    # reverted inline form obviously, but ALSO the broken form, when
+    # breaking narrows the line without getting it under the limit —
+    # an unsplittable receiver that is over 80 on its own. Firing only
+    # inside the branch above left that second case shipping an
+    # over-long line in silence, which is the gap this release closed
+    # for parameter lists and javadoc. The advisory is a no-op when
+    # the committed lines fit, so one unconditional call covers both.
+    _fire_wrap_overflow_advisory(
+        emitter, node, saved[0], "field access",
+        remedy=(
+            "Breaking before the dot cannot bring this within the "
+            "limit — the receiver is too wide on its own. Split the "
+            "receiver or extract it to a local."
+        ),
+    )
 
 
 def _emit_instanceof_expression(
@@ -10955,8 +10960,8 @@ def _emit_method_invocation(
     # alternative and rejected: it is layout-independent but removes
     # the cap the first-line rule provided, over-reserving for
     # arguments that will wrap anyway and costing extra advisories
-    # for no line-length gain: 309 advisories against the 288 this
-    # release ships.
+    # for no line-length gain: 19 extra advisories, measured against
+    # the 305-advisory baseline in place when the comparison was run.
     object_node = node.child_by_field_name("object")
     if object_node is not None:
         name_text = _node_source_text(source, name_node)

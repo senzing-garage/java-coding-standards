@@ -42,7 +42,7 @@ longer read layout. Four separate defects in this release came
 from a predicate consulting how the source happened to be
 written — which the formatter then rewrites, so the answer
 changed on the next pass. Files needing a second pass to settle
-fall from 26 to 6, and nothing in the corpus now fails to
+fall from 26 to 1, and nothing in the corpus now fails to
 converge at all.
 
 ### Nested-call wrap
@@ -350,15 +350,18 @@ It stayed hidden because the two shapes only diverge when the receiver
 is close to the margin. Reserving the semicolon moved this construct
 across that line, which is how it surfaced.
 
-The reserve is now `1 + len(name) + 1` — the `.NAME(` that is certain to
-follow, with no dependence on argument layout. Two alternatives were
-measured and rejected: collapsing the argument text's line breaks is
-layout-independent but removes the cap the first-line rule existed to
-provide, over-reserving for arguments that will wrap anyway and buying
-no line-length benefit — **309 advisories against the 288 this
-release ships**; and normalising the text
-further reintroduces the
-comma-spacing trap documented in `building/source-preservation-history`.
+The reserve is now `1 + len(name) + 1` — the `.NAME(` that is certain
+to follow, with no dependence on argument layout. Two alternatives
+were measured and rejected. Collapsing the argument text's line
+breaks is layout-independent, but it removes the cap the first-line
+rule provided and so over-reserves for arguments that will wrap
+anyway: **19 extra advisories with no line-length benefit**, measured
+against the 305-advisory baseline in place at the time. (Re-running
+that comparison against the shipped code now gives a much larger and
+less meaningful gap, because the LineLength-exemption and field-access
+advisory changes below moved what an advisory counts.) Normalising the
+text further reintroduces the comma-spacing trap documented in
+`building/source-preservation-history`.
 On its own the accepted form left both aggregate counts exactly
 where they were at the time it was measured — 1573 over-long lines
 and the 305 advisories that preceded the LineLength-exemption fix
@@ -1263,9 +1266,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 797/797 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 800/800 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 584 and the 210 missing
+  found, so a standalone clone collects 587 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures

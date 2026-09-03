@@ -151,4 +151,4 @@ and a one-segment-per-line form until 0.7.0 converted it.
   against real source before releasing it.
 - The 0.7.0 entry in `CHANGELOG.md` records the measured effect of the
   retirement: deep orphans 37 to 3, and files needing a second
-  formatting pass 26 to 6.
+  formatting pass 26 to 1.

@@ -4665,3 +4665,66 @@ class TestSecondPassConvergence:
             "return false;" in text
         )
 
+
+
+class TestFieldAccessCommitAndWarn:
+    """`_emit_field_access` must advise on every terminal commit.
+
+    It has three: a named receiver with no break point, a broken form
+    reverted to inline because breaking bought nothing, and the
+    broken form itself. The third was silent — when breaking before
+    the dot NARROWS the line without getting it under the limit
+    (an unsplittable receiver already over 80 on its own), the
+    revert branch's condition is false and the function fell off the
+    end with an over-long line committed and no warning.
+    """
+
+    def _warn_and_widths(self, body: str):
+        src = (
+            "public class T\n{\n" + body + "\n}\n"
+        ).encode()
+        warnings: list[object] = []
+        out = format_java.format_source(src, warnings_out=warnings)
+        text = out.decode()
+        return warnings, [
+            len(line) for line in text.split("\n") if len(line) > 80
+        ]
+
+    def test_break_that_narrows_but_still_overflows_warns(
+        self,
+    ) -> None:
+        """The receiver is a single unsplittable call wider than 80,
+        so breaking the dot trims only the trailing `.someField`."""
+        warnings, over = self._warn_and_widths(
+            "    int u()\n    {\n        return "
+            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "EightyColumnsXXXXXXXXX().someField;\n    }"
+        )
+        assert over, "expected this shape to still overflow"
+        assert warnings, (
+            "an over-long committed line must not ship silently"
+        )
+
+    def test_every_overflow_is_accounted_for(self) -> None:
+        """Two independent overflowing field accesses, in different
+        enclosing constructs, must both be reported."""
+        warnings, over = self._warn_and_widths(
+            "    void t()\n    {\n        consume("
+            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "EightyColumnsXXXXXXXX().someField);\n    }\n\n"
+            "    int u()\n    {\n        return "
+            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "EightyColumnsXXXXXXXXX().someField;\n    }"
+        )
+        assert len(over) == 2
+        assert len(warnings) >= 2
+
+    def test_fitting_field_access_stays_quiet(self) -> None:
+        """The advisory is a no-op when the commit fits, so an
+        ordinary field access must not generate noise."""
+        warnings, over = self._warn_and_widths(
+            "    int u()\n    {\n        return getThing().field;"
+            "\n    }"
+        )
+        assert not over
+        assert not warnings
