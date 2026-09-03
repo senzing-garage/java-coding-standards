@@ -10,6 +10,1372 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-14
+
+Formatting release. Started as a bug-fix pass over defects
+surfaced by running 0.6.0 across four consumer source bases,
+and grew into a minor release: it adds normative rules to the
+standards document, removes two behaviors that document had
+described, and reformats 337 of the 504 files in the trial
+corpus. Adopters should expect a substantial reformat commit
+when they bump the pin, and should bump it on its own commit
+for that reason.
+
+**New rules in the standards document.** The nested-call wrap
+(rules 1-3), argument-list priority 2b, enhanced-`for` header
+wrapping, and "if an argument breaks, the argument list
+breaks" are all newly specified, along with a list of shapes
+the formatter will no longer produce. Wrapped parameter lists
+now generate the type/name column alignment the document has
+always required but the formatter never produced, and record
+headers run the wrap cascade the document already described.
+
+**Behaviors removed.** Source preservation's width-based
+fallback is gone, so the formatter no longer defers to an
+author's multi-row layout except where reflow would corrupt it
+(interleaved comments, `CSOFF` regions). The 0.6.0 factory-chain
+tier is gone. Two argument shapes 0.6.0 produced are now
+unreachable by design.
+
+The headline correctness theme is that layout decisions no
+longer read layout. Four separate defects in this release came
+from a predicate consulting how the source happened to be
+written — which the formatter then rewrites, so the answer
+changed on the next pass. Files needing a second pass to settle
+fall from 26 to 1, and nothing in the corpus now fails to
+converge at all.
+
+### Nested-call wrap
+
+A call embedded in another expression — as a positional
+argument of another call, or as the receiver of a method chain
+— now wraps by three rules (see the "Nested-call wrap" section
+of the standards for the full statement):
+
+- **Rule 1** — when a call's sole argument is itself a method
+  invocation that cannot stay on one line, break before it so
+  it lands at single indentation from the enclosing call's
+  line start.
+- **Rule 2** — within an embedded call's own argument list,
+  the priority 2 two-line comma-packed tier is skipped; the
+  cascade goes P1 → P3 → P4. Applies regardless of the
+  enclosing call's argument count.
+- **Rule 3** — chain segments following an embedded call
+  always emit one per line, anchored at the chain's own start
+  column + 4 rather than at the enclosing statement's indent
+  (which orphaned the tail far to the left of its chain).
+
+Before:
+
+```java
+        reportUpdates.add(builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT,
+                                  source, entityId)
+            .records(-1)
+            .build());
+```
+
+After:
+
+```java
+        reportUpdates.add(
+            builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT, source, entityId)
+                .records(-1)
+                .build());
+```
+
+Two layouts are now deliberately unreachable: the enclosing
+call left inline with the inner argument list paren-aligned
+beneath it, and the first chain segment hung off the inner
+call's closing paren with later segments dot-aligned under it.
+Both required ranking two candidate continuation columns
+against each other, and that ranking is not stable across
+passes — it is the mechanism behind the
+`builder(...).records(-1).build()` oscillation reported
+against 0.6.0. Selection is now a single monotone
+"did the nested call stay on one line" test.
+
+`object_creation_expression` (`new Foo(a, b)`) counts as a
+call for these rules; it owns an argument list and reads
+identically at a call site.
+
+A chain that is one of several arguments and whose receiver is
+a plain identifier is not treated as embedded — its
+dot-aligned form reads well and is retained.
+
+An **expression-bodied lambda is transparent to rule 2**. The
+embedded test previously stepped exactly one parent up from the
+call, and a lambda interposes itself there; the greedy tiers
+therefore survived in `assertThrows(Ex.class, () -> call(a, b,
+c))` even though the reader has to track the enclosing call
+just as much as in `assertThrows(Ex.class, call(a, b, c))`.
+Curried lambdas (`a -> b -> call(…)`) resolve to whatever
+encloses the outermost lambda.
+
+Before:
+
+```java
+        assertThrows(
+            NullPointerException.class,
+            () -> new SzReportUpdate(SzReportCode.DATA_SOURCE_SUMMARY, null,
+                                     100L));
+```
+
+After:
+
+```java
+        assertThrows(
+            NullPointerException.class,
+            () -> new SzReportUpdate(SzReportCode.DATA_SOURCE_SUMMARY,
+                                     null,
+                                     100L));
+```
+
+**Rules 1 and 3 keep their own one-step tests** and do not see
+through a lambda: rule 1 gates on the sole argument itself being
+a call, which a `lambda_expression` is not, and rule 3 gates on
+the chain's parent being an argument list, which a lambda
+displaces. So `add(() -> builderFor(a, b).records(-1).build())`
+gets rule 2's single column but still leaves its chain tail at
+the statement indent. That **tail placement** is what is
+unchanged — 0.6.0 put the tail in the same column. (In this
+particular example rule 2 was already reaching the inner call
+through the chain-receiver branch, so its argument list is not
+what the lambda traversal changed; the example is here to show
+the tail.) Extending rules 1 and 3 through lambdas is a separate
+change, and remains deferred.
+
+A **block-bodied lambda remains opaque**, and deliberately so:
+its statements stand at their own indent and share their line
+with no enclosing construct, which is exactly the condition
+that makes the greedy tiers readable. Fixture
+`nested_call_wrap/09_block_lambda_body_keeps_greedy` locks
+that boundary.
+
+Across the 504-file trial corpus this changed 12 files and
+added 77 lines, with no movement in lines over 80, advisory
+count, or convergence.
+
+### Class and interface body trailing comments
+
+`_emit_class_body_members` and `_emit_interface_body_members`
+now attach trailing side comments, matching the method-body
+iterators. A `//` comment on the same source row as a field's
+`;` or a method's `}` stays inline; 0.6.0 moved it to its own
+class-body-level line.
+
+### Single-argument block-bodied lambdas
+
+The single-argument cascade's priority 1 fit check no longer
+counts line widths from inside a block-bodied lambda's body.
+The body owns its own indent decisions, so a pre-existing
+over-80 line inside it was rejecting P1 and forcing a break
+before the arrow — which pushed every body line 4 columns
+deeper and created new overflows. `sz-sdk-java-grpc` had 22
+idiomatic `this.performTest(() -> { … })` calls rewritten this
+way by 0.6.0.
+
+### Pack-all-or-nothing for method chains
+
+Removed the 0.6.0 "P1F" factory-chain tier, which packed receiver +
+factory + the FIRST CHAIN SEGMENT onto line 1 whenever the receiver
+was a PascalCase identifier and the chain had three or more
+segments. The all-on-one-line shape is only available when the
+WHOLE chain fits; once it does not, the break belongs at the first
+chain continuation dot, not wherever 80 characters ran out. The old
+tier also made the same idiom render two different ways depending
+on whether segment 1 happened to fit:
+
+```java
+        this.env = SzCoreEnvironment.newBuilder().instanceName(x)
+                                                 .settings(y);
+```
+
+now:
+
+```java
+        this.env = SzCoreEnvironment.newBuilder()
+                                    .instanceName(x)
+                                    .settings(y);
+```
+
+Chains fall straight through to P2F. The same-method greedy tier
+(`sb.append(a).append(b)`) is unaffected — that density is
+deliberate. Across the four trial trees this shape drops from 73
+sites to 24, and the 24 remaining are all same-method chains.
+
+### Arguments that wrap get their own line
+
+Neither priority 1 nor priority 2 previously rejected a shape where
+an argument was packed onto the call line and then wrapped
+internally. Every emitted line stayed under the cap, so the width
+check passed and a partial break committed — the layout the
+"Anti-pattern" section of the standards forbids:
+
+```java
+        assertThrows(IllegalStateException.class, () -> mapB.put("key2",
+                                                                "val2"));
+```
+
+Both tiers now reject an ordinary argument that had to wrap, which
+leaves it room to render whole one line down:
+
+```java
+        assertThrows(IllegalStateException.class,
+                     () -> mapB.put("key2", "val2"));
+```
+
+Arguments that inherently own multiple rows — block-bodied lambdas
+and text blocks — are exempt, so `performTest(() -> { … })` keeps
+priority 1. The exemption tests only structural properties of the
+node and deliberately never consults the source layout: doing so
+makes the answer depend on whether an earlier pass already wrapped
+the argument, which oscillated
+`arguments(Rectangle.class, Set.of(…), …)` between two shapes on
+alternate passes.
+
+### Four pre-existing defects fixed
+
+All four were surfaced by this release's own review rounds, and all four
+reproduce identically at 0.6.0 — none is a regression introduced here.
+Three of them do not occur anywhere in the 504-file trial corpus, which
+is why they survived four rounds of review.
+
+**Inline argument comments produced Java that does not parse.** The wrap
+engine treats every named child of an `argument_list` as an argument, and
+tree-sitter exposes a comment as a named child, so a comment between
+arguments was counted as one and given a separator:
+
+```java
+    // in
+    outer.call(inner(alphaValue, /* note */ betaValue), tag);
+    // out — does not compile
+    outer.call(inner(alphaValue, /* note */, betaValue), tag);
+```
+
+Source preservation was already the answer to "the wrap engine has no
+concept of an inter-argument comment"; it was gated behind a multi-row
+test, so single-row lists fell through. The comment check now runs first.
+
+**Receiver parameters were silently dropped.** `void m(T this, String s)`
+emitted as `void m(String s)`. Discarding a bare `T this` is semantically
+inert — the construct exists only to host annotations — but discarding an
+annotated one is not. They are now emitted verbatim.
+
+**Field access could not break before its dot.** The receiver emitted
+under a correct reserve, exhausted its cascade, committed its terminal
+candidate, and the field was then appended to a row that was already full,
+even though a fitting shape existed:
+
+```java
+    int n = methodBeingCalled(
+            argumentOne,
+            argumentTwo).someFieldNameHere;    // 85 columns
+```
+
+Breaking before `.` is already the documented rule. Restricted to a
+computed receiver — a call, array index, cast, object creation or
+parenthesized expression — because the same node type also spells
+qualified names, and a first attempt shredded `java.util.Objects` into
+three lines.
+
+**A declaration whose semicolon does not fit is now laid out to fit.**
+A value that commits at exactly 80 leaves the `;` in column 81, and the
+formatter said nothing: its emit-and-warn exits run while the semicolon
+is unwritten and `tail_reserve` does not carry it, so the advisory
+measured 80 and declined. Being idempotent, the result survives every
+reformat — it takes compliant source and makes it non-compliant,
+silently.
+
+Both halves are fixed. The advisory now runs after the `;` is written,
+so it measures far closer to what reaches disk — not exactly, because a
+declarator-level advisory for the same construct de-duplicates this one away
+and the survivor reports one column short. That under-report is
+pre-existing and unchanged here. And `_emit_variable_declarator` raises
+`tail_reserve` by one **around the value emission only**, so the value's
+own wrap engine — argument list, binary chain, ternary — breaks a
+character earlier and leaves room for the semicolon.
+
+Reserving the semicolon does move shape selection, not just wrapping:
+a value that now wraps a character earlier can satisfy the inline tier
+where it previously backtracked to break-at-`=`. One golden file changes
+for that reason, `method_chain_wrap/25_field_access_breaks_before_dot`,
+which loses a line and a level of indent. Both shapes place the argument
+continuations and the chain tail in the same column, so nothing is given
+up in exchange.
+
+Raising the reserve only around the value is what avoids the
+double-charge that sank an earlier attempt. The cascade's three tier
+checks each add their own `+ 1` for the semicolon, but they run after
+the reserve is restored and they decide between shapes rather than
+constrain wrapping, so the two allowances measure different things and
+do not compound.
+
+The four corpus declarations that reported at exactly 81 columns are
+gone; 12 still report, at 84 to 85 columns. Those are values the
+formatter genuinely cannot place — most often a single over-long token
+or literal, whose only remedy is a source change and so outside what an
+AST-preserving formatter may do.
+
+The array-initializer right-hand side runs its own cascade and returns
+before those four sites, so it needed the reserve independently. Without
+it, `private static final String[] NAME = new String[] { … };` emitted an
+81-column line and, the result being idempotent, kept it forever. Fixture
+`array_initializer/15_array_rhs_reserves_semicolon` locks that.
+
+### A method chain's receiver reserve stopped reading source layout
+
+Fixing the declaration semicolon exposed a separate, pre-existing
+defect, and it is the more serious of the two.
+
+`_emit_method_invocation` bumps `tail_reserve` while emitting a chain
+receiver, so any wrap engine running inside the receiver accounts for
+the trailing `.NAME(ARGS)` it cannot see. That reserve was computed from
+the arguments' **first source line**:
+
+```python
+    args_first_line = (
+        args_text.split("\n", 1)[0]
+    )
+    trailing = 1 + len(name_text) + len(args_first_line)
+```
+
+So `.append(consumerType)` reserved 21 while the same call written as
+`.append(\n    consumerType)` reserved 8 — the receiver's layout became
+a function of how the arguments happened to be typed. The formatter
+mapped each of two layouts onto the other, and a declaration in
+`MessageConsumerFactory.java` alternated between them **forever**: a
+true two-cycle, not a file that settles on a second pass.
+
+It stayed hidden because the two shapes only diverge when the receiver
+is close to the margin. Reserving the semicolon moved this construct
+across that line, which is how it surfaced.
+
+The reserve is now `1 + len(name) + 1` — the `.NAME(` that is certain
+to follow, with no dependence on argument layout. Two alternatives
+were measured and rejected. Collapsing the argument text's line
+breaks is layout-independent, but it removes the cap the first-line
+rule provided and so over-reserves for arguments that will wrap
+anyway: **19 extra advisories with no line-length benefit**, measured
+against the 305-advisory baseline in place at the time. (Re-running
+that comparison against the shipped code now gives a much larger and
+less meaningful gap, because the LineLength-exemption and field-access
+advisory changes below moved what an advisory counts.) Normalising the
+text further reintroduces the comma-spacing trap documented in
+`building/source-preservation-history`.
+On its own the accepted form left both aggregate counts exactly
+where they were at the time it was measured — 1573 over-long lines
+and the 305 advisories that preceded the LineLength-exemption fix
+below — with layout changes confined to 2 files. The unchanged counts, not output identity,
+are the evidence that it under-reserves nothing that mattered.
+
+Fixture `method_chain_wrap/26_receiver_reserve_ignores_arg_layout` locks
+it, and goes red if the reserve computation alone is reverted.
+
+### Javadoc indentation is structural
+
+An indented javadoc line is now treated as structure rather than
+prose, whatever follows the indent. Authors indent to show
+structure — a hanging indent under a list item, a continuation
+aligned beneath an introducing phrase — and reflowing those lines
+as ordinary prose discarded it.
+
+This also fixes the **last non-converging construct in the trial
+corpus**. Paragraph runs split at non-prose lines, so an indented
+line divided the prose around it; reflow then rewrote every prose
+line to the bare `* ` prefix, erasing the indent that did the
+dividing. The next pass grouped the same comment into fewer, larger
+paragraphs and reflowed it differently, and the pass after that
+differently again — a `package-info.java` in the trial corpus took
+four passes to settle. Because a reflowed line never carries an
+indent and a preserved line always keeps the one it had, every
+line's classification is now the same on pass 2 as on pass 1.
+
+The visible win is that structured javadoc survives. A list whose
+markers are HTML-escaped (`&lt;li&gt;` rather than `<li>`) used to
+be reflowed as one prose blob, because the escaped text does not
+match the `<li>` marker the classifier looks for — merging list
+items into each other and splitting them mid-phrase. The indent
+alone is now enough to protect it, and that file's list region
+comes back byte-identical to what the author wrote.
+
+The trade is honest: those preserved lines keep the author's
+widths, so eight lines that the old destructive reflow had forced
+under 80 are over it again. They were over 80 in the source, and
+the only way to shorten them is to merge list items, which is
+wrong.
+
+### Javadoc prose no longer orphans a trailing fragment
+
+Javadoc prose reflow was greedy while `//` comment reflow has been
+balanced since 0.6.0, so the same sentence wrapped two different
+ways depending on which comment syntax carried it. Both now share
+one `_balanced_reflow_words` helper.
+
+Javadoc balances only when greedy actually orphans — a last line of
+three words or fewer — because the rule is "pack the first line
+tight OR balance the breaks", and packing tight is a perfectly good
+answer when nothing is left stranded:
+
+Reflowing the unwrapped sentence
+`Implemented to return a diagnostic {@link String} describing this instance.`:
+
+```java
+    // 0.6.0
+     * Implemented to return a diagnostic {@link String} describing this
+     * instance.
+    // 0.7.0
+     * Implemented to return a diagnostic
+     * {@link String} describing this instance.
+```
+
+The soft-target rebuild that does this is only reliably better at
+two lines; at three or more it can hand the last line MORE than
+greedy did, and split an inline `{@link ...}` tag across rows on the
+way. Both are now fixed — see the next section. `//` comment reflow
+keeps its unconditional balance and is untouched. 95 files in the
+trial corpus gain a fixed orphan.
+
+### Five of the six files that needed a second pass now settle on the first
+
+Two more decisions were reading source layout the formatter then
+rewrites, so pass 1 answered from the author's layout and pass 2
+answered from pass 1's own output. Neither fix changes the fixed
+point — both reach it one pass sooner. Lines over 80 (1571) and
+advisory count (289) are identical in single-pass and converged
+output alike, and the CONVERGED line count is identical at 221,082.
+Single-pass output is 8 lines shorter, which is the five Tier 1
+collapses (two lines each) less the two `for` escalations (one line
+each) — and single-pass is what `format_file.py` runs, so that is the
+figure adopters see.
+
+**Basic-`for` headers (2 files).** The single-row path tried the
+header on one line and backtracked to the paren-aligned
+one-clause-per-line form only when `single_line_header and
+header_too_wide`. When a CLAUSE wrapped internally the first
+conjunct was false, so the backtrack was skipped and the header
+committed in exactly the partial-break shape the standards'
+Anti-pattern section forbids:
+
+```java
+            for (String line = br.readLine(); line != null; line
+                = br.readLine())
+```
+
+The escalation now fires when the header overflows **or** any clause
+wrapped — the same rule as "if an argument breaks, the argument list
+breaks", applied to header clauses:
+
+```java
+            for (String line = br.readLine();
+                 line != null;
+                 line = br.readLine())
+```
+
+The old shape was also why those files needed a second pass: the next
+run saw multi-row source, took the preserve-the-author's-rows branch,
+and produced the correct form.
+
+**Tier 1 brace collapse (3 files).** The collapse was gated on
+`not _node_spans_multiple_rows(condition)`, on the reading that an
+author who spread a condition over rows wanted the Allman brace a
+multi-line condition triggers. But the emitter collapses that
+condition onto one line anyway and uses a same-line brace, so the
+gate contradicted its own behavior — and being a source read, it
+made the answer depend on layout about to be rewritten. Pass 1
+declined the collapse and rewrote the condition to one row; pass 2
+saw a single-row condition and collapsed it.
+
+The Tier 1 branch already decides by speculatively emitting and
+measuring RENDERED widths, so the gate was redundant for
+correctness. Removing it flips 5 of the corpus's 1,402 Tier 1
+candidates — the gate blocked 70, of which only those 5 fit once
+collapsed, and all 5 are what the second pass already produced.
+(Counted per distinct `if_statement` node; counting raw predicate
+invocations gives 1,586 and 86, because the speculative cascades
+revisit nodes.)
+
+**The sixth file is deferred, and its mechanism is not yet
+established.** `AbstractSchedulingService.java` carries a
+chain-with-lambda where pass 1 breaks `getBackingTasks()` /
+`.forEach(task -> {`, pushing the lambda body to column 32 and
+forcing everything inside it to wrap; pass 2 packs the chain and the
+body fits at a normal indent. Pass 2's output is markedly better, and
+the file settles there.
+
+It is layout-dependent — the pristine source and the pass-1 output
+share an AST yet format differently — but which read is responsible
+has not been pinned down. A predicate trace does diverge inside
+`_arg_list_takes_source_preserve_path`, but preservation fires zero
+times on this file, so that answer is discarded and cannot be the
+cause. Anyone picking this up should start by finding the read whose
+result actually reaches a layout decision, and should not assume the
+chain cascade is at fault.
+
+Files needing a second pass: **6 to 1**. Nothing in the corpus fails
+to converge.
+
+### Advisories now honour checkstyle's LineLength exemptions
+
+The advisory channel exists so adopters see the shapes the formatter
+could not fit. Warning about a line the build will not reject is
+noise, and noise in a per-build channel is how the channel stops
+being read — which this release already said, while only half doing
+it.
+
+`_LINE_LENGTH_EXEMPT_MARKERS` mirrored five of the eight
+`ignorePattern` alternatives in `checkstyle/senzing-checkstyle.xml`.
+The three it omitted are not plain substrings, so they could not live
+in a substring list: `^package.*`, `^import.*` and
+`static final.*<.*>`. They are now matched structurally in
+`_line_length_exempt` — the two anchored ones with `startswith` on
+the raw text, since a `package` keyword occurring inside a line is
+not a package declaration.
+
+More consequentially, `_line_length_exempt` was consulted at exactly
+one call site, in the javadoc path. Every wrap engine reaches the
+advisory through `_fire_wrap_overflow_advisory`, which did not
+consult it at all. It now excludes exempt lines from the width
+accounting, so the exemption is inherited by every site at once and
+an advisory whose only over-long lines are exempt does not fire —
+`max_on_disk` stays inside the limit and the existing early return
+takes it.
+
+Corpus advisories: **301 to 289**. The exemption suppresses 257
+advisory SITES, but most were already being deduplicated away by an
+overlapping advisory, so thirteen is the net change. By rule, 250 of
+the suppressed sites are a `static final` constant whose generic type
+makes the declaration unbreakable and seven are URLs; those are the
+only two rules that fire on this corpus. Declaration advisories drop
+from 19 to 12, and the widths they report narrow from 84-94 to
+84-85 — the `static final` declarations were the wide ones, at 88 and
+93 columns. Lines over 80 (1571), total line count and convergence
+are unchanged.
+
+### Field access, `for` headers, and a dead preservation path
+
+Five findings from CI's review of the release branch, four in the
+formatter and one in the trial checklist.
+
+**A short `for` header was exploded whenever its brace was Allman.**
+`_emit_for_statement` decided "was the source header multi-row?" with
+`body.start_point[0] != node.start_point[0]` — which is the BODY
+BRACE's row, a different question, and true for every Allman-braced
+`for` however short its header. So
+
+```java
+        for (int i = 0; i < arr.length; i++)
+        {
+```
+
+skipped the single-line attempt and came out as three paren-aligned
+clauses. It also self-perpetuated: the reformatted header really is
+multi-row, so the next pass took the same branch. The test suite had
+a golden file enshrining the wrong shape, which is how it survived.
+The check now measures the header's own span; the Allman decision
+keeps the body-row test under its own name, which is what that test
+is for.
+
+**~124 unreachable lines removed from the source-preserve path.**
+Once 0.7.0 narrowed preservation to the comment and CSOFF cases, the
+branch's first act was to re-test exactly those two and return — so
+the column-remap logic below it, and its own overflow advisory, could
+never run. Verified by poisoning the block and formatting all 504
+corpus files: zero reached it. The release notes had been describing
+it as live behavior. What it did is recorded in the
+`building/source-preservation-history` FAQ.
+
+**`array_creation_expression` is a computed field-access receiver.**
+It was missing from `_COMPUTED_RECEIVER_TYPES` despite being a
+separately dispatched node, so `new int[computeSize()].length` was
+classified as a plain name and the break-before-dot tier declined.
+
+**Field access now advises when it declines.** Both silent exits —
+a named receiver with no break point, and "breaking bought nothing,
+revert to inline" — committed a possibly-overflowing line with no
+advisory, which is precisely the gap the release's own advisory work
+closed for parameter lists and javadoc. One corpus overflow that was
+previously silent now reports, taking advisories to 289.
+
+**The convergence detector in the trial checklist could not
+detect non-convergence.** It committed after every changed pass, so
+the working tree was clean when the loop exited and its final
+`git diff --quiet ||` check never fired — including for exactly the
+oscillating file it exists to catch. It now records why the loop
+ended rather than inspecting a tree it has already cleaned.
+
+### Javadoc documentation corrections
+
+Two examples in `docs/java-coding-standards.md` did not match what
+the formatter produces, and one contradicted the rule stated beside
+it. The `### Tag Descriptions` example showed every continuation at
+one shared column, while the rule above it — and the formatter —
+align each continuation after its own tag and parameter name, so
+`@throws IllegalArgumentException` indents further than `@param`.
+The `### Prose Paragraphs` "Good" example was also not a formatter
+fixed point. Both now show verified output.
+
+### Javadoc paragraphs of any length distribute, and inline tags stay whole
+
+Two related limitations, both carried on the 0.8 backlog and both
+resolved here.
+
+**Distribution at three or more lines.** A new minimum-raggedness
+pass replaces the soft-target rebuild for javadoc. It charges the
+slack of EVERY line, the last one included — classic minimum
+raggedness leaves the last line free, which packs the early lines
+and produces exactly the orphan being removed. Correct at any line
+count. Given this source:
+
+```java
+    /**
+     * Returns the total number of milliseconds that elapsed from the moment this batch was first created until the point at which it was finally closed.
+     */
+```
+
+0.7.0 emitted a stranded last line; this release distributes the
+same three lines evenly:
+
+```java
+    // 0.7.0
+     * Returns the total number of milliseconds that elapsed from the moment
+     * this batch was first created until the point at which it was finally
+     * closed.
+    // now
+     * Returns the total number of milliseconds that
+     * elapsed from the moment this batch was first created
+     * until the point at which it was finally closed.
+```
+
+**Inline-tag atomicity.** Reflow splits on whitespace, so
+`{@link Foo#bar(int, Map)}` arrived as several words and greedy
+fill broke between them. An inline tag is one semantic unit and is
+now one token:
+
+```java
+    // 0.7.0
+     * The identifier of the {@link
+     * SampleRequestHandler} that accepted this particular request.
+    // now
+     * The identifier of the {@link SampleRequestHandler}
+     * that accepted this particular request.
+```
+
+A tag wider than the line budget stays split — holding it whole
+would overflow, which no later tier could repair.
+
+**Only where the formatter already reflows.** Both improvements
+ride on the existing `_javadoc_needs_reflow` gate, which fires on
+an over-long line or an orphan continuation. A paragraph already
+wrapped tidily by a previous greedy pass is NOT rewritten: feeding
+the "0.7.0" block above back in leaves it alone, because all three
+lines are inside 80 and the first word of each line would not have
+fitted on the line before it. That is deliberate — it keeps the
+release from churning every javadoc comment in an adopting code
+base to buy a cosmetic gain — but it does mean the improvement
+only reaches a paragraph when something else already required it
+to be reflowed.
+Code bases already formatted by 0.7.0 do pick up the tag fix
+retroactively, because greedy's split-tag output leaves an orphan
+continuation and so trips the gate on its own.
+
+**0.7.0's layout is the floor.** The new pass is a candidate, not a
+replacement: it is adopted only when it removes an orphan or a split
+tag **without** introducing either, never costs a line, never
+overflows, and survives the stability check below. So it can improve
+on the previous layout but never regress it. An earlier attempt that
+simply replaced the algorithm regressed 11 paragraphs, because its
+fallback went to plain greedy rather than to the balanced result.
+
+**The stability check, and what it still leaves undone.** A line
+that starts with `{@` or `<` splits a paragraph, and a line the
+prose-line predicate rejects — a leading `@` block tag, `<li>`, an
+indent of its own — ends the run entirely. Moving any of those to
+the head of a line changes how the NEXT pass groups the paragraph,
+so the formatter's output becomes a function of its own previous
+output: the failure family this release exists to remove. A
+candidate is therefore replayed through one simulated following
+pass and adopted only if it reproduces itself. Without the check,
+seven corpus files stopped converging; with the check modelling
+only `{@`/`<` and not the `@` block tag, ordinary prose containing
+a word like `@Override` fails to converge on the second pass — see
+`javadoc_reflow/25_block_tag_word_is_a_boundary`. That construct
+does not occur in the trial corpus at all, which is why five rounds
+of corpus measurement did not surface it, and why the guard is
+pinned by a fixture and unit tests rather than by corpus figures.
+
+The check does not apply to `@param` / `@return` / `@throws`
+descriptions. That path selects itself on the tag keyword, cannot
+flip to the prose-splitting path, and re-flattens its lines rather
+than splitting them at a tag, so no boundary can materialise there;
+applying the check anyway refused four good layouts for a boundary
+that does not exist. Those four converge either way, so this is a
+quality gain rather than a convergence fix.
+
+Where the check does bite is a tag long enough that it can only sit
+on a line of its own, with multi-line prose ahead of it. 10 corpus
+paragraphs are refused for this reason and keep the greedy layout
+with the tag still split — for example
+`{@link TaskHandler#handleTask(String, Map, int, Scheduler)}` at 59
+columns. Fixing those means retiring the paragraph splitter's
+`{@`-at-line-start rule, which would reflow paragraphs authors
+deliberately laid out tag-per-line; that is deferred, and is now
+the only javadoc item on the backlog.
+
+Corpus effect: 210 paragraphs improved (146 orphans removed, 56
+split tags joined, 8 both), 164 of them at three or more lines,
+across 68 files. By path, 146 go through the stability check (86
+orphan-only, 52 split-only, 8 both) and 64 take the tag-description
+path (60 orphan-only, 4 split-only) — the two 146s are a
+coincidence, not the same set.
+
+No paragraph regressed on the four guarded axes — line count, line
+width, orphan introduction and split-tag introduction — verified
+across all 210 adoptions and, per file, across all 504. 39 of the
+210 are measurably more ragged than before, and all 39 are
+split-tag-only fixes, so the raggedness is purely the price of
+letting tag atomicity outrank evenness; no orphan-fixing adoption
+is more ragged than what it replaced. Lines over 80, total line
+count, advisory count and convergence are all unchanged.
+
+### Line comments the author split are left alone
+
+Considered and deliberately not done. A run of `//` lines gives no
+reliable signal for whether it is one wrapped comment or several
+adjacent ones, and merging the wrong pair silently damages source.
+Of 23 candidate sites in the trial corpus — a trailing line of
+three words or fewer that would have fit on the line above — four
+were commented-out code (`// else {` … `//}`), one a tabular column
+legend, and three pairs of independent statements (`// we must have
+an acquired connection` followed by `// create a handler`). Only a
+majority, not all, were genuinely one sentence, and no syntactic
+test separates them; it takes reading the English.
+
+What the formatter can own it already does: a single comment too
+long for one line is wrapped and balanced by the formatter itself,
+where it knows the text is one unit.
+
+### Record headers wrap
+
+Record declarations had no header cascade: the components and any
+`implements` clause were written straight out. A record whose header
+overflowed simply stayed overflowed — six in `SzRecord.java` ran to 94
+columns — and because `_emit_formal_parameters` source-preserves a
+component list that spanned rows in the original, an author's packed
+layout was re-indented rather than re-flowed and reached 88 columns.
+
+The spec's "Record Headers" priorities are now implemented as written.
+Priority 2 moves `implements` to its own single-indented line and
+leaves the components alone; the components only break if they still
+do not fit once it has moved:
+
+```java
+    public record SzFullAddress(String fullAddress, String addressType)
+        implements SzAddress
+```
+
+Priority 3 paren-aligns one component per line, priority 4 drops them
+to a double-indented block, and both keep `implements` on its own
+line. The component list runs the same cascade as method parameters,
+from the same code, so `force_wrap` also retires source preservation
+here — which is what lets a pre-wrapped list be re-flowed instead of
+replayed.
+
+One shape needed an explicit rejection. A component list that wraps
+itself puts the closing `)` on a continuation row, and an `implements`
+clause written after it trails that row — a shape none of the
+priorities produce. Width alone does not catch it, because once the
+components have broken every row can sit under the limit; the check
+would pass and commit. It is rejected the same way the argument-list
+cascade rejects an argument that wrapped.
+
+### Escalation exemptions, and array initializers stop preserving
+
+Extending the argument-breaks rule to priority 3 exposed two ways the
+escalation could fire on rows the argument list did not put there.
+
+**Both priority 3 escape signals now share the same exemptions.** A row
+left of the continuation column is evidence of an escape only when this
+argument list's cascade chose that anchor. A text block's content starts
+where the author wrote it — often column 0 — and an argument replaying
+source rows carries its own columns; neither says anything about this
+list. `p3_arg_escaped` was testing every row regardless, which pushed 8
+corpus lines over 80.
+
+**The array-creation source-preserve path is retired.** It replayed a
+multi-row `new Type[] { ... }` verbatim with no re-anchoring, so when the
+escalation moved the argument's first row to `block + 4` the preserved
+continuation stayed where the author left it — the two halves of one
+argument ending 24 columns apart, as a stable fixed point:
+
+```java
+        reporter.reportEverything(
+            alphaArgumentValueNumberOne,
+            new String[] { "aa",
+                                    "bb" },          // stranded
+```
+
+Suppressing the escalation for preserved arguments was tried first and
+rejected: it made the choice of shape depend on whether the array
+happened to be written across rows, which is the history-dependence this
+release exists to remove, and it left one file oscillating. Retiring the
+path instead makes array layout a function of the AST like everything
+else. Two files change; one of them is the stranding defect above, and
+the other loses an author's hand-grouping of `--flag, value` pairs, which
+is what `// CSOFF` is for.
+
+Four preserve channels reachable from argument emission remain — switch
+rules, formal parameters, and the argument-list comment and CSOFF cases.
+The escalation is suppressed for arguments that use them, which is
+correct for the comment and CSOFF cases (those are content, not layout)
+and a stopgap for the other two.
+
+### The argument-breaks rule now holds at priority 3
+
+"If an argument breaks, the argument list breaks" was enforced at
+priorities 1 and 2 but not priority 3. Under priority 3 each argument
+already has its own line, so the gap looked harmless — but an argument
+that wraps there puts its own continuation at exactly the column its
+siblings occupy, and the continuation stops being distinguishable from
+an argument:
+
+```java
+        multilineFormat(rr.getFormat()
+                        + " record not as expected:",
+                        "RECORDS TEXT: ",
+```
+
+Falling through to priority 4 gives the arguments their own column:
+
+```java
+        multilineFormat(
+            rr.getFormat() + " record not as expected:",
+            "RECORDS TEXT: ",
+```
+
+Arguments that inherently own rows stay exempt, as everywhere else the
+rule applies. The round-2 correction to the escape scan is what made
+priority 3 reachable for a wrapping first argument, which is why this
+gap surfaced now rather than earlier.
+
+The change usually costs a line: of the 126 files that take a different
+shape, 94 grow, 15 shrink and 17 stay the same length. What it buys is
+that an argument comes back whole where it used to be split at the
+paren-aligned column — a nested call, a chain, or a string
+concatenation:
+
+```java
+    // before                            after
+    engine.findPath(startRecordKey,      engine.findPath(
+                    ...                      ...
+                    SzRecordKeys.of(         SzRecordKeys.of(avoidances),
+                        avoidances),         requiredSources);
+                    requiredSources);
+```
+
+Cost: 126 files take a different shape and the corpus grows 606 lines
+(+0.27%). Lines over 80 are unchanged, files needing a second pass are
+unchanged at 6, and the count of files reformatted against 0.6.0 moves
+only 322 to 324 — 124 of those 126 files were already being reformatted,
+so an adopter's diff grows by two files.
+
+### Argument separators are now reserved for
+
+`emit_p4_multi_arg` appends a `,` after every argument and a `)` after
+the last, and reserved for neither. An argument that measured itself as
+exactly 80 columns therefore committed, and the separator landed in
+column 81 — invisible to the argument, which fit, and to the loop,
+which had already committed. Latent until the priority 3 rule above
+routed more lists through this path, where it produced 22 over-long
+lines.
+
+The reserve deliberately drops the **inherited** tail reserve for every
+argument but the last. That inherited value stands for characters the
+parent appends after the whole construct — an enclosing statement's
+`;` — which land on the construct's final line only. Carrying it onto a
+middle argument's row makes the budget one character too tight and
+splits an argument that is legal at 80:
+
+```java
+                SzConfigManager.class.getMethod("registerConfig", String.class),
+```
+
+This is the fourth off-by-one of the same family in this release, after
+the enhanced-`for` closing paren, the escape scan's row range, and the
+parameter-alignment width test. All four shared a shape: a width
+measured over a span that included something the construct did not
+write, or excluded something it did.
+
+### Double-indenting parameters only when it gains room
+
+Priority 3 breaks after the opening parenthesis to escape a paren
+column pushed far right by a long return type and method name. When
+the parenthesis already sits at or left of the double-indent column,
+that break moves every parameter FURTHER right and cannot help, so
+priority 2 is now kept as the narrowest available shape:
+
+```java
+    // paren at column 11, double-indent would be 12
+    void m(SomeExtremelyLongQualifiedTypeName a,
+           int aParameterWithAnExtremelyLongName)
+
+    // paren at column 19 — the break is genuinely narrower
+    StringBuffer m(
+            SomeExtremelyLongQualifiedTypeName a,
+            int aParameterWithAnExtremelyLongName)
+```
+
+The test is the column of the `(`, not the length of the method name:
+the return type, modifiers and type parameters all push it right. No
+file in the trial corpus changes — the shape needs a very short
+signature alongside unusually long parameters — but priority 3 is the
+terminal candidate, so getting it wrong meant emitting the widest of
+the available shapes with nothing downstream to correct it.
+
+### Advisories where the formatter declines to reflow
+
+Two silent exits now report themselves. A parameter list that cannot
+fit even with every parameter on its own line at the deepest indent
+had no advisory at all — the formatter wrote a 114-column line and
+said nothing. And a javadoc line preserved as structural, which by
+design is never reflowed, said nothing either. Both are spec C1
+emit-and-warn sites; the warn half was missing. The failure mode was
+a developer hitting a checkstyle `LineLength` failure, running the
+formatter, seeing no change and no output, and concluding the
+formatter was broken.
+
+Both advisories respect checkstyle's own `LineLength` `ignorePattern`,
+so a line the build will not reject does not generate noise. That
+matters more than it sounds: without the exemption, `@see <a href=...>`
+javadoc produced 123 advisories across the corpus, 73 of them in one
+file and none of them actionable. With it, 17 advisories are added in
+total and every one names a line that genuinely fails the build.
+
+### Wrapped parameter lists align their names
+
+`_emit_formal_parameters` never implemented the column alignment the
+spec has always specified for wrapped parameter lists — names
+left-aligned on the first 4-space tab stop past the longest type. Its
+own docstring recorded the omission as pending. Every aligned
+parameter list in the trial corpus was aligned because the _author_
+aligned it and source preservation replayed the layout, so the corpus
+was split almost evenly between aligned and single-spaced lists —
+sometimes both inside one file, depending on which lists happened to
+overflow.
+
+Priorities 2 and 3 now generate the alignment:
+
+```java
+    public void find(String                  startKey,
+                     String                  endKey,
+                     int                     degrees,
+                     java.util.Set<String>   avoidances,
+                     java.util.Set<String>   requiredSources)
+```
+
+Two carve-outs, both because the measurement would not describe the
+list. A single parameter is not padded — alignment forms a column and
+one name has nothing to form it with, so the gutter would read as a
+mistake. A list containing a varargs or receiver parameter is not
+padded either: its prefix is not a bare type, so one measured width
+does not model it.
+
+Padding can push a priority 2 line past the limit, in which case the
+cascade falls to priority 3 as it is defined to. That happened twice
+in the fixture suite and the results land at 66 and 50 columns.
+
+Priority 3 has no such escape — it is the terminal candidate — so
+there the aligned and unaligned forms are compared and alignment is
+given up when it is what costs the width. The shape that needs this
+is a short type sharing a list with a long one, since the short
+type's name is padded out to the long type's column while still
+carrying its own full length:
+
+```java
+        void m(
+                SomeExtremelyLongQualifiedTypeName  a,
+                int                                 aParameterWithALongName)
+                                                    // 82 aligned, 50 not
+```
+
+Measured across the corpus the alignment adds **8 lines** and
+introduces **no** new over-80 line, touching 30 files.
+
+### Argument-list escalation no longer misfires on the first argument
+
+The whole-list escalation to priority 4 scanned one row too many. It
+captured `Emitter.line_count` before an argument emitted and then
+scanned from that index — but `line_count` excludes the in-progress
+line, so the first row it examined was the row already open when the
+argument began, which the argument did not create. For argument 0
+that row is the call line itself, whose indent is the statement
+indent and therefore always left of the continuation column. Every
+call whose first argument wrapped reported an escape and skipped
+priority 3 — the paren-aligned shape the escalation exists to
+preserve:
+
+```java
+        someMethod(innerCall(alphaArgumentValue,
+                             betaArgumentValue,
+                             gammaArgumentValue),
+                   second);
+```
+
+That fits in 49 columns; the release had been pushing it to the
+priority 4 block-indented shape at a cost of one line. The scan now
+starts one row later. For arguments after the first the skipped row is
+the argument's own first row, which the argument list opened at
+exactly the continuation column and so could never be an escape —
+making the change a no-op there. The deep-orphan case the escalation
+was written for still escalates.
+
+### Enhanced-`for` reserves room for its closing parenthesis
+
+The wrapped enhanced-`for` path emitted the iterable with no budget
+for the `)` that follows it, because the inline attempt's reserve was
+discarded along with everything else when the emitter rolled back. A
+header whose iterable ended near the limit therefore closed in column
+81 — silently, with no advisory, and the result is idempotent, so no number of
+reformats would repair it. The path now reserves one character,
+matching every sibling construct (basic `for` and `if` reserve two for
+`) {`; this needs one because the Allman brace moves to the next
+line). The related inline fit test also now accounts for any reserve
+inherited from an enclosing construct, which it had ignored while the
+value emission budgeted for it — reachable inside lambda blocks,
+anonymous-class bodies and `throw` arguments, where it let an
+identical header wrap or not purely by context.
+
+### Source preservation
+
+Three changes, all narrowing when the formatter defers to the
+author's layout.
+
+**The width-based fallback is retired.** Preservation now fires only
+for its two correctness reasons — interleaved `//` or `/* */`
+comments, and `// CSOFF` regions. The third trigger, "the source
+spans rows and its first line fits at the emission column", is gone.
+
+That trigger was a fallback meaning "the formatter cannot obviously
+do better, so keep what is there" — and on any file the formatter
+has already touched, what is there is whatever an EARLIER VERSION
+wrote. It was therefore a propagation channel for the formatter's own
+past mistakes: the orphaned continuation at
+`SzCoreEngineReadTest.java:110-111` survived every pass because the
+orphan is in the source and the gate faithfully re-emitted it. It
+also made layout history-dependent — two semantically identical files
+formatted differently according to how they happened to be typed.
+
+Every remaining multi-row argument list now goes to the wrap engine,
+so output is a function of the AST alone. Files written by older
+releases are re-flowed by the next ordinary format pass; there is no
+special mode to run and no adopter action required.
+
+Removing the fallback left every remaining branch in
+`_arg_list_takes_source_preserve_path` returning the same `False` as
+the function's own fallthrough — around 155 lines that read as live
+policy while being unobservable, one of them doing a full AST walk
+2,113 times across 250 files to compute an answer nobody could see.
+Those branches are deleted, along with the helpers that existed only
+to serve them: `_arg_list_single_line_estimate` and its
+`_estimate_normalize` helper, `_arg_list_has_semantic_multi_row_arg`,
+the `_SEMANTIC_WRAP_ARG_TYPES` set, and the never-wired
+`_rhs_is_multi_segment_chain`. The predicate is now what it claims to
+be — multi-row plus either interleaved comments or a CSOFF region.
+Output is byte-identical across all 504 trial files, which is what
+makes this safe to do inside the release rather than after it. What
+those rules were for, and the subtleties worth keeping (the
+string-literal-safe width estimator, and a geometric alternative that
+was measured and rejected), are recorded in the new
+`building/source-preservation-history` FAQ so the reasoning survives
+the code.
+
+**Preserved continuation columns are re-anchored.** Where
+preservation still applies, it replayed the author's columns
+literally, so re-indenting the enclosing statement left the
+continuation aligned with nothing. Every preserved row now shifts by
+the construct's own displacement, floored at the canonical
+continuation column so a large negative shift cannot drag rows left
+of it. Internal alignment survives because all rows move together,
+and idempotency holds by construction: on a later pass the source
+column is the emit column, so the shift is zero.
+
+**Preservation yields to the nested-call rules.** It no longer fires
+for the shapes those rules own outright, nor when the source shows an
+ordinary argument that wrapped — the "if an argument breaks, the
+argument list breaks" rule lives in the wrap engine, and
+preservation was consulted first and short-circuited it. This also
+stops a preserved argument list from suppressing the method-chain
+cascade's Q-CHAIN-4 backoff. Constructs that legitimately span rows
+(block-bodied lambdas, text blocks, anonymous classes) stay on the
+preservation path, which is what keeps
+`execute(new Runnable() { … })` and `performTest(() -> { … })`
+idiomatic.
+
+### Method chains: the back-off test no longer reads source rows
+
+The chain cascade decides whether to back off to one segment per
+line by predicting whether a segment's argument list will emit
+multi-line for a _legitimate_ reason (which does not strand the
+tail) or because the wrap engine had to break to fit (which does).
+That prediction asked whether an argument of type
+`lambda_expression`, `binary_expression` or `method_invocation`
+spanned rows **in the source**.
+
+Retiring the width-based preservation fallback invalidated the
+question. Before, a multi-row `method_invocation` argument was
+likely to be re-emitted multi-row, so its source shape was a fair
+predictor. Now every such argument goes to the wrap engine, which
+will pull it back onto one line — so "it spans rows in the source"
+predicts nothing beyond how the file was last written. It was the
+last channel by which stale layout steered a live decision, and it
+alternated forever between two shapes:
+
+```java
+            // pass 1 — inner call on one source row, so the
+            // segment is "wrap-engine multi-line": chain backs off
+            boolean usePostgres = Boolean.TRUE.toString().equals(
+                System.getProperty("com.senzing.listener.test.postgresql"));
+
+            // pass 2 — that output has the inner call spanning rows,
+            // now read as "legitimate": no back-off, and the chain
+            // takes one segment per line instead
+            boolean usePostgres = Boolean.TRUE
+                .toString()
+                .equals(
+                    System.getProperty("com.senzing.listener.test.postgresql"));
+```
+
+The example is at four levels of indentation because that is what it
+takes: at method-body depth `.equals(...)` closes on column 80 and
+the argument stays inline, so nothing alternates. The oscillation
+needs the argument to overflow at the paren-aligned column while
+still fitting one indent level in.
+
+The test now asks the structural question — does the argument _own_
+its rows (block-bodied lambda, text block, anonymous class)? —
+using the same `_arg_owns_its_rows` predicate as the
+"if an argument breaks, the argument list breaks" rule, and for the
+same reason. Structurally-owned rows are the only rows the wrap
+engine cannot reclaim, so they are the only ones that legitimately
+strand a chain tail.
+
+One construct in the corpus still takes a second pass to settle — a chain-with-lambda re-shape. What this release eliminates is the harder case: output that
+never settles at all.
+
+### Argument lists: all-on-one-continuation-line tier (priority 2b)
+
+New priority 2b. When the arguments will not fit priority 2's
+two-line packed shape but **all** of them fit together on one
+continuation line, break immediately after the `(` and place them
+there at single indentation:
+
+```java
+        BadOptionParametersException ex = new BadOptionParametersException(
+            COMMAND_LINE, CONFIG, "--config", List.of());
+```
+
+This is the zero-arguments-on-the-call-line member of the same greedy
+family as priority 2, whose rule is two lines maximum: zero or more
+arguments on the call line, all remaining arguments on ONE
+continuation line, otherwise one per line paren-aligned. It is
+numbered 2b, and tried immediately after priority 2, because that is
+where it runs — an earlier draft of this release called it "3b" and
+documented it as running after priority 3, which never matched the
+implementation. Skipped for embedded calls, like priority 2 — it is a
+greedy tier and the nested-call rules withdraw the greedy family from
+those positions.
+
+Without this tier the cascade jumped from paren-aligned straight to
+one-argument-per-line, which cost three lines per site on a very
+common shape.
+
+### Enhanced-`for` header wrapping
+
+Enhanced-`for` headers now wrap. The primary break is **before the
+`:`**, with the colon leading the continuation line so the iterable
+stays attached to it, and the opening brace goes Allman because the
+header is multi-line — the same exception that already governs `if`,
+`while` and `switch`:
+
+```java
+            for (Map.Entry<String, Map<String, SzFlagMetaData>> entry
+                    : parent.entrySet())
+            {
+```
+
+The header was previously written straight out with no cascade, so 25
+sites across the four trial source bases simply overflowed (up to 103
+characters). Basic `for` already wrapped; this was a missing node type
+rather than a policy gap.
+
+### `switch` brace placement
+
+`switch (value)` now keeps its opening brace on the same line, as
+the "Switch Statements and Expressions" section of the standards
+requires. The emitter had been writing an unconditional newline,
+so every `switch` got an Allman brace — 98 sites across the four
+consumer source bases, and the correct same-line form was never
+produced at all. Checkstyle does not gate brace placement on
+`LITERAL_SWITCH`, which is why this went unnoticed.
+
+The "Multi-line Conditions" exception still applies: when the
+condition's rendered output spans more than one line, the brace
+drops to its own line so the condition stays visually separate
+from the body. This now mirrors `_emit_if_statement` exactly,
+including the two-character tail reserve for the `) {` that
+follows the condition.
+
+### Multi-catch clauses
+
+`catch (A | B | C e)` union types now wrap: inline when they
+fit, otherwise paren-aligned one exception type per line, with
+a `multi-catch` overflow advisory. 0.6.0 had no wrap logic
+here and emitted a silent 125-character line.
+
+### Dependencies
+
+`tree-sitter` 0.25.2 → 0.26.0. Only the Python binding moves;
+`tree-sitter-java` stays at 0.23.5, so the grammar node-name
+set the emitter dispatches on is unchanged. Formatter output
+is byte-identical to 0.25.2 across all four trial source bases
+and the advisory logs match exactly.
+
+Note for future bumps: `requirements.txt` pins are mirrored by
+`GRAMMAR_VERSION` in `format_java.py`, and
+`TestGrammarVersionPins` fails the build when the two drift.
+Dependabot can only edit `requirements.txt`, so its bump PRs
+always arrive red and need `GRAMMAR_VERSION` bumped in the
+same commit. `requirements.txt` now says so in a comment.
+
+### Build and CI
+
+- Removed the redundant `/tooling/scripts/tests` pip ecosystem
+  from `dependabot.yml`. `tests/requirements.txt` pulls the
+  runtime pins in via `-r ../requirements.txt`, so both
+  entries covered the same dependency set and every bump
+  arrived as two identical PRs (#23/#24, #38/#39, #43/#44,
+  #46/#47), resolved each time by closing one by hand.
+- New `corpus-gate` job in the pytest workflow. The fuzz
+  (AST round-trip, idempotency) and performance gates resolve
+  their corpus to `<consumer>/src`, which does not exist in a
+  standalone checkout — so they had been skipping on every CI
+  run, leaving those properties unchecked. The job checks out
+  `senzing-garage/senzing-commons-java` at a pinned release
+  tag and points `SENZING_JAVA_FUZZ_CORPUS` at it. Pinned
+  rather than tracking `main` so an unrelated consumer commit
+  cannot turn this repo's CI red.
+
+### Verification
+
+- 800/800 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+  consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
+  found, so a standalone clone collects 587 and the 210 missing
+  parametrisations are exactly the AST-equivalence and idempotency
+  checks — the properties this release most needs verified. The new
+  `corpus-gate` CI job exists to supply that corpus. New fixtures
+  cover the nested-call wrap's two reachable shapes, a nested
+  argument with no chain, a multi-argument enclosing call, the
+  all-inline case, and three idempotency regressions: the
+  `Boolean.FALSE.equals(result.get(x).getProcessedValue())`
+  column oscillation, the chain back-off test reading source rows,
+  and a first argument that wraps while the paren-aligned shape
+  still fits. Two more lock the lambda-body boundary: an
+  expression-bodied lambda whose inner call drops the greedy
+  tiers, and a block-bodied one that keeps them. Five more cover
+  the javadoc reflow: a three-line paragraph that distributes, an
+  inline tag held whole, a candidate refused by the stability
+  check, a block-tag word (`@Override`) inside prose, and a
+  `@param` description that distributes. 41 new unit tests cover
+  the reflow helpers directly. Each of the three convergence
+  guards was verified by reverting it and confirming the suite
+  goes red.
+  Deleting the single-line width estimator removed the 18 unit
+  tests that covered it, so the count is not comparable with
+  0.6.0's on a like-for-like basis.
+- Trial-formatted `senzing-commons-java`, `sz-sdk-java`,
+  `sz-sdk-java-grpc` and `data-mart-replicator` — 504 files,
+  comparing the output of 0.6.0 against the output of this
+  release on identical inputs.
+- **No semantic change.** Comparing named-node sequences with
+  comments excluded, 503 of the 504 files are structurally
+  identical between the two releases. The one exception is
+  `SummaryStatsReportsTest.java`, where **two**
+  `if (cond) { return; }` bodies collapse to the Tier 1
+  `if (cond) return;` form — the file's `if` count is unchanged
+  at 71, with block consequences going 54 to 52 and bare
+  `return` 8 to 10. The lambda-body de-indent freed four
+  columns, taking the collapsed statement from 81 to 77 and so
+  inside the limit for the first time; the collapse itself is
+  existing documented policy, not new here. Both sites are
+  else-less, so there is no dangling-`else` hazard, and no file
+  in the corpus gains a parse error.
+- Corpus idempotency, measured the same way for both releases
+  (format pristine source once, format again, compare): **26
+  files needed a second pass under 0.6.0, 1 under this release**.
+  Five of the six that remained mid-release were fixed by the
+  convergence work above — the Tier 1 braced-`if` collapse and
+  basic-`for` header wrapping, both of which were reading source
+  layout. The one that remains is the chain-with-lambda re-shape in
+  `AbstractSchedulingService.java`, which settles on its second
+  pass. **Nothing in the corpus fails to converge**; the one file
+  that used to take four passes was the javadoc case fixed above.
+
+  Note for anyone re-measuring: taking the 0.6.0 _output_ as the
+  starting point instead of pristine source reports fewer, because
+  the first pass of the new release absorbs the second-pass changes
+  that file needed anyway. The pristine baseline is the honest
+  one.
+
+- Lines over 80 characters across the four trees moved from
+  1618 to 1571, and all 25 over-long enhanced-`for` headers are
+  now wrapped. The 1,571 that remain are overwhelmingly content
+  a formatter must not reflow: half of them (787) carry a
+  javadoc `{@snippet}` / `@highlight` / `@replace` directive
+  whose region markup breaks if it is wrapped, with the bulk of the
+  remainder either a single string literal already longer than the
+  limit on its own or javadoc / line-comment prose. (The per-category
+  counts were taken at 1,573 and the categories overlap, so they are
+  no longer quoted individually.) 595 sit in one
+  file, `SzEngineDemo.java`. Only 110 are code carrying no
+  string literal, and most of those are unwrappable by nature —
+  long `import` statements and `@ValueSource` annotations. The
+  remaining residue is unwrappable in an AST-preserving
+  formatter; the record headers that used to be in this list are
+  fixed above.
+- Deep orphaned continuations — a construct's contents emitted
+  left of the `(` they belong to — fell from 37 to 3.
+- 337 of 504 trial files are reformatted, a net **+1,563 lines**
+  (about +0.7% against 220k). The release trades lines for
+  compliance and predictability: rule 1 breaks each nesting
+  level of an embedded call onto its own row, and "if an
+  argument breaks, the argument list breaks" turns a packed
+  partial break into one argument per line. The new
+  all-on-one-continuation-line tier and the retired preservation
+  fallback pull in the other direction but do not cover the
+  cost. Growth is concentrated in argument-dense test files —
+  the largest single increase is 163 lines in a 3,000-line
+  parameterized test.
+- Eighteen existing fixture golden files updated, each reviewed and
+  confirmed an improvement — `arg_list_wrap/05`, `06`, `07`
+  and `11`, `method_chain_wrap/11`, `14` and `16`,
+  `line_comment_reflow/07`, `text_block/03`, and
+  `explicit_constructor_invocation/01`; plus eight more that
+  locked wrapped parameter lists without name alignment —
+  `arg_list_wrap/12`, `binary_wrap/03`, `condition_wrap/04` and
+  `08`, `method_chain_wrap/10`, `method_decl_wrap/02` and `04`,
+  and `ternary_wrap/08`. The most
+  illustrative is `method_chain_wrap/11`, which had been
+  echoing an author layout whose continuation sat at column
+  12 while the call it continued opened at column 20.
+  `method_chain_wrap/18_p1f_factory_deep_dot` is renamed to
+  `18_factory_chain_breaks_at_first_dot`, since it no longer
+  locks the removed tier.
+- Javadoc `<pre>` handling re-verified rather than changed: no
+  `<pre>` line is added or removed anywhere in the four trial
+  diffs, and a direct test of a `<pre>` ASCII box diagram with
+  long wrappable prose on both sides preserves the diagram
+  byte-for-byte. The 0.6.0 pre-release report of a destroyed
+  diagram is resolved.
+
 ## [0.6.0] - 2026-07-14
 
 Formatting release. Applies stricter line-length compliance

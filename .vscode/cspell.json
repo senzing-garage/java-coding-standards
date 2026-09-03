@@ -46,6 +46,7 @@
     "systemstubs",
     "temurin",
     "Varargs",
+    "venv",
     "virtualenv",
     "webcompere",
     "wrappable",

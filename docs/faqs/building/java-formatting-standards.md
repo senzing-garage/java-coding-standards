@@ -147,6 +147,19 @@ The 0.4.2 release adds three generalizable patterns to the wrap engine, and 0.4.
 
 ### Additional patterns in 0.4.3
 
+> **Superseded in 0.7.0 — read this first.** The three bullets below that
+> describe `_arg_list_takes_source_preserve_path`'s width gates (the
+> shared predicate's `first_line_fits` check, the width-based opt-out,
+> and the paren-alignment inversion check that consulted them) describe
+> mechanics that **no longer exist**. Source preservation now fires only
+> for interleaved comments and `// CSOFF` regions; every other multi-row
+> argument list goes to the wrap engine. `_arg_list_single_line_estimate`
+> and `_estimate_normalize` were deleted along with the gates that used
+> them. They are retained here as a record of what 0.4.3 did and why.
+> For the current rules, the reasons for the retirement, and the
+> idempotency trap that motivated it, see the
+> `building/source-preservation-history` FAQ.
+
 - **`_arg_list_takes_source_preserve_path` shared predicate** — the arg-list emitter and the method-chain P1 discriminator now consult the same column-sensitive check (`_node_spans_multiple_rows(args)` AND `first_line_fits(args_emit_column)` OR has-comment OR in-CSOFF). The chain discriminator can't just guess from source-row count alone, because the arg-list emitter falls through to the wrap engine when the source's first line doesn't fit at the new emission column — and that wrap-engine output strands subsequent chain segments. Sharing the predicate is what keeps the two sites in agreement. Generalization of the same "outer construct must predict what inner construct will actually do" principle the 0.4.2 P1 newline-rejection gate established.
 
 - **Chain P1's legitimate-multi-line cap is at total-segments ≤ 2** — even when the source-preserve predicate fires for a segment's args, chain P1 only accepts when the chain has at most TWO segments total. The cap reflects the design preference "break on method chaining (greedily) before breaking on parameter names for a method in the chain": a 3+ segment chain whose middle segment has multi-line args (e.g. `Builder.builder().setReader(r).setFormat(\n  fmt).get()`) reads better as a dot-aligned wrap (chain P2) than as "chain-on-one-line with mid-args wrap" (which piles the trailing `.get()` onto the continuation line that starts with the closing `)`). The 2-segment threshold matches `cls.getResource(\n  arg).toString()` (Bug 1's original case) while rejecting longer chains. Replaces the prior trailing-segment cap of ≤1, which over-accepted at 4-segment chains.

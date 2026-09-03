@@ -7,6 +7,7 @@ arrive with subsequent phases.
 from __future__ import annotations
 
 import dataclasses
+import importlib.metadata
 import re
 import subprocess
 import sys
@@ -60,6 +61,30 @@ class TestGrammarVersionPins:
             pins["tree-sitter-java"]
             == format_java.GRAMMAR_VERSION["tree-sitter-java"]
         )
+
+    def test_installed_versions_match_pins(self) -> None:
+        """The INSTALLED packages match the pins too.
+
+        The two assertions above compare two files to each other
+        and never consult the environment, so a stale virtualenv
+        validates the whole suite against a binding the formatter
+        is not calibrated for. That is not hypothetical: the 0.7.0
+        review ran 704 passing tests with tree-sitter 0.25.2
+        installed against a 0.26.0 pin.
+
+        Determinism across machines is the stated reason these
+        pins are tight, so the environment is exactly what needs
+        checking. A failure here means `pip install -r
+        tooling/scripts/requirements.txt`, not a code change.
+        """
+        for package, pinned in format_java.GRAMMAR_VERSION.items():
+            installed = importlib.metadata.version(package)
+            assert installed == pinned, (
+                f"{package} {installed} is installed but the pin "
+                f"is {pinned} — reinstall with `pip install -r "
+                f"tooling/scripts/requirements.txt` so parses "
+                f"match what the formatter is calibrated against."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3568,195 +3593,6 @@ def test_leaf_emit_writes_verbatim(
     assert emitter.finish() == (expected + "\n").encode("utf-8")
 
 
-class TestEstimateNormalize:
-    """Cover `_estimate_normalize`, the pure-function helper
-    used by `_arg_list_single_line_estimate` to render the
-    non-verbatim sections of an arg list's source text into
-    a canonical single-line shape.
-
-    The helper has three behaviors worth locking:
-
-      - Whitespace runs collapse to single spaces.
-      - Comma-then-whitespace normalizes to `, ` (a comma
-        followed by exactly one space).
-      - Leading / trailing whitespace at section boundaries
-        is preserved as a single space so the surrounding
-        verbatim segments don't lose required inter-token
-        spacing.
-    """
-
-    def test_empty_section_returns_empty(self) -> None:
-        assert format_java._estimate_normalize("") == ""
-
-    def test_pure_whitespace_collapses_to_single_space(
-        self,
-    ) -> None:
-        # Pure-whitespace section between two verbatim regions
-        # must NOT become "", else the surrounding tokens would
-        # collide. Collapsing to a single space preserves the
-        # word boundary without inflating width.
-        assert format_java._estimate_normalize("  ") == " "
-        assert format_java._estimate_normalize("\n  \n") == " "
-
-    def test_internal_whitespace_collapses(self) -> None:
-        assert format_java._estimate_normalize("a  b") == "a b"
-        assert format_java._estimate_normalize("a\n\nb") == "a b"
-        assert format_java._estimate_normalize("a \t\n b") == "a b"
-
-    def test_comma_with_no_following_space_normalizes(
-        self,
-    ) -> None:
-        # The whole point of this helper — `,b` becomes `, b`
-        # to match what the wrap engine's P1 candidate will
-        # actually emit.
-        assert format_java._estimate_normalize("a,b") == "a, b"
-        assert format_java._estimate_normalize("a,b,c") == "a, b, c"
-
-    def test_comma_with_existing_space_unchanged(self) -> None:
-        # Already-canonical input stays canonical (idempotent
-        # under repeated application).
-        assert format_java._estimate_normalize("a, b") == "a, b"
-        once = format_java._estimate_normalize("a,b,c")
-        assert format_java._estimate_normalize(once) == once
-
-    def test_comma_followed_by_multiple_spaces_collapses(
-        self,
-    ) -> None:
-        # `,  b` (double space) → `, b` (single space) — the
-        # whitespace-collapse pass handles this even before
-        # the comma-normalize regex sees it.
-        assert format_java._estimate_normalize("a,  b") == "a, b"
-
-    def test_leading_whitespace_preserved_as_single_space(
-        self,
-    ) -> None:
-        # If the section starts with whitespace, the leading
-        # space survives so a preceding verbatim region (e.g.
-        # a string literal) doesn't directly abut the next
-        # non-verbatim token.
-        assert format_java._estimate_normalize(" a b") == " a b"
-        assert format_java._estimate_normalize("\ta") == " a"
-
-    def test_trailing_whitespace_preserved_as_single_space(
-        self,
-    ) -> None:
-        assert format_java._estimate_normalize("a b ") == "a b "
-        assert format_java._estimate_normalize("a\t") == "a "
-
-    def test_both_ends_preserved(self) -> None:
-        assert (
-            format_java._estimate_normalize("  a  b  ")
-            == " a b "
-        )
-
-
-class TestArgListSingleLineEstimate:
-    """Cover `_arg_list_single_line_estimate`, which walks the
-    AST of an `argument_list` node, marks string literal /
-    character literal / comment regions verbatim, and applies
-    `_estimate_normalize` to the gaps.
-
-    The headline guarantee is that a comma inside a string
-    literal is NOT mistakenly comma-normalized — over-
-    estimating the width by one char per such comma and
-    incorrectly retaining source-preservation.
-    """
-
-    @staticmethod
-    def _arg_list(src_bytes: bytes):
-        """Parse `src_bytes` and return the first
-        `argument_list` node along with the source bytes.
-        """
-        tree = format_java.parse_source(src_bytes)
-        node = _find_first(tree.root_node, "argument_list")
-        assert node is not None, "no argument_list in source"
-        return node, src_bytes
-
-    def test_plain_identifiers_canonical(self) -> None:
-        node, src = self._arg_list(
-            b'class A { void m() { f(a, b, c); } }'
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        assert est == "(a, b, c)"
-
-    def test_string_literal_with_internal_comma_preserved(
-        self,
-    ) -> None:
-        # The headline regression case — without the verbatim
-        # carve-out, the comma inside `"hello,world"` would
-        # get a space appended.
-        node, src = self._arg_list(
-            b'class A { void m() { f("hello,world", x); } }'
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        assert est == '("hello,world", x)'
-
-    def test_string_literal_with_internal_comma_and_no_space_arg(
-        self,
-    ) -> None:
-        # Combine both: a string-literal comma (must NOT
-        # normalize) and an inter-arg comma without following
-        # space (MUST normalize).
-        node, src = self._arg_list(
-            b'class A { void m() { f("a,b",c); } }'
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        assert est == '("a,b", c)'
-
-    def test_character_literal_preserved(self) -> None:
-        node, src = self._arg_list(
-            b"class A { void m() { f(',', x); } }"
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        assert est == "(',', x)"
-
-    def test_block_comment_with_comma_preserved(self) -> None:
-        node, src = self._arg_list(
-            b"class A { void m() { f(/* a,b */ x, y); } }"
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        # The block comment text is preserved verbatim;
-        # whitespace around it collapses to single spaces.
-        assert est == "(/* a,b */ x, y)"
-
-    def test_empty_arg_list(self) -> None:
-        node, src = self._arg_list(
-            b"class A { void m() { f(); } }"
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        assert est == "()"
-
-    def test_multi_row_source_collapses(self) -> None:
-        # Source spans multiple rows — the estimator must
-        # collapse the inter-arg whitespace runs.
-        node, src = self._arg_list(
-            b"class A { void m() { f(a,\n    b,\n    c); } }"
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        assert est == "(a, b, c)"
-
-    def test_string_with_comma_inside_multi_row_source(
-        self,
-    ) -> None:
-        # The verbatim carve-out and the whitespace-collapse
-        # compose correctly when both apply.
-        node, src = self._arg_list(
-            b'class A { void m() { f("x,y",\n    z); } }'
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        assert est == '("x,y", z)'
-
-    def test_nested_call_with_string_comma(self) -> None:
-        # String literal lives inside a nested call —
-        # `collect()` walks into the nested arg list and
-        # finds the literal regardless of depth.
-        node, src = self._arg_list(
-            b'class A { void m() { f(g("a,b"), c); } }'
-        )
-        est = format_java._arg_list_single_line_estimate(src, node)
-        assert est == '(g("a,b"), c)'
-
-
 class TestFormatterWarnings:
     """Cover the formatter's non-blocking advisory channel.
 
@@ -4182,3 +4018,713 @@ class TestCli:
         # parse failed — that's the asymmetry the routing fixes.
         assert "clean" not in result.stdout
         assert f"parsed {java}" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Nested-call wrap helpers (0.7.0)
+# ---------------------------------------------------------------------------
+
+
+def _first_arg_list_of(snippet: str):
+    """Return the FIRST `argument_list` node in a method body.
+
+    `snippet` is a single statement; it is wrapped in a minimal
+    class so it parses. Pre-order search means the outermost call's
+    argument list is found first, which is the node the nested-call
+    predicates are asked about.
+    """
+    src = (
+        "class A { void m() { " + snippet + " } }"
+    ).encode()
+    tree = format_java.parse_source(src)
+    found = []
+
+    def visit(node) -> None:
+        if node.type == "argument_list":
+            found.append(node)
+        for child in node.children:
+            visit(child)
+
+    visit(tree.root_node)
+    assert found, f"no argument_list parsed from: {snippet}"
+    return found
+
+
+class TestIsNestedOrChainedCall:
+    """Lock the traversal in `_is_nested_or_chained_call`.
+
+    The predicate decides where the 0.7.0 nested-call rules apply,
+    so its coverage is a behavioral contract rather than an
+    implementation detail. The False cases are as important as the
+    True ones: each is a parent shape the rules deliberately do NOT
+    reach, and a silent change there would widen the rules without
+    anyone noticing.
+    """
+
+    @pytest.mark.parametrize(
+        "snippet, expected",
+        [
+            # Positional argument of another call.
+            ("outer(inner(a, b));", True),
+            ("outer(x, inner(a, b));", True),
+            # Receiver of a method chain.
+            ("builder(a, b).build();", True),
+            # Constructors count as calls in both positions.
+            ("outer(new Foo(a, b));", True),
+            ("new Foo(a, b).bar();", True),
+            # An EXPRESSION-bodied lambda is transparent: the inner
+            # call is still embedded in `run(…)`, and the reader
+            # still has to track both at once.
+            ("run(() -> inner(a, b));", True),
+            ("run(x, () -> inner(a, b));", True),
+            ("run(() -> new Foo(a, b));", True),
+            # Curried lambdas resolve to the enclosing construct.
+            ("run(a -> b -> inner(a, b));", True),
+            # A BLOCK-bodied lambda is opaque: the call is a
+            # statement at its own indent, sharing its line with
+            # nothing, so the greedy shapes read fine.
+            ("run(() -> { inner(a, b); });", False),
+            ("run(() -> { var y = inner(a, b); });", False),
+            # A lambda that is not itself embedded stays False.
+            ("var f = () -> inner(a, b);", False),
+            # Parent shapes the rules deliberately do not reach.
+            ("var x = (inner(a, b));", False),
+            ("var x = (Cast) inner(a, b);", False),
+            ("var x = flag ? inner(a, b) : other;", False),
+            ("var x = inner(a, b) + other;", False),
+            ("var x = inner(a, b).field;", False),
+            ("var x = inner(a, b)[0];", False),
+            ("inner(a, b);", False),
+        ],
+    )
+    def test_traversal(self, snippet: str, expected: bool) -> None:
+        arg_lists = _first_arg_list_of(snippet)
+        # The OUTERMOST argument_list is the one under test for the
+        # False cases (a bare statement call, a cast, etc.); for the
+        # True cases the inner call's list is what qualifies. Assert
+        # that SOME list matches for True and NONE for False.
+        results = [
+            format_java._is_nested_or_chained_call(node)
+            for node in arg_lists
+        ]
+        assert any(results) is expected, (
+            f"{snippet!r} -> {results}"
+        )
+
+    def test_never_raises_on_detached_node(self) -> None:
+        """A `program`-rooted argument list has no owning call."""
+        tree = format_java.parse_source(b"class A { }")
+        assert (
+            format_java._is_nested_or_chained_call(tree.root_node)
+            is False
+        )
+
+
+class TestIsAnonymousClass:
+    """`new Foo() { … }` owns its rows; `new Foo()` does not."""
+
+    def test_anonymous_class_detected(self) -> None:
+        tree = format_java.parse_source(
+            b"class A { void m() { "
+            b"run(new Runnable() { public void r() { } }); } }"
+        )
+        found = []
+
+        def visit(node) -> None:
+            if node.type == "object_creation_expression":
+                found.append(node)
+            for child in node.children:
+                visit(child)
+
+        visit(tree.root_node)
+        assert found
+        assert format_java._is_anonymous_class(found[0]) is True
+
+    def test_plain_constructor_is_not_anonymous(self) -> None:
+        tree = format_java.parse_source(
+            b"class A { void m() { run(new Foo(a)); } }"
+        )
+        found = []
+
+        def visit(node) -> None:
+            if node.type == "object_creation_expression":
+                found.append(node)
+            for child in node.children:
+                visit(child)
+
+        visit(tree.root_node)
+        assert found
+        assert format_java._is_anonymous_class(found[0]) is False
+
+    def test_non_creation_node_is_not_anonymous(self) -> None:
+        tree = format_java.parse_source(b"class A { }")
+        assert (
+            format_java._is_anonymous_class(tree.root_node) is False
+        )
+
+
+class TestGroupInlineTags:
+    """`{@tag …}` runs become one atomic token — when they fit."""
+
+    def test_link_with_signature_is_one_token(self) -> None:
+        words = "call to {@link Foo#bar(int, Map)} now".split()
+        assert format_java._group_inline_tags(words, 60) == [
+            "call", "to", "{@link Foo#bar(int, Map)}", "now",
+        ]
+
+    def test_nested_braces_close_by_depth(self) -> None:
+        words = "see {@code {a, b}} here".split()
+        assert format_java._group_inline_tags(words, 60) == [
+            "see", "{@code {a, b}}", "here",
+        ]
+
+    def test_oversize_tag_is_left_split(self) -> None:
+        """Grouping a tag wider than the budget would overflow the
+        line, which no later tier could repair — so it stays split."""
+        words = "x {@link Very#long(Signature, Here)} y".split()
+        assert format_java._group_inline_tags(words, 12) == words
+
+    def test_tag_spanning_two_words_is_joined(self) -> None:
+        words = "a {@code x} b".split()
+        assert format_java._group_inline_tags(words, 60) == [
+            "a", "{@code x}", "b",
+        ]
+
+    def test_self_contained_tag_untouched(self) -> None:
+        """Already one token, so depth never opens."""
+        words = "a {@code} b".split()
+        assert format_java._group_inline_tags(words, 60) == words
+
+    def test_unterminated_tag_does_not_consume_rest(self) -> None:
+        words = "a {@link Foo bar baz".split()
+        assert format_java._group_inline_tags(words, 60) == words
+
+
+class TestSplitsInlineTag:
+    """Detect a `{@…}` opening on one line and closing on another."""
+
+    @pytest.mark.parametrize(
+        "lines, expected",
+        [
+            (["a {@link", "Foo} b"], True),
+            (["a {@link Foo} b"], False),
+            (["a", "b"], False),
+            (["{@code {x,", "y}}"], True),
+            (["plain", "{@link Foo} tail"], False),
+            # Prose braces are not a tag: counting every brace
+            # reported a split here and refused good candidates.
+            (["the set {a,", "b} of things"], False),
+            # A nested body closes where it REALLY closes —
+            # cancelling on the first `}` called these unsplit.
+            (["{@code new int[]{1, 2}", "}"], True),
+            (["{@code {a, b}", "tail}"], True),
+            (["{@code Map<K, {V}>", "extra}"], True),
+        ],
+    )
+    def test_detection(
+        self, lines: list[str], expected: bool
+    ) -> None:
+        assert format_java._splits_inline_tag(lines) is expected
+
+
+class TestMinRaggedLines:
+    """Minimum-raggedness fill charges the LAST line too."""
+
+    def test_equalizes_rather_than_packing(self) -> None:
+        """Greedy packs 3/3/1 and strands a lone token; charging
+        the last line's slack too spreads it 2/2/3 instead."""
+        tokens = ["aaaa"] * 7
+        assert format_java._greedy_fill(tokens, 14) == [
+            "aaaa aaaa aaaa", "aaaa aaaa aaaa", "aaaa",
+        ]
+        assert format_java._min_ragged_lines(tokens, 14, 3) == [
+            "aaaa aaaa", "aaaa aaaa", "aaaa aaaa aaaa",
+        ]
+
+    def test_uses_fewer_lines_when_they_suffice(self) -> None:
+        """Balance never buys evenness at the cost of a line: six
+        tokens fit two full lines, so two is the answer."""
+        assert format_java._min_ragged_lines(["aaaa"] * 6, 14, 3) == [
+            "aaaa aaaa aaaa", "aaaa aaaa aaaa",
+        ]
+
+    def test_respects_the_hard_cap(self) -> None:
+        lines = format_java._min_ragged_lines(["aaaa"] * 7, 14, 3)
+        assert all(len(line) <= 14 for line in lines)
+
+    def test_never_exceeds_max_lines(self) -> None:
+        lines = format_java._min_ragged_lines(["aaaa"] * 7, 14, 3)
+        assert len(lines) <= 3
+
+    def test_empty_input(self) -> None:
+        assert format_java._min_ragged_lines([], 40, 3) == []
+
+    def test_infeasible_returns_none(self) -> None:
+        """Six 4-char tokens cannot be placed in one 14-char line."""
+        assert (
+            format_java._min_ragged_lines(["aaaa"] * 6, 14, 1)
+            is None
+        )
+
+    def test_oversize_token_gets_its_own_line(self) -> None:
+        """Per spec C1 the overflow is emitted and warned, not
+        looped on — so a solution must still be produced."""
+        tokens = ["short", "x" * 40, "tail"]
+        lines = format_java._min_ragged_lines(tokens, 20, 3)
+        assert lines is not None
+        assert "x" * 40 in lines
+
+
+class TestJavadocBalancedReflow:
+    """0.7.0's layout is the FLOOR: the candidate is adopted only
+    when it strictly improves, so this can never regress."""
+
+    PREFIX = "     * "
+
+    def _legacy(self, words: list[str]) -> list[str]:
+        return format_java._balanced_reflow_words(
+            words,
+            format_java._MAX_LINE - len(self.PREFIX),
+            only_when_orphaned=True,
+        )
+
+    def test_three_line_orphan_is_distributed(self) -> None:
+        text = (
+            "Returns the total number of milliseconds that elapsed "
+            "from the moment this batch was first created until the "
+            "point at which it was finally closed."
+        )
+        words = text.split()
+        legacy = self._legacy(words)
+        new = format_java._javadoc_balanced_reflow(
+            words, self.PREFIX
+        )
+        assert len(legacy) == 3
+        assert len(legacy[-1].split()) == 1        # the orphan
+        assert new != legacy
+        assert len(new) == 3                       # costs no line
+        assert len(new[-1].split()) > 3            # orphan gone
+
+    def test_split_inline_tag_is_joined(self) -> None:
+        words = (
+            "The identifier of the {@link SampleRequestHandler} "
+            "that accepted this particular request."
+        ).split()
+        legacy = self._legacy(words)
+        new = format_java._javadoc_balanced_reflow(
+            words, self.PREFIX
+        )
+        assert format_java._splits_inline_tag(legacy)
+        assert not format_java._splits_inline_tag(new)
+
+    def test_paragraph_without_orphan_is_left_alone(self) -> None:
+        """No orphan and no split tag means nothing to fix —
+        rewriting it would churn a code base to buy nothing."""
+        words = (
+            "The number of milliseconds to sleep between checks on "
+            "the locks required for tasks that have been postponed."
+        ).split()
+        assert format_java._javadoc_balanced_reflow(
+            words, self.PREFIX
+        ) == self._legacy(words)
+
+    def test_never_costs_a_line(self) -> None:
+        for text in (
+            "Returns the total number of milliseconds that elapsed "
+            "from the moment this batch was first created until the "
+            "point at which it was finally closed.",
+            "The identifier of the {@link SampleRequestHandler} "
+            "that accepted this particular request.",
+            "Indicates whether the pending request should be "
+            "retried automatically after a transient failure has "
+            "been detected by the surrounding retry policy.",
+        ):
+            words = text.split()
+            new = format_java._javadoc_balanced_reflow(
+                words, self.PREFIX
+            )
+            assert len(new) <= len(self._legacy(words))
+            assert all(
+                len(line)
+                <= format_java._MAX_LINE - len(self.PREFIX)
+                for line in new
+            )
+
+    def test_unstable_candidate_is_rejected(self) -> None:
+        """A candidate that puts a long tag at the head of a line
+        can change how the NEXT pass groups the paragraph, because
+        `_emit_javadoc_block` splits there. Such a candidate is
+        refused however good it looks."""
+        words = (
+            "Checks whether this element can be merged with other "
+            "mergeable elements that are identical to it for a "
+            "single call to "
+            "{@link SampleHandler#handleElement(String, Map, int, "
+            "Registry)} with an incrementally increased "
+            "multiplicity."
+        ).split()
+        assert format_java._javadoc_balanced_reflow(
+            words, self.PREFIX
+        ) == self._legacy(words)
+
+    def test_stability_check_sees_the_oscillation(self) -> None:
+        """The rejected layout above really is unstable — replaying
+        one pass over it does not reproduce it."""
+        candidate = [
+            "Checks whether this element can be merged with other",
+            "mergeable elements that are identical to it for a",
+            "single call to",
+            "{@link SampleHandler#handleElement(String, Map, int, "
+            "Registry)}",
+            "with an incrementally increased multiplicity.",
+        ]
+        assert not format_java._javadoc_reflow_is_stable(
+            candidate, self.PREFIX
+        )
+
+
+class TestJavadocReflowIsBoundary:
+    """A candidate line that would end a prose run on the next pass.
+
+    Mirrors both boundary mechanisms in `_emit_javadoc_block`. The
+    `@`-block-tag case is the one that matters: modelling only the
+    `{@`/`<` starters let reflow move a word like `@Override` to the
+    head of a line, which the next pass read as structural and
+    repacked around — output becoming a function of previous output.
+    """
+
+    @pytest.mark.parametrize(
+        "line, expected",
+        [
+            ("{@link Foo} leads the line", True),
+            ("<p>", True),
+            ("<li>an item", True),
+            ("@Override so the compiler can verify", True),
+            ("@param name The thing", True),
+            ("  an indent of its own is structural", True),
+            ("", True),
+            ("ordinary prose continues here", False),
+            ("prose mentioning {@link Foo} mid-line", False),
+            ("prose mentioning @Override mid-line", False),
+        ],
+    )
+    def test_boundary(self, line: str, expected: bool) -> None:
+        assert (
+            format_java._javadoc_reflow_is_boundary(line) is expected
+        )
+
+    def test_agrees_with_the_prose_predicate(self) -> None:
+        """Every non-prose line is a boundary, by construction."""
+        for line in (
+            "@since 1.0", "<ul>", "  hanging", "CSOFF: LineLength",
+        ):
+            assert not format_java._javadoc_is_prose_line(line)
+            assert format_java._javadoc_reflow_is_boundary(line)
+
+
+class TestTagDescriptionSkipsStabilityCheck:
+    """`@param`/`@return`/`@throws` descriptions are re-flattened by
+    their own handler rather than split at `{@`/`<`/`@`, so the
+    prose-path stability check does not apply to them."""
+
+    PREFIX = "     *                  "
+
+    WORDS = (
+        "The principle to filter on which can be <code>null</code> "
+        "to indicate only the counts not associated with a specific "
+        "principle should be included, or <code>\"*\"</code> to "
+        "indicate no filtering, or a specific principle."
+    ).split()
+
+    def test_skip_changes_the_outcome(self) -> None:
+        """Guards the flag: with the check applied this candidate is
+        refused, so the two calls must differ."""
+        with_skip = format_java._javadoc_balanced_reflow(
+            self.WORDS, self.PREFIX, splits_at_boundaries=False
+        )
+        with_check = format_java._javadoc_balanced_reflow(
+            self.WORDS, self.PREFIX, splits_at_boundaries=True
+        )
+        assert with_skip != with_check
+
+    def test_skip_still_respects_the_floor(self) -> None:
+        """Skipping the stability check does not skip the floor: no
+        extra line, nothing over budget."""
+        max_content = format_java._MAX_LINE - len(self.PREFIX)
+        legacy = format_java._balanced_reflow_words(
+            self.WORDS, max_content, only_when_orphaned=True
+        )
+        result = format_java._javadoc_balanced_reflow(
+            self.WORDS, self.PREFIX, splits_at_boundaries=False
+        )
+        assert len(result) <= len(legacy)
+        assert all(len(line) <= max_content for line in result)
+        assert sorted(" ".join(result).split()) == sorted(self.WORDS)
+
+
+class TestDeclarationSemicolonReserve:
+    """A declaration's value must wrap knowing a `;` follows it.
+
+    The declarator cascade's own tier checks always added `+ 1` for
+    the semicolon, but those only choose between shapes — the
+    value's INTERNAL wrap engine saw only `tail_reserve`, packed to
+    exactly 80, and the `;` landed in column 81. The result was
+    idempotent, so it survived every reformat and silently turned
+    compliant source non-compliant.
+    """
+
+    def _format(self, body: str) -> list[str]:
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src, warnings_out=[])
+        return out.decode().split("\n")
+
+    def test_semicolon_does_not_land_in_column_81(self) -> None:
+        lines = self._format(
+            "        String fromStatic = SpecifiedOption"
+            ".sourceDescriptor(COMMAND_LINE, CONFIG, \"--config\");"
+        )
+        assert all(len(line) <= 80 for line in lines), [
+            (len(x), x) for x in lines if len(x) > 80
+        ]
+
+    def test_still_reports_a_value_with_no_split_point(
+        self,
+    ) -> None:
+        """The reserve fixes off-by-one overflow, not impossibility.
+        A single over-long token must still emit-and-warn — and the
+        warning must be the declarator's own, not any warning from
+        anywhere in the file."""
+        warnings: list[object] = []
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            "        String single = "
+            "ThisIsOneExtremelyLongAtomicIdentifierThatCannot"
+            "BeSplitAnywhereAtAllEver;\n    }\n}\n"
+        ).encode()
+        format_java.format_source(src, warnings_out=warnings)
+        assert len(warnings) == 1
+        message = str(
+            getattr(warnings[0], "message", warnings[0])
+        )
+        assert "variable declarator" in message
+        # 86, not 87, because a declarator-level advisory for the
+        # same construct de-duplicates the post-semicolon one away
+        # and the survivor reports one column short. Pre-existing,
+        # and tracked as its own task — when it is fixed this
+        # assertion must move to 87. It is asserted rather than
+        # left loose so the fix cannot land unnoticed.
+        assert "max line width 86" in message
+
+    def test_array_rhs_also_reserves_the_semicolon(self) -> None:
+        """`_emit_variable_declarator_with_array_rhs` runs its own
+        cascade and returns before the four sites above, so it needs
+        the reserve independently. Without it this emits an
+        81-character line, and the result is idempotent."""
+        src = (
+            "class T\n{\n    private static final String[] NAME = "
+            "new String[] { \"e0zzzzzz\", \"e1zzzzzz\" };\n}\n"
+        ).encode()
+        warnings: list[object] = []
+        out = format_java.format_source(src, warnings_out=warnings)
+        lines = out.decode().split("\n")
+        assert all(len(line) <= 80 for line in lines), [
+            (len(x), x) for x in lines if len(x) > 80
+        ]
+        assert not warnings
+
+
+class TestReceiverReserveIgnoresArgumentLayout:
+    """The reserve a chain receiver wraps against must not depend on
+    how the trailing call's arguments were laid out in source.
+
+    It used to be `1 + len(name) + len(FIRST SOURCE LINE of args)`,
+    so `.append(\\n    x)` reserved 8 while `.append(x)` reserved 21.
+    The formatter mapped each layout onto the other and a
+    declaration alternated between them forever — a true two-cycle,
+    not merely a second pass.
+
+    Note these two inputs are both fixed points at the pre-fix
+    baseline AND produce identical output there: the shapes only
+    diverge once the receiver sits close to the margin, which
+    reserving the declaration semicolon is what pushed it into. So
+    this class guards the reserve computation, and goes red when
+    that computation alone is reverted — not when the whole release
+    is.
+    """
+
+    WRAPPED = (
+        "public class T\n{\n    void t()\n    {\n        if (x)\n"
+        "        {\n            StringBuilder errorMessage\n"
+        "                = new StringBuilder(\n"
+        "                    \"Invalid message consumer specified: \""
+        ").append(\n                        consumerType);\n"
+        "        }\n    }\n}\n"
+    )
+    INLINE = (
+        "public class T\n{\n    void t()\n    {\n        if (x)\n"
+        "        {\n            StringBuilder errorMessage = "
+        "new StringBuilder(\n"
+        "                \"Invalid message consumer specified: \""
+        ").append(consumerType);\n        }\n    }\n}\n"
+    )
+
+    def test_both_layouts_reach_the_same_output(self) -> None:
+        a = format_java.format_source(
+            self.WRAPPED.encode(), warnings_out=[]
+        )
+        b = format_java.format_source(
+            self.INLINE.encode(), warnings_out=[]
+        )
+        assert a == b
+
+    def test_each_layout_is_a_fixed_point_after_one_pass(
+        self,
+    ) -> None:
+        for text in (self.WRAPPED, self.INLINE):
+            once = format_java.format_source(
+                text.encode(), warnings_out=[]
+            )
+            twice = format_java.format_source(
+                once, warnings_out=[]
+            )
+            assert once == twice
+
+
+class TestSecondPassConvergence:
+    """Two shapes that only settled on a SECOND format.
+
+    Both were decisions that read source layout the formatter then
+    rewrote, so pass 1 answered from the author's layout and pass 2
+    answered from pass 1's output. Neither fix changes the fixed
+    point — they reach it one pass sooner.
+    """
+
+    def _passes(self, body: str, n: int = 3) -> list[bytes]:
+        out = [body.encode()]
+        for _ in range(n):
+            out.append(
+                format_java.format_source(
+                    out[-1], warnings_out=[]
+                )
+            )
+        return out[1:]
+
+    _FIXTURES = (
+        Path(__file__).resolve().parent / "fixtures"
+    )
+
+    @property
+    def FOR_HEADER(self) -> str:
+        """Read from the fixture so the two cannot drift apart."""
+        return (
+            self._FIXTURES
+            / "condition_wrap"
+            / "12_for_clause_wrap_escalates_whole_header"
+            / "input.java"
+        ).read_text()
+
+    @property
+    def WRAPPED_CONDITION(self) -> str:
+        return (
+            self._FIXTURES
+            / "need_braces"
+            / "23_wrapped_source_condition_still_collapses"
+            / "input.java"
+        ).read_text()
+
+    def test_for_header_converges_on_the_first_pass(self) -> None:
+        first, second, third = self._passes(self.FOR_HEADER)
+        assert first == second == third
+
+    def test_for_clause_wrap_breaks_the_whole_header(self) -> None:
+        """Not the partial break the Anti-pattern section forbids —
+        two clauses packed and one stranded beneath."""
+        text = self._passes(self.FOR_HEADER)[0].decode()
+        assert "line != null;\n" in text
+        assert "; line\n" not in text
+
+    def test_wrapped_condition_converges_on_the_first_pass(
+        self,
+    ) -> None:
+        first, second, third = self._passes(self.WRAPPED_CONDITION)
+        assert first == second == third
+
+    def test_wrapped_condition_still_collapses_to_tier_1(
+        self,
+    ) -> None:
+        """The emitter collapses the condition to one row regardless,
+        so declining Tier 1 because the SOURCE spanned rows only
+        deferred the collapse to the next pass."""
+        text = self._passes(self.WRAPPED_CONDITION)[0].decode()
+        assert (
+            "if (obj == null || this.getClass() != obj.getClass()) "
+            "return false;" in text
+        )
+
+
+
+class TestFieldAccessCommitAndWarn:
+    """`_emit_field_access` must advise on every terminal commit.
+
+    It has three: a named receiver with no break point, a broken form
+    reverted to inline because breaking bought nothing, and the
+    broken form itself. The third was silent — when breaking before
+    the dot NARROWS the line without getting it under the limit
+    (an unsplittable receiver already over 80 on its own), the
+    revert branch's condition is false and the function fell off the
+    end with an over-long line committed and no warning.
+    """
+
+    def _warn_and_widths(self, body: str):
+        src = (
+            "public class T\n{\n" + body + "\n}\n"
+        ).encode()
+        warnings: list[object] = []
+        out = format_java.format_source(src, warnings_out=warnings)
+        text = out.decode()
+        return warnings, [
+            len(line) for line in text.split("\n") if len(line) > 80
+        ]
+
+    def test_break_that_narrows_but_still_overflows_warns(
+        self,
+    ) -> None:
+        """The receiver is a single unsplittable call wider than 80,
+        so breaking the dot trims only the trailing `.someField`."""
+        warnings, over = self._warn_and_widths(
+            "    int u()\n    {\n        return "
+            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "EightyColumnsXXXXXXXXX().someField;\n    }"
+        )
+        assert over, "expected this shape to still overflow"
+        assert warnings, (
+            "an over-long committed line must not ship silently"
+        )
+
+    def test_every_overflow_is_accounted_for(self) -> None:
+        """Two independent overflowing field accesses, in different
+        enclosing constructs, must both be reported."""
+        warnings, over = self._warn_and_widths(
+            "    void t()\n    {\n        consume("
+            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "EightyColumnsXXXXXXXX().someField);\n    }\n\n"
+            "    int u()\n    {\n        return "
+            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "EightyColumnsXXXXXXXXX().someField;\n    }"
+        )
+        assert len(over) == 2
+        assert len(warnings) >= 2
+
+    def test_fitting_field_access_stays_quiet(self) -> None:
+        """The advisory is a no-op when the commit fits, so an
+        ordinary field access must not generate noise."""
+        warnings, over = self._warn_and_widths(
+            "    int u()\n    {\n        return getThing().field;"
+            "\n    }"
+        )
+        assert not over
+        assert not warnings
