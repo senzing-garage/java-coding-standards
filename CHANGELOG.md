@@ -603,6 +603,34 @@ the working tree was clean when the loop exited and its final
 oscillating file it exists to catch. It now records why the loop
 ended rather than inspecting a tree it has already cleaned.
 
+### Multi-declarator statements charge their real suffix
+
+The declaration semicolon fix raises the reserve by exactly one
+around each declarator's value, which is right for the LAST
+declarator in a statement — but a statement can hold several joined
+by `, `, and a non-last declarator is followed by `, name` for each
+one still to come before the `;` ever arrives. So
+
+```java
+        int result = someCallThatFillsRightUpToColumnSeventyNineXXXXXXXX(), other;
+```
+
+committed its first value at column 79, measured `79 + 1 <= 80`, and
+let `, other;` carry the line to 82. Not silent — the statement-level
+advisory catches the on-disk width — but avoidable, since the
+declarator's own cascade would have broken at `=` had it known what
+followed.
+
+The reserve is now charged from the names of the declarators still
+to come, which identifiers emit verbatim, so it is a function of the
+AST rather than of layout. A later declarator carrying its own
+initializer is still under-charged by that initializer's width; that
+is the remaining gap, and strictly smaller than charging nothing.
+
+Zero corpus effect — the style does not occur in the 504-file trial
+corpus, which is why six review rounds did not surface it. Fixture
+`method_decl_wrap/07_multi_declarator_reserves_its_suffix` locks it.
+
 ### Javadoc documentation corrections
 
 Two examples in `docs/java-coding-standards.md` did not match what
@@ -1266,7 +1294,7 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 800/800 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 801/801 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
   found, so a standalone clone collects 587 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency

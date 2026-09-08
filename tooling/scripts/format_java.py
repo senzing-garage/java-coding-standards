@@ -1661,7 +1661,31 @@ def _emit_field_declaration(
     for index, declarator in enumerate(declarators):
         if index > 0:
             emitter.write(", ")
-        _emit_node(emitter, source, declarator)
+        # A non-last declarator is not followed by a bare `;` — it is
+        # followed by `, name` for each declarator still to come, and
+        # THEN the `;`. `_extra_tail_reserve(emitter, 1)` inside the
+        # declarator cascade only ever covers the semicolon, so
+        # `int result = call(), other;` committed its first value at
+        # column 79, measured `79 + 1 <= 80`, and let `, other;` push
+        # the line to 82. Not silent — the advisory below catches the
+        # on-disk width — but avoidable: with the real suffix charged,
+        # the declarator's own cascade breaks at `=` instead.
+        #
+        # Charged from the declarator NAMES, which identifiers emit
+        # verbatim, so this is a function of the AST and not of
+        # layout. A later declarator carrying its own initializer is
+        # under-charged by that initializer's width; that is the
+        # remaining gap, and it is strictly less than charging
+        # nothing.
+        suffix = 0
+        for later in declarators[index + 1:]:
+            later_name = later.child_by_field_name("name")
+            suffix += 2 + (
+                len(_node_source_text(source, later_name))
+                if later_name is not None else 0
+            )
+        with _extra_tail_reserve(emitter, suffix):
+            _emit_node(emitter, source, declarator)
     emitter.write(";")
     # Advise AFTER the `;` is on the line. The wrap engine's own
     # emit-and-warn exits run while the semicolon is still unwritten,
