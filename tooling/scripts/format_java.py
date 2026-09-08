@@ -8597,7 +8597,7 @@ def _emit_field_access(
     # commit point in this file. Both shapes can still overflow: the
     # reverted inline form obviously, but ALSO the broken form, when
     # breaking narrows the line without getting it under the limit —
-    # an unsplittable receiver that is over 80 on its own. Firing only
+    # an unbreakable receiver that is over 80 on its own. Firing only
     # inside the branch above left that second case shipping an
     # over-long line in silence, which is the gap this release closed
     # for parameter lists and javadoc. The advisory is a no-op when

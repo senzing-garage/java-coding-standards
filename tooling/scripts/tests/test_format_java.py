@@ -4674,7 +4674,7 @@ class TestFieldAccessCommitAndWarn:
     reverted to inline because breaking bought nothing, and the
     broken form itself. The third was silent — when breaking before
     the dot NARROWS the line without getting it under the limit
-    (an unsplittable receiver already over 80 on its own), the
+    (an unbreakable receiver already over 80 on its own), the
     revert branch's condition is false and the function fell off the
     end with an over-long line committed and no warning.
     """
@@ -4693,11 +4693,11 @@ class TestFieldAccessCommitAndWarn:
     def test_break_that_narrows_but_still_overflows_warns(
         self,
     ) -> None:
-        """The receiver is a single unsplittable call wider than 80,
+        """The receiver is a single unbreakable call wider than 80,
         so breaking the dot trims only the trailing `.someField`."""
         warnings, over = self._warn_and_widths(
             "    int u()\n    {\n        return "
-            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "extremelyLongUnbreakableXMethodCallThatAloneExceeds"
             "EightyColumnsXXXXXXXXX().someField;\n    }"
         )
         assert over, "expected this shape to still overflow"
@@ -4710,10 +4710,10 @@ class TestFieldAccessCommitAndWarn:
         enclosing constructs, must both be reported."""
         warnings, over = self._warn_and_widths(
             "    void t()\n    {\n        consume("
-            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "extremelyLongUnbreakableXMethodCallThatAloneExceeds"
             "EightyColumnsXXXXXXXX().someField);\n    }\n\n"
             "    int u()\n    {\n        return "
-            "extremelyLongUnsplittableMethodCallThatAloneExceeds"
+            "extremelyLongUnbreakableXMethodCallThatAloneExceeds"
             "EightyColumnsXXXXXXXXX().someField;\n    }"
         )
         assert len(over) == 2
