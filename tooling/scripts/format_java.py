@@ -96,7 +96,7 @@ import argparse
 import sys
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Final, TextIO
 
@@ -216,6 +216,13 @@ class FormatterWarning:
     line: int
     column: int
     message: str
+    width: int = 0
+    """Widest on-disk line this advisory was raised for.
+
+    Kept as a field so the de-duplication in
+    `_fire_wrap_overflow_advisory` can compare two advisories'
+    widths without parsing it back out of `message`.
+    """
 
 
 class Emitter:
@@ -869,9 +876,28 @@ def _fire_wrap_overflow_advisory(
     # pointer for the developer.
     my_start_line = node.start_point[0] + 1
     my_end_line = node.end_point[0] + 1
-    for existing in emitter.warnings:
-        if my_start_line <= existing.line <= my_end_line:
-            return
+    for index, existing in enumerate(emitter.warnings):
+        if not (my_start_line <= existing.line <= my_end_line):
+            continue
+        # The inner advisory is the more actionable pointer, so it
+        # stays — but it measured BEFORE this construct wrote its
+        # own trailing characters, so its width can be short of what
+        # reaches disk. A declaration whose `;` lands in column 87
+        # was reported as 86 for exactly this reason: the surviving
+        # declarator-level advisory had measured without the
+        # semicolon. Carry the larger width across so the number
+        # matches what checkstyle will see, while keeping the inner
+        # line, column and remedy.
+        if max_on_disk > existing.width:
+            emitter.warnings[index] = replace(
+                existing,
+                width=max_on_disk,
+                message=existing.message.replace(
+                    f"max line width {existing.width}",
+                    f"max line width {max_on_disk}",
+                ),
+            )
+        return
     if remedy is None:
         remedy = (
             "Split a long operand or literal so the wrap engine "
@@ -880,6 +906,7 @@ def _fire_wrap_overflow_advisory(
     emitter.warnings.append(FormatterWarning(
         line=node.start_point[0] + 1,
         column=node.start_point[1] + 1,
+        width=max_on_disk,
         message=(
             f"{site_label} wrap could not fit within "
             f"{_MAX_LINE} chars (max line width "

@@ -631,6 +631,34 @@ Zero corpus effect — the style does not occur in the 504-file trial
 corpus, which is why six review rounds did not surface it. Fixture
 `method_decl_wrap/07_multi_declarator_reserves_its_suffix` locks it.
 
+### Advisories report the width that reaches disk
+
+`_fire_wrap_overflow_advisory` de-duplicates when a nested wrap
+engine has already fired for the same span, keeping the inner
+advisory because it points at a smaller, more actionable piece of
+source. But the inner advisory measured BEFORE the outer construct
+wrote its own trailing characters, so the surviving number could be
+short of what checkstyle sees. A declaration whose `;` lands in
+column 87 reported 86, because the surviving declarator-level
+advisory had measured without the semicolon.
+
+The de-duplication now carries the larger width across, keeping the
+inner line, column and remedy. `FormatterWarning` gained a `width`
+field so the comparison does not have to parse the number back out
+of the message.
+
+Across the corpus this corrects **48** advisories, and the
+under-reporting was not always by one — one case reported 82 for a
+92-column line. Counting each advisory against the widest line in
+its file, exact matches go from 51 to 85 while the number that
+over-state stays put at 44. (That count is a bound rather than a
+per-construct measurement: an advisory about a narrow construct in a
+file with a wider line elsewhere is counted as under-reporting. The
+useful signal is the delta — 34 more exact, none newly over-stating.)
+
+Advisory count, output and convergence are all unchanged; only the
+numbers in the messages move.
+
 ### Javadoc documentation corrections
 
 Two examples in `docs/java-coding-standards.md` did not match what

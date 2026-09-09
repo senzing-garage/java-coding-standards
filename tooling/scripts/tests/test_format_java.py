@@ -4511,13 +4511,12 @@ class TestDeclarationSemicolonReserve:
             getattr(warnings[0], "message", warnings[0])
         )
         assert "variable declarator" in message
-        # 86, not 87, because a declarator-level advisory for the
-        # same construct de-duplicates the post-semicolon one away
-        # and the survivor reports one column short. Pre-existing,
-        # and tracked as its own task — when it is fixed this
-        # assertion must move to 87. It is asserted rather than
-        # left loose so the fix cannot land unnoticed.
-        assert "max line width 86" in message
+        # 87 is the real on-disk width. It used to report 86: the
+        # de-duplication kept the declarator-level advisory, which
+        # had measured before the `;` was written. The dedup now
+        # carries the larger width across, so the number an adopter
+        # reads matches what checkstyle sees.
+        assert "max line width 87" in message
 
     def test_array_rhs_also_reserves_the_semicolon(self) -> None:
         """`_emit_variable_declarator_with_array_rhs` runs its own
