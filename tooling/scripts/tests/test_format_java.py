@@ -4513,7 +4513,7 @@ class TestDeclarationSemicolonReserve:
         assert "variable declarator" in message
         # 87 is the real on-disk width. It used to report 86: the
         # de-duplication kept the declarator-level advisory, which
-        # had measured before the `;` was written. The dedup now
+        # had measured before the `;` was written. The de-duplication now
         # carries the larger width across, so the number an adopter
         # reads matches what checkstyle sees.
         assert "max line width 87" in message

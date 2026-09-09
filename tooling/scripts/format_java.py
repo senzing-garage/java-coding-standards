@@ -9823,6 +9823,11 @@ def _emit_argument_list(
             emitter.pop_indent()
 
     def emit_p2b_packed() -> None:
+        # Sets `_arg_list_p4_fired` without saving it, unlike the
+        # sibling tiers. That is safe here: the caller snapshots
+        # immediately before invoking this tier and the flag is part
+        # of the snapshot, so a rejected candidate has it restored;
+        # an accepted one SHOULD leave it set, because P4 did fire.
         # 0.7.0 — "P4-packed": break right after `(` and put EVERY
         # argument on a single continuation line at `line_start + 4`.
         #
@@ -11344,6 +11349,12 @@ def _emit_variable_declarator(
     # value that the formatter collapsed to a long single line:
     # the first pass kept the long line, the second pass saw
     # the now-single-line value and correctly broke at `=`.)
+    # `saved` is taken BEFORE the reset below, and `_anchor_escaped`
+    # is part of the snapshot tuple, so the backtrack path's
+    # `restore(saved)` puts the incoming value back on its own. The
+    # explicit `prev_escaped` restore is only needed on the COMMIT
+    # path, which does not call `restore`. (Reviewers have read this
+    # as a stale-flag leak more than once — it is not one.)
     saved = emitter.snapshot()
     emitter.write(" = ")
     prev_escaped = emitter._anchor_escaped

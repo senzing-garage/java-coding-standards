@@ -22,7 +22,7 @@ the row already open when the argument started — for argument 0 that is
 the call line, whose indent is always left of the continuation column,
 so every wrapping first argument reported a false escape and skipped
 priority 3. Fixed by starting one row later; pinned by
-`arg_list_wrap/18_arg0_wraps_but_paren_aligned_still_fits`.
+`arg_list_wrap/18_arg0_wraps_so_whole_list_breaks`.
 
 Deep orphans across the corpus: **37 → 3**.
 
