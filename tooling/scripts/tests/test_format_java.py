@@ -4666,7 +4666,6 @@ class TestSecondPassConvergence:
         )
 
 
-
 class TestFieldAccessCommitAndWarn:
     """`_emit_field_access` must advise on every terminal commit.
 
