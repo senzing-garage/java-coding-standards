@@ -42,7 +42,7 @@ Coverage
 --------
 
 `format_source()` handles every Java construct exercised by
-the 234 fixture pairs under `tooling/scripts/tests/fixtures/`
+the 235 fixture pairs under `tooling/scripts/tests/fixtures/`
 and every file in the senzing-commons-java consumer codebase
 (106 files, 0 refusals). Constructs deliberately out-of-scope
 for 0.3.0:
@@ -11623,7 +11623,7 @@ def format_source(
 ) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Handles every Java construct exercised by the 234 fixture
+    Handles every Java construct exercised by the 235 fixture
     pairs and every file in the consumer codebases pre-flight
     diff exercise — including classes, interfaces, enums,
     records, methods, constructors, fields, type parameters,

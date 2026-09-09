@@ -4025,27 +4025,40 @@ class TestCli:
 # ---------------------------------------------------------------------------
 
 
-def _first_arg_list_of(snippet: str):
-    """Return the FIRST `argument_list` node in a method body.
+def _nodes_of_type(root, node_type: str) -> list:
+    """Every node of `node_type` under `root`, in pre-order.
 
-    `snippet` is a single statement; it is wrapped in a minimal
-    class so it parses. Pre-order search means the outermost call's
-    argument list is found first, which is the node the nested-call
-    predicates are asked about.
+    Pre-order means outermost first, which is what the nested-call
+    predicates are asked about. Shared by the helpers below rather
+    than re-declared as a local `visit` closure in each one.
+    """
+    found = []
+
+    def visit(node) -> None:
+        if node.type == node_type:
+            found.append(node)
+        for child in node.children:
+            visit(child)
+
+    visit(root)
+    return found
+
+
+def _arg_lists_of(snippet: str) -> list:
+    """ALL `argument_list` nodes in a method body, outermost first.
+
+    Named for what it returns: an earlier name promised the FIRST
+    one while the body returned the whole list, and callers rely on
+    getting all of them (`any(...)` / `none(...)` over the results).
+
+    `snippet` is a single statement, wrapped in a minimal class so
+    it parses.
     """
     src = (
         "class A { void m() { " + snippet + " } }"
     ).encode()
     tree = format_java.parse_source(src)
-    found = []
-
-    def visit(node) -> None:
-        if node.type == "argument_list":
-            found.append(node)
-        for child in node.children:
-            visit(child)
-
-    visit(tree.root_node)
+    found = _nodes_of_type(tree.root_node, "argument_list")
     assert found, f"no argument_list parsed from: {snippet}"
     return found
 
@@ -4098,7 +4111,7 @@ class TestIsNestedOrChainedCall:
         ],
     )
     def test_traversal(self, snippet: str, expected: bool) -> None:
-        arg_lists = _first_arg_list_of(snippet)
+        arg_lists = _arg_lists_of(snippet)
         # The OUTERMOST argument_list is the one under test for the
         # False cases (a bare statement call, a cast, etc.); for the
         # True cases the inner call's list is what qualifies. Assert
@@ -4128,15 +4141,9 @@ class TestIsAnonymousClass:
             b"class A { void m() { "
             b"run(new Runnable() { public void r() { } }); } }"
         )
-        found = []
-
-        def visit(node) -> None:
-            if node.type == "object_creation_expression":
-                found.append(node)
-            for child in node.children:
-                visit(child)
-
-        visit(tree.root_node)
+        found = _nodes_of_type(
+            tree.root_node, "object_creation_expression"
+        )
         assert found
         assert format_java._is_anonymous_class(found[0]) is True
 
@@ -4144,15 +4151,9 @@ class TestIsAnonymousClass:
         tree = format_java.parse_source(
             b"class A { void m() { run(new Foo(a)); } }"
         )
-        found = []
-
-        def visit(node) -> None:
-            if node.type == "object_creation_expression":
-                found.append(node)
-            for child in node.children:
-                visit(child)
-
-        visit(tree.root_node)
+        found = _nodes_of_type(
+            tree.root_node, "object_creation_expression"
+        )
         assert found
         assert format_java._is_anonymous_class(found[0]) is False
 

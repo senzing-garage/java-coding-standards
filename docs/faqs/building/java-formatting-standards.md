@@ -78,7 +78,7 @@ The constructs handled by the wrap engine include:
 
 Unknown node types raise `NotImplementedError` with a clear "not yet supported" diagnostic; the dispatcher never silently passes source text through. The deliberate out-of-scope construct for 0.4.0 is `module_declaration` (no consumer project uses Java modules yet).
 
-The grammar version (`tree-sitter-java==0.23.5`) and the Python binding (`tree-sitter==0.25.2`) are pinned in `tooling/scripts/requirements.txt`. Bumps go through a calibration re-run against the fixture pairs under `tooling/scripts/tests/fixtures/`.
+The grammar version (`tree-sitter-java==0.23.5`) and the Python binding (`tree-sitter==0.26.0`) are pinned in `tooling/scripts/requirements.txt`. Bumps go through a calibration re-run against the fixture pairs under `tooling/scripts/tests/fixtures/`.
 
 `_PARSER` is wrapped in `threading.local`, so the formatter is safe to use from parallel pytest runs, batch formatters, and in-process services.
 
