@@ -4727,3 +4727,63 @@ class TestFieldAccessCommitAndWarn:
         )
         assert not over
         assert not warnings
+
+
+class TestLineLengthExemptMatchesCheckstyle:
+    """`_line_length_exempt` must agree with checkstyle, warts and all.
+
+    The point of the check is to answer "will the build skip this
+    line". Checkstyle asks a regex of the rendered text, so matching
+    its coarseness is correctness: a check that were more precise
+    would make the formatter advise about lines the build ignores,
+    which is the noise the exemption exists to remove.
+
+    Reviewers have read the coarseness as a defect, so the agreement
+    is pinned here rather than argued in prose.
+    """
+
+    # Verbatim from `checkstyle/senzing-checkstyle.xml`'s
+    # `LineLength` / `ignorePattern`.
+    CHECKSTYLE_PATTERN = (
+        r"^package.*|^import.*|a href|href|http://|https://"
+        r"|@snippet|static final.*<.*>"
+    )
+
+    LINES = (
+        "    private static final Map<String, Integer> M = f();",
+        "    private static final int N = 1;",
+        '        log("static final" + " and <this>");',
+        "        // static final Foo<Bar> in a comment",
+        "    static final List<String> xs;",
+        "    int x = 1; // nothing special",
+        "package com.senzing.example;",
+        "import java.util.Map;",
+        "    // see <a href=\"https://example.com/x\">docs</a>",
+        "     * {@snippet lang=java :",
+        "        String s = \"a package. and an import.\";",
+    )
+
+    def test_agrees_with_the_checkstyle_pattern(self) -> None:
+        pattern = re.compile(self.CHECKSTYLE_PATTERN)
+        for line in self.LINES:
+            assert format_java._line_length_exempt(line) is bool(
+                pattern.search(line)
+            ), line
+
+    def test_pattern_is_still_the_one_in_the_config(self) -> None:
+        """Fails if the checkstyle config's `ignorePattern` drifts
+        away from the copy asserted above."""
+        config = (
+            Path(__file__).resolve().parents[3]
+            / "checkstyle"
+            / "senzing-checkstyle.xml"
+        )
+        if not config.exists():          # standalone clone
+            pytest.skip(f"checkstyle config not found: {config}")
+        text = config.read_text()
+        expected = self.CHECKSTYLE_PATTERN.replace("<", "&lt;")
+        expected = expected.replace(">", "&gt;")
+        assert expected in text, (
+            "checkstyle ignorePattern no longer matches the copy in "
+            "this test; reconcile `_line_length_exempt` with it"
+        )

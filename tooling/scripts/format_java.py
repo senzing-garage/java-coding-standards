@@ -3468,7 +3468,17 @@ def _line_length_exempt(text: str) -> bool:
 
     Three of the `ignorePattern` alternatives are not plain
     substrings and so cannot live in `_LINE_LENGTH_EXEMPT_MARKERS`;
-    they are matched structurally here instead. `^package.*` and
+    they are matched structurally here instead.
+
+    The `static final` test is deliberately as COARSE as the regex
+    it mirrors: a plain scan over the rendered line, which also
+    matches `static final` inside a string literal or a comment.
+    That is fidelity, not sloppiness — the job is to answer "will
+    checkstyle skip this line", and checkstyle asks
+    `static final.*<.*>` of the same text. Being more precise would
+    make the formatter advise about lines the build ignores, which
+    is exactly the noise this check exists to remove.
+    `TestLineLengthExemptMatchesCheckstyle` pins the equivalence. `^package.*` and
     `^import.*` are anchored, so they are tested with `startswith`
     on the raw text rather than on a stripped copy — a `package`
     keyword indented inside a line is not a package declaration.
@@ -9917,7 +9927,6 @@ def _emit_argument_list(
         if _is_block_body_lambda(args[0]):
             saved = emitter.snapshot()
             emit_p1()
-            effective_max = _MAX_LINE - emitter.tail_reserve
             # The call/opener line — first finalized line since
             # the P1 emit began, or the in-progress line if
             # nothing was finalized yet (defensive; the block
