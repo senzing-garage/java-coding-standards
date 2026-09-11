@@ -2,8 +2,7 @@ public class Demo
 {
     public String classify(int code)
     {
-        switch (code)
-        {
+        switch (code) {
             case 0:
                 // CSOFF: LineLength
                 return "case zero exceptional long output that the developer wants intact";
