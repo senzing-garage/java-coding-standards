@@ -3482,12 +3482,19 @@ def _line_length_exempt(text: str) -> bool:
     `^import.*` are anchored, so they are tested with `startswith`
     on the raw text rather than on a stripped copy — a `package`
     keyword indented inside a line is not a package declaration.
+    No trailing space is required, because the regex does not
+    require one: `^package.*` matches `packageFoo(…)` too.
+    Demanding the space would be MORE precise than checkstyle and
+    therefore wrong here — the formatter would advise about a line
+    the build ignores, which is the noise this check exists to
+    remove. (An earlier review read the stricter form as an
+    improvement; it is not, given what this function is for.)
     `static final.*<.*>` covers a constant whose generic type
     makes the declaration unbreakable.
     """
     if any(m in text for m in _LINE_LENGTH_EXEMPT_MARKERS):
         return True
-    if text.startswith("package ") or text.startswith("import "):
+    if text.startswith("package") or text.startswith("import"):
         return True
     index = text.find("static final")
     if index >= 0:

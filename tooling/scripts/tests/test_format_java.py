@@ -4761,6 +4761,11 @@ class TestLineLengthExemptMatchesCheckstyle:
         "    // see <a href=\"https://example.com/x\">docs</a>",
         "     * {@snippet lang=java :",
         "        String s = \"a package. and an import.\";",
+        # The anchored alternatives do not require a trailing
+        # space, so these match for checkstyle and must match here.
+        "packageFoo().thatIsVeryLongIndeed();",
+        "importantFlag = computeSomethingRatherLongWinded();",
+        "package;",
     )
 
     def test_agrees_with_the_checkstyle_pattern(self) -> None:
