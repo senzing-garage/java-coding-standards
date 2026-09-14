@@ -4792,3 +4792,62 @@ class TestLineLengthExemptMatchesCheckstyle:
             "checkstyle ignorePattern no longer matches the copy in "
             "this test; reconcile `_line_length_exempt` with it"
         )
+
+
+class TestSnapshotRestoreCoversSpeculationFlags:
+    """`snapshot()`/`restore()` must carry the speculation flags.
+
+    Several wrap tiers set a flag and rely on `restore()` to undo it
+    when their candidate is rejected — `emit_p2b_packed` with
+    `_arg_list_p4_fired`, and `_emit_variable_declarator`'s Step 3
+    with `_anchor_escaped`. Both have been read as unguarded
+    mutations four separate times in review, because the assignment
+    is visible at the tier while the guarantee lives in `Emitter`.
+
+    Pinning it here so the question is answered by the suite rather
+    than re-litigated. If a flag is ever added to the emitter and
+    left out of the snapshot tuple, the tier that sets it will leak
+    across a rejected candidate — and this test will say so.
+    """
+
+    def _roundtrip(self, **mutations: bool) -> dict:
+        emitter = format_java.Emitter()
+        for name in mutations:
+            setattr(emitter, name, False)
+        snap = emitter.snapshot()
+        for name, value in mutations.items():
+            setattr(emitter, name, value)
+        emitter.restore(snap)
+        return {n: getattr(emitter, n) for n in mutations}
+
+    def test_arg_list_p4_fired_is_restored(self) -> None:
+        assert self._roundtrip(_arg_list_p4_fired=True) == {
+            "_arg_list_p4_fired": False
+        }
+
+    def test_anchor_escaped_is_restored(self) -> None:
+        assert self._roundtrip(_anchor_escaped=True) == {
+            "_anchor_escaped": False
+        }
+
+    def test_every_bool_slot_survives_a_roundtrip(self) -> None:
+        """Catches a NEW flag added to `__slots__` but not to the
+        snapshot tuple — the failure mode the two cases above are
+        specific instances of."""
+        emitter = format_java.Emitter()
+        flags = [
+            name for name in format_java.Emitter.__slots__
+            if isinstance(getattr(emitter, name, None), bool)
+        ]
+        assert flags, "expected at least one boolean emitter flag"
+        for name in flags:
+            setattr(emitter, name, False)
+        snap = emitter.snapshot()
+        for name in flags:
+            setattr(emitter, name, True)
+        emitter.restore(snap)
+        leaked = [n for n in flags if getattr(emitter, n) is not False]
+        assert not leaked, (
+            f"flags set during a speculative emit and NOT undone by "
+            f"restore(): {leaked}"
+        )
