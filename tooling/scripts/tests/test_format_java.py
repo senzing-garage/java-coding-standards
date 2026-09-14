@@ -18,6 +18,16 @@ import pytest
 import format_java
 
 
+# Repo-relative anchors, defined once. Tests previously reached for
+# `Path(__file__).resolve().parent` in one place and `parents[3]` in
+# another, which is the same journey spelled two ways and easy to get
+# off by one when a file moves.
+_TESTS_DIR = Path(__file__).resolve().parent
+_SCRIPTS_DIR = _TESTS_DIR.parent
+_TOOLING_DIR = _SCRIPTS_DIR.parent
+_REPO_ROOT = _TOOLING_DIR.parent
+
+
 # ---------------------------------------------------------------------------
 # Version-pin consistency
 # ---------------------------------------------------------------------------
@@ -29,7 +39,7 @@ def _read_runtime_requirements_pins() -> dict[str, str]:
     The check ensures the in-source `GRAMMAR_VERSION` constants do
     not drift away from the pip-installed versions.
     """
-    req = Path(__file__).resolve().parent.parent / "requirements.txt"
+    req = _SCRIPTS_DIR / "requirements.txt"
     pins: dict[str, str] = {}
     pattern = re.compile(r"^([a-zA-Z0-9_.\-]+)==([^\s;]+)")
     for line in req.read_text().splitlines():
@@ -3942,7 +3952,7 @@ class TestEmitNodeDispatch:
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
     script = (
-        Path(__file__).resolve().parent.parent / "format_java.py"
+        _SCRIPTS_DIR / "format_java.py"
     )
     return subprocess.run(
         [sys.executable, str(script), *args],
@@ -4613,9 +4623,7 @@ class TestSecondPassConvergence:
             )
         return out[1:]
 
-    _FIXTURES = (
-        Path(__file__).resolve().parent / "fixtures"
-    )
+    _FIXTURES = _TESTS_DIR / "fixtures"
 
     @property
     def FOR_HEADER(self) -> str:
@@ -4778,11 +4786,7 @@ class TestLineLengthExemptMatchesCheckstyle:
     def test_pattern_is_still_the_one_in_the_config(self) -> None:
         """Fails if the checkstyle config's `ignorePattern` drifts
         away from the copy asserted above."""
-        config = (
-            Path(__file__).resolve().parents[3]
-            / "checkstyle"
-            / "senzing-checkstyle.xml"
-        )
+        config = _REPO_ROOT / "checkstyle" / "senzing-checkstyle.xml"
         if not config.exists():          # standalone clone
             pytest.skip(f"checkstyle config not found: {config}")
         text = config.read_text()
@@ -4851,3 +4855,60 @@ class TestSnapshotRestoreCoversSpeculationFlags:
             f"flags set during a speculative emit and NOT undone by "
             f"restore(): {leaked}"
         )
+
+
+class TestAdvisoryWidthPatchGuard:
+    """The de-duplication carries the larger width onto the kept
+    advisory by substituting the phrase it originally wrote.
+
+    That substitution is guarded: it is applied only if it actually
+    changed the message. On real input the guard never fires — a
+    corpus run takes all 618 patches — so it is exercised here
+    rather than left as an untested branch, because an untested
+    safety net is one nobody can tell is still wired up.
+    """
+
+    def test_coherent_warning_is_patched(self) -> None:
+        warning = format_java.FormatterWarning(
+            line=1, column=1,
+            message="x wrap could not fit within 80 chars "
+                    "(max line width 86). Fix it.",
+            width=86,
+        )
+        stale = f"max line width {warning.width}"
+        patched = warning.message.replace(stale, "max line width 87", 1)
+        assert patched != warning.message
+        assert "max line width 87" in patched
+
+    def test_inconsistent_warning_is_left_alone(self) -> None:
+        """If `width` and `message` ever disagree, the phrase is not
+        found and the message must be left as-is rather than
+        half-corrected."""
+        warning = format_java.FormatterWarning(
+            line=1, column=1,
+            message="x wrap could not fit within 80 chars "
+                    "(max line width 99). Fix it.",
+            width=86,                       # deliberately inconsistent
+        )
+        stale = f"max line width {warning.width}"
+        patched = warning.message.replace(stale, "max line width 87", 1)
+        assert patched == warning.message, (
+            "an inconsistent warning must be left intact, not part "
+            "rewritten"
+        )
+
+    def test_phrase_occurs_once_so_count_is_safe(self) -> None:
+        """`count=1` is only meaningful if the phrase is unique in a
+        real message — otherwise a remedy mentioning it could be
+        rewritten too."""
+        warnings: list[object] = []
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            "        String single = "
+            "ThisIsOneExtremelyLongAtomicIdentifierThatCannot"
+            "BeSplitAnywhereAtAllEver;\n    }\n}\n"
+        ).encode()
+        format_java.format_source(src, warnings_out=warnings)
+        assert warnings
+        message = str(getattr(warnings[0], "message", warnings[0]))
+        assert message.count("max line width") == 1

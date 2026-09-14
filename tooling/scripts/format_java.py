@@ -889,14 +889,26 @@ def _fire_wrap_overflow_advisory(
         # matches what checkstyle will see, while keeping the inner
         # line, column and remedy.
         if max_on_disk > existing.width:
-            emitter.warnings[index] = replace(
-                existing,
-                width=max_on_disk,
-                message=existing.message.replace(
-                    f"max line width {existing.width}",
-                    f"max line width {max_on_disk}",
-                ),
-            )
+            # Patching the rendered message by substring is only safe
+            # because BOTH halves are produced here: the phrase below
+            # is the one this function writes, and `existing.width`
+            # is the number it wrote. If that ever stops holding the
+            # replace would silently no-op and the advisory would
+            # keep understating the width, so the swap is verified
+            # rather than assumed. Note this is about keeping `width`
+            # and `message` COHERENT for any outer nesting level that
+            # reads them next — not about the text an adopter sees.
+            # `print_warnings` renders only `message`, so on a
+            # desync both the old and new code would print the same
+            # stale sentence; the difference is that the pair no
+            # longer disagrees with itself.
+            stale = f"max line width {existing.width}"
+            fresh = f"max line width {max_on_disk}"
+            patched = existing.message.replace(stale, fresh, 1)
+            if patched != existing.message:
+                emitter.warnings[index] = replace(
+                    existing, width=max_on_disk, message=patched
+                )
         return
     if remedy is None:
         remedy = (
