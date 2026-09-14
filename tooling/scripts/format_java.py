@@ -899,7 +899,7 @@ def _fire_wrap_overflow_advisory(
             # and `message` COHERENT for any outer nesting level that
             # reads them next — not about the text an adopter sees.
             # `print_warnings` renders only `message`, so on a
-            # desync both the old and new code would print the same
+            # mismatch both the old and new code would print the same
             # stale sentence; the difference is that the pair no
             # longer disagrees with itself.
             stale = f"max line width {existing.width}"
@@ -5935,6 +5935,10 @@ def _emit_catch_clause(
     for child in cfp.named_children:
         if child.type == "catch_type":
             catch_type = child
+    # Refuse a commented header before emitting anything — every
+    # position a comment can occupy here was either corrupted or
+    # silently dropped. See `_refuse_catch_header_comments`.
+    _refuse_catch_header_comments(node, body)
     name_node = cfp.child_by_field_name("name")
     types: list[Node] = []
     if catch_type is not None:
@@ -5966,8 +5970,32 @@ def _emit_catch_clause(
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
     emitter.write(") ")
+    # Width AND single-line. Catch is the odd one out among the
+    # cascades: its siblings measure with `last_lines_max_width`,
+    # which is multi-row-safe by construction, while this one reads
+    # `emitter.column` — the LAST row only. So a header that had
+    # already wrapped could pass on a narrow final row while an
+    # earlier row was over the limit.
+    #
+    # The conjunct is currently a no-op, and the reason is worth
+    # recording because it was NOT one until recently. Comments are
+    # named children of `catch_type`, so they used to be collected
+    # as union types; a multi-row comment then moved `line_count`
+    # and this check was genuinely load-bearing. The header is now
+    # refused outright if it carries a comment — see
+    # `_refuse_catch_header_comments`, called before anything is
+    # emitted — so no comment node ever reaches this cascade.
+    # Verified across the 504-file corpus and 150 constructed
+    # multi-catch shapes, zero differences either way.
+    #
+    # Kept anyway: it costs one comparison, and the invariant it
+    # states ("line_count must not move") is the one a future
+    # wrapping type emitter would break. Note `write_raw_lines`
+    # appends rows WITHOUT calling `newline()`, so "no emitter calls
+    # newline()" would be the wrong way to phrase that invariant.
     p1_fits = (
         emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+        and emitter.line_count == p1_saved[0]
     )
     if p1_fits:
         _emit_node(emitter, source, body)
@@ -5994,6 +6022,63 @@ def _emit_catch_clause(
         emitter, node, cascade_start, "multi-catch"
     )
     _emit_node(emitter, source, body)
+
+
+def _subtree_has_comment(node: Node) -> bool:
+    """True when a comment sits anywhere in `node`'s subtree."""
+    if node.type in ("line_comment", "block_comment"):
+        return True
+    return any(_subtree_has_comment(c) for c in node.children)
+
+
+def _refuse_catch_header_comments(clause: Node, body: Node) -> None:
+    """Raise when a comment appears anywhere in a catch header.
+
+    A comment can land in several places inside a catch clause.
+    The check walks whole subtrees, so it covers all of them; these
+    three are the ones that were actively mishandled:
+
+      - INSIDE the union. Comments are named children of
+        `catch_type`, so the `" | "` separator was written on both
+        sides of them, emitting `catch (A | /* why */ | B e)`. javac
+        rejects that with "illegal start of type" — the formatter
+        turned compiling source into source that does not compile.
+      - BEFORE the parameter, where it is a sibling of
+        `catch_formal_parameter` and `_emit_catch_clause` never
+        looked at it. Silently dropped.
+      - AFTER the types, where it is a child of
+        `catch_formal_parameter` and only `catch_type` and the name
+        are emitted. Also silently dropped.
+
+    Refusing is conservatism, not necessity. A block comment could
+    be placed in each position with its own rule, and a `//`
+    comment rules out only the INLINE form — the author's own
+    multi-row source is valid Java. What argues against doing that
+    piecemeal is that every position left unhandled keeps silently
+    dropping the comment, which is the worse failure; and no file
+    in the 504-file trial corpus has a comment here at all, so the
+    cost of refusing is close to zero. A refusal is loud, leaves
+    the file untouched, and does not fail the run — see
+    `format_file.py`, which reports it and exits 0. Matches
+    `_refuse_catch_parameter_modifiers`.
+
+    Comments attached to the enclosing `try_statement` rather than
+    to this clause — before `catch`, or before `finally` — are NOT
+    covered and are still silently dropped. Pre-existing, tracked
+    separately.
+
+    The body is excluded — comments there are ordinary statements
+    and already handled.
+    """
+    for child in clause.children:
+        if child.id == body.id:
+            continue
+        if _subtree_has_comment(child):
+            raise NotImplementedError(
+                "a comment inside a catch header is not yet "
+                "supported — it would be dropped or would break the "
+                "type union. Move it above the `try`."
+            )
 
 
 def _refuse_catch_parameter_modifiers(cfp: Node) -> None:
@@ -6050,11 +6135,15 @@ def _emit_catch_type(
     wrapping forms from that section land with the wrap-
     priority phase.
     """
+    # Separators go between TYPES. Comments cannot appear here: the
+    # caller refuses a catch header carrying any, via
+    # `_refuse_catch_header_comments`. See that function for why a
+    # refusal rather than a rendering.
     types = [c for c in node.children if c.is_named]
-    for index, t in enumerate(types):
+    for index, ty in enumerate(types):
         if index > 0:
             emitter.write(" | ")
-        _emit_node(emitter, source, t)
+        _emit_node(emitter, source, ty)
 
 
 def _emit_finally_clause(

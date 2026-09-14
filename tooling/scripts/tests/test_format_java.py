@@ -4912,3 +4912,69 @@ class TestAdvisoryWidthPatchGuard:
         assert warnings
         message = str(getattr(warnings[0], "message", warnings[0]))
         assert message.count("max line width") == 1
+
+
+class TestCatchHeaderComments:
+    """A comment in a catch header is refused, not mangled.
+
+    Three positions, all previously mishandled:
+
+    - INSIDE the union, where comments are named children of
+      `catch_type` and so were given `" | "` separators on both
+      sides — emitting `catch (A | /* why */ | B e)`, which javac
+      rejects with "illegal start of type". The formatter was
+      turning compiling source into source that does not compile.
+    - BEFORE the parameter, a sibling of `catch_formal_parameter`
+      that `_emit_catch_clause` never looked at. Dropped.
+    - AFTER the types, a child of `catch_formal_parameter` where
+      only `catch_type` and the name are emitted. Dropped.
+
+    Handling some positions and not others leaves the other holes,
+    so all of them raise.
+    """
+
+    HEADERS = (
+        "catch (IllegalStateException /* in */ | java.io.IOException e)",
+        "catch (/* lead */ IllegalStateException | java.io.IOException e)",
+        "catch (IllegalStateException | java.io.IOException /* t */ e)",
+        "catch (IllegalStateException // why\n        | java.io.IOException e)",
+        "catch (IllegalStateException /* a */ | java.io.IOException /* b */ e)",
+    )
+
+    def _fmt(self, header: str) -> str:
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            "        try { risky(); }\n        " + header +
+            " { }\n    }\n}\n"
+        ).encode()
+        return format_java.format_source(src, warnings_out=[]).decode()
+
+    @pytest.mark.parametrize("header", HEADERS)
+    def test_every_comment_position_is_refused(
+        self, header: str
+    ) -> None:
+        with pytest.raises(NotImplementedError, match="catch header"):
+            self._fmt(header)
+
+    def test_uncommented_multi_catch_still_formats(self) -> None:
+        """The refusal must be narrow — an ordinary union is
+        unaffected."""
+        text = self._fmt(
+            "catch (IllegalStateException | java.io.IOException e)"
+        )
+        header = next(l for l in text.split("\n") if "catch (" in l)
+        assert header.count("|") == 1, header
+        assert "IllegalStateException" in header
+
+    def test_comment_in_the_catch_body_is_not_refused(self) -> None:
+        """Only the header is refused; a comment among the body's
+        statements is an ordinary statement comment."""
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            "        try { risky(); }\n"
+            "        catch (IllegalStateException e) {\n"
+            "            // ordinary\n            handle(e);\n"
+            "        }\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src, warnings_out=[]).decode()
+        assert "// ordinary" in out

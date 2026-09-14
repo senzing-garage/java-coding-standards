@@ -659,6 +659,65 @@ useful signal is the delta — 34 more exact, none newly over-stating.)
 Advisory count, output and convergence are all unchanged; only the
 numbers in the messages move.
 
+### A comment in a catch header no longer breaks the code
+
+`catch_type`'s comments are NAMED children in the grammar, so the
+emitter collected them as union members and wrote a separator on
+each side:
+
+```java
+    catch (IllegalStateException | /* why this one */
+           | java.io.IOException e) {
+```
+
+javac rejects that — `error: illegal start of type`. The formatter
+was turning source that compiles into source that does not, which is
+the worst thing a formatter can do. Confirmed with javac in both
+directions: the hand-written input compiles, the formatted output
+did not.
+
+Chasing it turned up two more positions inside the clause, both
+silently LOSING the comment rather than corrupting the syntax. A comment before the
+parameter is a sibling of `catch_formal_parameter`, which the catch
+emitter never looked at. One after the types is a child of that
+parameter, where only the type and the name are emitted. Neither
+appeared in the output at all.
+
+A comment anywhere inside a catch clause is now REFUSED rather than
+rendered. This is conservatism rather than necessity: each position
+could be given its own placement rule, and a `//` comment rules out
+only the inline form — the author's own multi-row source is valid
+Java. What argues against doing it piecemeal is that any position
+left unhandled goes on silently dropping the comment, which is the
+worse failure. Deleting the comments would also have "fixed" the
+syntax, and was rejected on the same principle: a formatter may not
+buy valid output with the author's text.
+
+A refusal is loud, leaves the file byte-identical, and does not fail
+the run — the CLI reports it and exits 0 — so an adopter gets one
+stderr line naming the file and the remedy while everything else
+still formats. It matches how the formatter already refuses
+modifiers on a catch parameter. No file in the 504-file trial corpus
+has a comment here, so the practical cost is close to zero.
+
+**Still open, and NOT covered by this.** Comments attached to the
+enclosing `try_statement` rather than to the catch clause are
+outside the refusal's reach and are still silently dropped:
+`/* before catch */` between the try block and `catch`, and
+`/* pre finally */` before `finally`. Both verified. They are
+pre-existing and belong to a different emitter; they are tracked
+separately rather than fixed here, so comment loss around
+`try`/`catch` is narrowed by this release, not closed.
+
+The refusal is narrow. An ordinary union still formats, and a
+comment among the catch BODY's statements is untouched — that is an
+ordinary statement comment.
+
+Seven tests cover it: the three positions, both comment syntaxes,
+the narrowness in both directions. Five fail if the refusal is
+removed. No corpus file has a comment in a catch header, which is
+why this survived to here.
+
 ### Javadoc documentation corrections
 
 Two examples in `docs/java-coding-standards.md` did not match what
@@ -1322,9 +1381,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 801/801 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 816/816 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 587 and the 210 missing
+  found, so a standalone clone collects 606 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
