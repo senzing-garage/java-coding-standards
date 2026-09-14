@@ -670,9 +670,9 @@ each side:
            | java.io.IOException e) {
 ```
 
-javac rejects that — `error: illegal start of type`. The formatter
+the Java compiler rejects it — `error: illegal start of type`. The formatter
 was turning source that compiles into source that does not, which is
-the worst thing a formatter can do. Confirmed with javac in both
+the worst thing a formatter can do. Confirmed with the compiler in both
 directions: the hand-written input compiles, the formatted output
 did not.
 

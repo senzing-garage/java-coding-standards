@@ -6040,9 +6040,10 @@ def _refuse_catch_header_comments(clause: Node, body: Node) -> None:
 
       - INSIDE the union. Comments are named children of
         `catch_type`, so the `" | "` separator was written on both
-        sides of them, emitting `catch (A | /* why */ | B e)`. javac
-        rejects that with "illegal start of type" — the formatter
-        turned compiling source into source that does not compile.
+        sides of them, emitting `catch (A | /* why */ | B e)`.
+        The Java compiler rejects that with "illegal start of
+        type" — the formatter turned compiling source into source
+        that does not compile.
       - BEFORE the parameter, where it is a sibling of
         `catch_formal_parameter` and `_emit_catch_clause` never
         looked at it. Silently dropped.

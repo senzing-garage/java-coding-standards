@@ -4921,7 +4921,7 @@ class TestCatchHeaderComments:
 
     - INSIDE the union, where comments are named children of
       `catch_type` and so were given `" | "` separators on both
-      sides — emitting `catch (A | /* why */ | B e)`, which javac
+      sides — emitting `catch (A | /* why */ | B e)`, which the Java compiler
       rejects with "illegal start of type". The formatter was
       turning compiling source into source that does not compile.
     - BEFORE the parameter, a sibling of `catch_formal_parameter`
