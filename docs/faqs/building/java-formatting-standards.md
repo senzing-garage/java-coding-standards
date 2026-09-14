@@ -78,7 +78,7 @@ The constructs handled by the wrap engine include:
 
 Unknown node types raise `NotImplementedError` with a clear "not yet supported" diagnostic; the dispatcher never silently passes source text through. The deliberate out-of-scope construct for 0.4.0 is `module_declaration` (no consumer project uses Java modules yet).
 
-The grammar version (`tree-sitter-java==0.23.5`) and the Python binding (`tree-sitter==0.25.2`) are pinned in `tooling/scripts/requirements.txt`. Bumps go through a calibration re-run against the fixture pairs under `tooling/scripts/tests/fixtures/`.
+The grammar version (`tree-sitter-java==0.23.5`) and the Python binding (`tree-sitter==0.26.0`) are pinned in `tooling/scripts/requirements.txt`. Bumps go through a calibration re-run against the fixture pairs under `tooling/scripts/tests/fixtures/`.
 
 `_PARSER` is wrapped in `threading.local`, so the formatter is safe to use from parallel pytest runs, batch formatters, and in-process services.
 
@@ -146,6 +146,19 @@ The 0.4.2 release adds three generalizable patterns to the wrap engine, and 0.4.
 - **`_attach_trailing_side_comments` shared helper** — spec C6 "End-of-line side comments" attaches a `line_comment` (or single-row `block_comment`) to the preceding statement's emitted line with two spaces of separation, instead of detaching it onto its own line. The helper centralizes the same-row attachment rule for `_emit_indented_member_list` (method / constructor / static-initializer bodies, switch-block cases) and `_emit_block` (control-flow blocks). Multi-row block comments are intentionally not attached (the attachment loop's blank-line tracking assumes the comment ends on its own start row).
 
 ### Additional patterns in 0.4.3
+
+> **Superseded in 0.7.0 — read this first.** The three bullets below that
+> describe `_arg_list_takes_source_preserve_path`'s width gates (the
+> shared predicate's `first_line_fits` check, the width-based opt-out,
+> and the paren-alignment inversion check that consulted them) describe
+> mechanics that **no longer exist**. Source preservation now fires only
+> for interleaved comments and `// CSOFF` regions; every other multi-row
+> argument list goes to the wrap engine. `_arg_list_single_line_estimate`
+> and `_estimate_normalize` were deleted along with the gates that used
+> them. They are retained here as a record of what 0.4.3 did and why.
+> For the current rules, the reasons for the retirement, and the
+> idempotency trap that motivated it, see the
+> `building/source-preservation-history` FAQ.
 
 - **`_arg_list_takes_source_preserve_path` shared predicate** — the arg-list emitter and the method-chain P1 discriminator now consult the same column-sensitive check (`_node_spans_multiple_rows(args)` AND `first_line_fits(args_emit_column)` OR has-comment OR in-CSOFF). The chain discriminator can't just guess from source-row count alone, because the arg-list emitter falls through to the wrap engine when the source's first line doesn't fit at the new emission column — and that wrap-engine output strands subsequent chain segments. Sharing the predicate is what keeps the two sites in agreement. Generalization of the same "outer construct must predict what inner construct will actually do" principle the 0.4.2 P1 newline-rejection gate established.
 
