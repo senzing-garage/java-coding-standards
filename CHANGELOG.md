@@ -414,8 +414,9 @@ charge of what follows it. No corpus file changes.
 ### Re-indenting a text block no longer changes what it prints
 
 The most serious defect found in this release's review rounds. It is
-**not** new in 0.7.0 — `_emit_text_block` is byte-identical to
-0.6.0's — but 0.7.0 widened the set of code that reaches it.
+**not** new in this release — `_emit_text_block` is byte-identical
+to 0.6.0's, and 0.6.0 ships it today — but the argument-column work
+here widened the set of code that reaches it, until the fix below.
 
 `_emit_text_block` shifts a text block so its closing `"""` reaches
 the target column. A uniform shift is safe — JLS 3.10.6 strips the
@@ -432,7 +433,7 @@ AAAA
     BBBB
                 """);
 
-        // 0.7.0 before this fix — prints "AAAA\nBBBB\n"
+        // this branch before the fix — prints "AAAA\nBBBB\n"
         String s = go("""
 AAAA
 BBBB
@@ -450,8 +451,9 @@ positions and **216 of 216** for assignment, because in argument
 position 0.6.0 emits the list through source preservation instead.
 So the escape is about which positions reach the emitter, not about
 which direction it shifts. Put the same text block on the right of
-an assignment and 0.6.0 corrupts it exactly as 0.7.0 does, both
-printing `AAAA\nBBBB\n`.
+an assignment and 0.6.0 corrupts it exactly as this branch did,
+both printing `AAAA\nBBBB\n` — and 0.6.0 still does, which is what
+this fix ends.
 
 The clamp rested on a comment asserting that "the compiler will
 reject any source where a content line is indented less than the
@@ -467,25 +469,35 @@ content lines and the closing delimiter at each of columns
 0/4/8/16/24/32, in four syntactic positions, 864 blocks per
 formatter:
 
-| text block in… | 0.6.0  | 0.7.0 before | after |
-| -------------- | ------ | ------------ | ----- |
-| assignment     | 62/216 | 62/216       | 0/216 |
-| sole argument  | 0/216  | 62/216       | 0/216 |
-| last of two    | 0/216  | 62/216       | 0/216 |
-| first of two   | 0/216  | 62/216       | 0/216 |
-| **total**      | **62** | **248**      | **0** |
+| text block in… | 0.6.0 (released) | this branch, before | after |
+| -------------- | ---------------- | ------------------- | ----- |
+| assignment     | 62/216           | 62/216              | 0/216 |
+| sole argument  | 0/216            | 62/216              | 0/216 |
+| last of two    | 0/216            | 62/216              | 0/216 |
+| first of two   | 0/216            | 62/216              | 0/216 |
+| **total**      | **62**           | **248**             | **0** |
+
+Only the first column has ever been released: `0.6.0` is the current
+tag and `main`'s formatter is byte-identical to it. The middle column
+is this branch immediately before the fix, so the rise from 62 to 248
+was never in anyone's hands — it appeared and was removed inside this
+release. What reaches adopters is the first column against the third:
+**62 failing shapes in the version they run today, none after they
+bump.**
 
 A second sweep — 4,000 randomly generated blocks per formatter, one
 to four content lines at irregular columns up to 48, adding `return`
 as a fifth position, repeated over three seeds — agrees on the
 shape of the result. 0.6.0 fails in assignment and `return` position
 and in no argument position (513-529 hits, none outside those two);
-0.7.0 fails in all five (1,362); the fix fails in none, on every
-seed.
+this branch before the fix failed in all five (1,362); the fix fails
+in none, on every seed.
 
-So 0.7.0 did not create this bug. 0.6.0 already corrupted a text
-block assigned to a variable or returned directly; what 0.7.0's
-argument-column changes added was the three call positions. The
+So 0.7.0 does not create this bug and does not ship it. 0.6.0
+already corrupts a text block assigned to a variable or returned
+directly, and still does; what this release's argument-column
+changes briefly added, before the fix below, was the three call
+positions. The
 ratio between the two depends entirely on which shapes a grid
 happens to contain, so no multiplier is quoted here.
 
