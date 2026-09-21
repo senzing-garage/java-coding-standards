@@ -1044,18 +1044,30 @@ def _emit_text_block(emitter: Emitter, text: str) -> None:
     """Emit a Java triple-quoted text block (spec B4).
 
     The opening `\"\"\"` ends the line that introduces it (after
-    `=`, `(`, `,`, `return`, etc.); the closing `\"\"\"` sits on
-    its own line at +4 from the introducing statement's column
-    (single-indent past the statement). Content lines are at
-    the same column as the closing `\"\"\"` or further right.
+    `=`, `(`, `,`, `return`, etc.); the closing `\"\"\"` normally
+    sits on its own line at +4 from the introducing statement's
+    column (single-indent past the statement), stopping short of
+    that when reaching it would distort the content — see the
+    cap on `delta` below. Content may sit at the closing
+    delimiter's column, to its right, or to its LEFT.
 
     Content preservation: lines are re-emitted byte-for-byte
     EXCEPT for a uniform shift of leading whitespace so the
     closing-`\"\"\"` column matches the new indent context.
-    Per JLS § 3.10.6 ("Incidental White Space"), all non-blank
-    content lines have leading whitespace ≥ the closing
-    delimiter's column, so a single delta shifts every line
-    consistently and preserves the rendered string verbatim.
+    Because the shift is uniform it preserves the rendered
+    string: JLS § 3.10.6 ("Incidental White Space") strips the
+    MINIMUM leading whitespace across the non-blank content
+    lines and the closing delimiter's line, and moving them all
+    together moves that minimum with them.
+
+    Content may legally sit to the LEFT of the closing
+    delimiter — the delimiter is one participant in that
+    minimum, not a floor beneath the content. An earlier version
+    of this docstring claimed the opposite and the code below
+    relied on it, clamping individual lines at column 0 and so
+    silently changing the compiled string. A leftward shift is
+    now capped instead; see the comment on `delta`.
+
     Blank lines stay blank (they're stripped by the compiler's
     incidental-whitespace removal regardless of any leading
     whitespace they carry).
@@ -1075,6 +1087,34 @@ def _emit_text_block(emitter: Emitter, text: str) -> None:
     # so the closing delimiter goes at `+4` of that level.
     new_indent = (emitter.indent_level + 1) * 4
     delta = new_indent - closing_indent
+    # A uniform shift — in either direction — preserves the
+    # compiled string, because JLS 3.10.6 strips the MINIMUM
+    # leading whitespace over the non-blank content lines and
+    # the closing delimiter's line. Moving all of them together
+    # moves that minimum with them.
+    #
+    # What does not preserve it is clamping an individual line
+    # at column 0 while its neighbors shift, which silently
+    # rewrites the string's value. Content is allowed to sit
+    # LEFT of the closing delimiter — the delimiter is one
+    # participant in the minimum, not a floor — so cap a
+    # leftward shift at the smallest indent actually present.
+    # The closing `"""` then lands short of its target column,
+    # which is a layout compromise; changing what the program
+    # prints is not.
+    if delta < 0:
+        content_indents = [
+            len(line) - len(line.lstrip(" "))
+            for line in lines[1:]
+            if line.strip() != ""
+        ]
+        # Non-empty by construction: `lines[-1]` is the closing
+        # line, it carries the `\"\"\"` so it is never blank, and
+        # `len(lines) >= 2` was checked above — so it is always
+        # in this list. Guarded anyway rather than indexed, to
+        # keep `min()` total.
+        if content_indents:
+            delta = max(delta, -min(content_indents))
     if delta == 0:
         emitter.write_raw_lines(text)
         return
@@ -1092,22 +1132,12 @@ def _emit_text_block(emitter: Emitter, text: str) -> None:
         elif delta > 0:
             adjusted.append(" " * delta + line)
         elif delta < 0:
-            # Remove `-delta` leading spaces. Valid Java text
-            # blocks always have content lines with leading
-            # whitespace ≥ the closing-delimiter column per
-            # JLS § 3.10.6 ("Incidental White Space"), so this
-            # is safe — the `lstrip` fallback covers malformed
-            # inputs that wouldn't compile anyway. The compiler
-            # will reject any source where a content line is
-            # indented less than the closing `"""`; the
-            # formatter just avoids crashing on it so the rest
-            # of the file can still be processed.
-            stripped = line.lstrip(" ")
-            leading = len(line) - len(stripped)
-            if leading >= -delta:
-                adjusted.append(line[-delta:])
-            else:
-                adjusted.append(stripped)
+            # Remove `-delta` leading spaces. `delta` was capped
+            # above at the smallest indent present, so every
+            # non-blank line has at least that much to give and
+            # no line can be clamped out of alignment with its
+            # neighbors.
+            adjusted.append(line[-delta:])
     emitter.write_raw_lines("\n".join(adjusted))
 
 
@@ -2678,10 +2708,12 @@ def _emit_parenthesized_expression(
     # Using `_arg_list_takes_source_preserve_path` here (rather
     # than scanning the source text directly) avoids the false
     # positive where a low-col continuation in the source comes
-    # from an arg list that Bug 4's width opt-out will collapse
-    # to single-line. Those don't actually source-preserve, so
-    # their source columns are irrelevant to the inversion
-    # check.
+    # from an arg list that will NOT source-preserve and so gets
+    # reflowed. Its source columns are irrelevant to the
+    # inversion check. Before 0.7.0 the common such case was an
+    # arg list collapsed by the width opt-out; that opt-out is
+    # gone, and the predicate now declines anything without
+    # interleaved comments or a CSOFF region.
     apply_paren_align = not _inner_would_invert_paren_align(
         emitter, source, inner, emitter.column
     )
@@ -2722,17 +2754,13 @@ def _inner_would_invert_paren_align(
     Walks the inner tree top-down. For each `argument_list`
     node visited, consults
     `_arg_list_takes_source_preserve_path` to determine whether
-    the arg list will actually take the verbatim-emit path. The
-    column passed to the predicate is `proposed_col` — a lower
-    bound on the arg list's eventual emit column (since the arg
-    list will be nested deeper than the paren whose alignment
-    we're considering). Using a lower bound makes the predicate's
-    width opt-out fire more aggressively (more arg lists treated
-    as "Bug 4 collapses"), which gives a safe under-detection
-    bias: we may miss declining paren-align in cases where the
-    actual inner emit column is larger and source-preservation
-    kicks in — at worst this leaves the inversion in place,
-    same as pre-0.4.3 behavior for those nested cases.
+    the arg list will actually take the verbatim-emit path. That
+    predicate is column-insensitive — it fires on interleaved
+    comments and CSOFF regions, both correctness reasons — so
+    this walk needs no estimate of the column the arg list would
+    eventually be emitted at. `proposed_col` is used only in the
+    comparison below, against the indentation the preserved
+    source actually carries.
     """
     stack = [inner]
     while stack:
@@ -9152,12 +9180,64 @@ def _is_anonymous_class(node: Node) -> bool:
     return any(c.type == "class_body" for c in node.named_children)
 
 
+def _unwrap_parens(node: Node) -> Node:
+    """Strip redundant `( … )` layers and return the expression.
+
+    Comments are filtered out because tree-sitter-java exposes a
+    leading `//` / `/* */` as a named child, so `named[0]` could
+    otherwise unwrap to the comment instead of the expression.
+    """
+    while node.type == "parenthesized_expression":
+        named = [
+            c for c in node.children
+            if c.is_named
+            and c.type not in ("line_comment", "block_comment")
+        ]
+        if not named:
+            break
+        node = named[0]
+    return node
+
+
+def _is_text_block(node: Node) -> bool:
+    """Return True for a Java text block (`\"\"\" … \"\"\"`).
+
+    tree-sitter-java exposes NO `text_block` node type. A text
+    block is a `string_literal` whose delimiters are `\"\"\"`
+    rather than `\"`, carrying `multiline_string_fragment`
+    children instead of `string_fragment`. Testing
+    `node.type == "text_block"` therefore never fires — it was
+    doing exactly that here, which is why a text-block argument
+    was not recognized as owning its rows.
+
+    Keyed on the opening delimiter rather than on the presence
+    of a fragment child so that an empty text block still
+    matches.
+
+    There is a second, deliberately different test in
+    `_emit_verbatim`, which asks the same question of the
+    literal's SOURCE TEXT (`text.startswith('\\"\\"\\"')` together
+    with `text.rstrip().endswith('\\"\\"\\"')`). That one runs
+    where the token's text is already in hand and no node is;
+    this one runs where a node is in hand and its text is not.
+    Before adding a third, use one of these two.
+    """
+    return (
+        node.type == "string_literal"
+        and node.child_count > 0
+        and node.children[0].type == '"""'
+    )
+
+
 def _arg_owns_its_rows(arg: Node) -> bool:
     """True when `arg` spanning rows is inherent, not a wrap.
 
-    Block-bodied lambdas, text blocks and anonymous classes occupy
-    several rows by their nature; every other construct occupies
-    several rows only because something wrapped it. That distinction
+    Block-bodied lambdas, text blocks, anonymous classes and
+    switch expressions occupy several rows by their nature — each
+    is brace- or delimiter-bounded, so the reader sees a closed
+    block rather than a dangling continuation. Every other
+    construct occupies several rows only because something
+    wrapped it. That distinction
     is what the 0.7.0 "if an argument breaks, the argument list
     breaks" rule keys on.
 
@@ -9170,11 +9250,17 @@ def _arg_owns_its_rows(arg: Node) -> bool:
     again. That oscillated
     `arguments(Rectangle.class, Set.of(...), ...)` between two
     shapes on alternate passes.
+
+    Redundant parentheses are stripped first: `((k, v) -> { … })`
+    is still a block-bodied lambda, and a spare paren layer the
+    author happened to type must not change the shape.
     """
+    arg = _unwrap_parens(arg)
     return (
         _is_block_body_lambda(arg)
-        or arg.type == "text_block"
+        or _is_text_block(arg)
         or _is_anonymous_class(arg)
+        or arg.type == "switch_expression"
     )
 
 
@@ -9407,9 +9493,15 @@ def _emit_argument_list(
     # P2-greedy / P4 cascade unchanged — spec C6's extension
     # to call parens applies only when there is a single arg
     # to anchor.
+    # Unwrapped, like the three structural tests in the
+    # single-argument branch below: `log(("a" + x))` and
+    # `log("a" + x)` must reach the same shape. This is not
+    # inert — dropping the unwrap sends a parenthesized binary
+    # down the escalation path instead of spec C6's
+    # paren-aligned one, changing its output.
     single_arg_binary = (
         len(args) == 1
-        and args[0].type == "binary_expression"
+        and _unwrap_parens(args[0]).type == "binary_expression"
     )
 
     def _emit_arg_with_optional_paren_align(arg: Node) -> None:
@@ -9468,18 +9560,30 @@ def _emit_argument_list(
                 emitter.set_paren_align_col(prev_align)
         else:
             cont_col = emitter.column
-            prev_arg_multi_row = False
+            any_prior_arg_multi_row = False
             for index, arg in enumerate(args):
                 if index > 0:
-                    if prev_arg_multi_row:
+                    if any_prior_arg_multi_row:
                         # Item 8 invariant in arg-list P1:
-                        # when the previous arg emitted
+                        # once ANY earlier arg emitted
                         # multi-row (a nested call / lambda /
-                        # binary wrapped), break before this
-                        # arg so it doesn't jam onto the
+                        # binary wrapped, or a text block or
+                        # other row-owning form), break before
+                        # this arg so it doesn't jam onto the
                         # wrapped construct's tail line. The
                         # break lands at the call's post-`(`
                         # column.
+                        #
+                        # The flag is STICKY, not just "the
+                        # arg immediately before me". Testing
+                        # only the previous arg put the first
+                        # argument after a text block on its
+                        # own line and then packed the next one
+                        # onto it — a shape the standards
+                        # document has never allowed. The
+                        # exemptions above made that reachable
+                        # by letting a text block keep P1, so
+                        # the two changes ship together.
                         emitter.write(",")
                         emitter.newline()
                         emitter.write(" " * cont_col)
@@ -9487,10 +9591,13 @@ def _emit_argument_list(
                         emitter.write(", ")
                 operand_start = emitter.line_count
                 _emit_arg_with_optional_paren_align(arg)
-                prev_arg_multi_row = (
+                this_arg_multi_row = (
                     emitter.line_count > operand_start
                 )
-                if prev_arg_multi_row and not _arg_owns_its_rows(arg):
+                any_prior_arg_multi_row = (
+                    any_prior_arg_multi_row or this_arg_multi_row
+                )
+                if this_arg_multi_row and not _arg_owns_its_rows(arg):
                     p1_invalid_wrap[0] = True
         emitter.write(")")
 
@@ -10007,6 +10114,15 @@ def _emit_argument_list(
     # which made the decision flip between formatter passes.
     cascade_start = emitter.line_count
     if len(args) == 1:
+        # Every STRUCTURAL test below asks what shape the sole
+        # argument is, so each one asks it of the expression
+        # rather than of whatever parentheses surround it. A
+        # spare paren layer is the author's punctuation, not a
+        # different construct, and letting it change the answer
+        # is what made `((k, v) -> { … })` miss the block-lambda
+        # carve-out. Emission still uses `args[0]`, parens and
+        # all — only the decisions are taken on `sole_arg`.
+        sole_arg = _unwrap_parens(args[0])
         # 0.7.0 fix (item A): when the single arg is a
         # block-body lambda (`.method(() -> { body })`), the
         # lambda body's own line widths are the body's
@@ -10033,7 +10149,7 @@ def _emit_argument_list(
         # LINE (up through `() -> {`) and the CLOSING LINE
         # (`})`) need to fit at the enclosing widths. Body
         # lines are the body's own concern.
-        if _is_block_body_lambda(args[0]):
+        if _is_block_body_lambda(sole_arg):
             saved = emitter.snapshot()
             emit_p1()
             # The call/opener line — first finalized line since
@@ -10093,13 +10209,29 @@ def _emit_argument_list(
         # before 0.7.0, because the two columns could rank
         # differently on the second pass. A single monotone
         # did-it-wrap check has no such failure mode.
-        if args[0].type in (
+        # `sole_arg` rather than `args[0]` for uniformity with
+        # the other structural tests, but unlike them this one
+        # currently changes nothing: a parenthesized call that
+        # misses this rule falls through to the generic cascade
+        # below, which rejects P1 on the same wrap and offers the
+        # same two P4 candidates. Reverting this one test leaves
+        # the 504-file corpus byte-identical. It is written this
+        # way so these tests cannot drift apart, not because a
+        # case is known to distinguish them — and no test claims
+        # to pin it. (`single_arg_binary` asks the same question
+        # a fourth time, but at function scope, so it computes
+        # its own `_unwrap_parens` rather than sharing this one.)
+        if sole_arg.type in (
             "method_invocation",
             "object_creation_expression",
-        ) and not _is_anonymous_class(args[0]):
+        ) and not _is_anonymous_class(sole_arg):
             saved = emitter.snapshot()
-            emit_p1()
+            # Read before the emit, as `try_priorities` does at
+            # its own entry: `emit_p1` is expected to unwind any
+            # `tail_reserve` it adjusts, but the cap should not
+            # depend on that expectation holding.
             effective_max = _MAX_LINE - emitter.tail_reserve
+            emit_p1()
             stayed_inline = emitter.line_count == saved[0]
             if not (
                 stayed_inline
@@ -10117,12 +10249,68 @@ def _emit_argument_list(
         else:
             # Standard single-arg cascade: P1 inline → P4 block+4
             # → P4 paren-defer (last-committed).
-            candidates: list[Callable[[], None]] = [
-                emit_p1,
-                emit_p4_single_arg_block_indent,
-                emit_p4_single_arg_paren_defer,
-            ]
-            try_priorities(emitter, candidates)
+            #
+            # P1 is attempted by hand rather than through
+            # `try_priorities` because it has to be rejected on
+            # two grounds and `try_priorities` knows only the
+            # first: every emitted line must fit, AND the sole
+            # argument must not have wrapped internally.
+            # `p1_invalid_wrap` carries the second. Without it an
+            # argument that is not itself a call — an
+            # expression-bodied lambda whose body wraps, a
+            # ternary, a cast — commits through P1 purely because
+            # each line happens to land under the cap, leaving
+            # the list open on the call line while its one
+            # argument breaks beneath it. Shapes below are the
+            # fixture `21_sole_wrapping_argument_breaks_the_list`
+            # (under `arg_list_wrap`), less its method indent:
+            #
+            #     theCollection.forEach(element -> element.someLongMethodName(
+            #         firstArgument,
+            #         secondArgument,
+            #         thirdArg));
+            #
+            # That is the partial break the multi-argument
+            # cascade rejects at its own P1 commit check, and the
+            # one the nested-call rule above rejects when the
+            # sole argument is a bare call. Escalating gives the
+            # argument a column of its own to wrap in:
+            #
+            #     theCollection.forEach(
+            #         element -> element.someLongMethodName(firstArgument,
+            #                                               secondArgument,
+            #                                               thirdArg));
+            #
+            # Arguments that own their rows — block-bodied
+            # lambdas, text blocks, anonymous classes, switch
+            # expressions — never set the flag, so the single-arg
+            # lambda shape the branch above exists to protect is
+            # untouched.
+            #
+            # A sole `binary_expression` never reaches this test
+            # either, and for a different reason: `emit_p1` sends
+            # it down the `single_arg_binary` branch, which
+            # paren-aligns it and never touches
+            # `p1_invalid_wrap`. Its continuation lines are
+            # anchored under the first operand rather than left
+            # dangling, so the partial break this rejects does
+            # not arise there.
+            saved = emitter.snapshot()
+            effective_max = _MAX_LINE - emitter.tail_reserve
+            emit_p1()
+            if (
+                p1_invalid_wrap[0]
+                or emitter.last_lines_max_width(saved[0])
+                > effective_max
+            ):
+                emitter.restore(saved)
+                try_priorities(
+                    emitter,
+                    [
+                        emit_p4_single_arg_block_indent,
+                        emit_p4_single_arg_paren_defer,
+                    ],
+                )
     else:
         # Multi-arg cascade — manual snapshot/restore because
         # P2's two-line constraint (per spec "Method Call
@@ -10172,9 +10360,10 @@ def _emit_argument_list(
         # source-preserve or chain/binary wraps. Pre-existing
         # bad source that source-preserve echoes may still
         # produce a mixed shape; adopters upgrading from
-        # 0.5.x should manually re-flow those sites (or the
-        # width opt-out will catch them when the developer
-        # collapses the wrap).
+        # 0.5.x should manually re-flow those sites. (Before
+        # 0.7.0 the width opt-out would also catch them once
+        # the developer collapsed the wrap; that opt-out is
+        # gone, so re-flowing is now the only remedy.)
         prev_p4 = emitter._arg_list_p4_fired
         emitter._arg_list_p4_fired = False
         emit_p1()
@@ -10591,8 +10780,9 @@ def _emit_method_chain_wrapped(
         # arg-list emission column. Sharing the predicate is
         # what keeps the discriminator and the arg-list
         # emitter in agreement — without that agreement, an
-        # arg list whose source-preserve gate declines (e.g.
-        # because the Bug 4 width opt-out fires) but whose
+        # arg list whose source-preserve gate declines (since
+        # 0.7.0, anything without interleaved comments or a
+        # CSOFF region) but whose
         # wrap-engine P1 then overflows ends up multi-line
         # via P2/P3/P4, and a discriminator that didn't share
         # the predicate would mistakenly call that "legit",
@@ -10662,22 +10852,10 @@ def _emit_method_chain_wrapped(
         # are the only rows the wrap engine cannot reclaim, so they
         # are the only ones that legitimately strand a chain tail.
         for child in args.named_children:
-            inner = child
-            while inner.type == "parenthesized_expression":
-                # Filter comments out — tree-sitter-java exposes
-                # leading `//` / `/* */` as named children, so
-                # `named[0]` could otherwise unwrap to a comment
-                # instead of the inner expression and miss a
-                # multi-row binary / chain / lambda.
-                named = [
-                    c for c in inner.children
-                    if c.is_named
-                    and c.type not in ("line_comment", "block_comment")
-                ]
-                if not named:
-                    break
-                inner = named[0]
-            if _arg_owns_its_rows(inner):
+            # `_arg_owns_its_rows` strips redundant parens itself,
+            # so a `((k, v) -> { … })` argument is recognized as
+            # the block-bodied lambda it is.
+            if _arg_owns_its_rows(child):
                 return True
         return False
 

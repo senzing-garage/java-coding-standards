@@ -16,7 +16,7 @@ Formatting release. Started as a bug-fix pass over defects
 surfaced by running 0.6.0 across four consumer source bases,
 and grew into a minor release: it adds normative rules to the
 standards document, removes two behaviors that document had
-described, and reformats 337 of the 504 files in the trial
+described, and reformats 338 of the 504 files in the trial
 corpus. Adopters should expect a substantial reformat commit
 when they bump the pin, and should bump it on its own commit
 for that reason.
@@ -224,14 +224,296 @@ leaves it room to render whole one line down:
                      () -> mapB.put("key2", "val2"));
 ```
 
-Arguments that inherently own multiple rows — block-bodied lambdas
-and text blocks — are exempt, so `performTest(() -> { … })` keeps
-priority 1. The exemption tests only structural properties of the
+Arguments that inherently own multiple rows are exempt, so
+`performTest(() -> { … })` keeps priority 1. The exempt forms are
+block-bodied lambdas, text blocks, anonymous classes and switch
+expressions — see "Exemptions from that rule that were not firing"
+below, which is where the last two joined the list and where the
+text-block test turns out never to have fired. The exemption tests only structural properties of the
 node and deliberately never consults the source layout: doing so
 makes the answer depend on whether an earlier pass already wrapped
 the argument, which oscillated
 `arguments(Rectangle.class, Set.of(…), …)` between two shapes on
 alternate passes.
+
+### The argument-breaks rule now holds for a single argument too
+
+The rule above was enforced at the multi-argument cascade's
+priority-1 commit check, and separately when a lone argument was
+itself a call. Every other single-argument shape reached a cascade
+that measured line width and nothing else, so an argument that
+wrapped internally still committed at priority 1 whenever its lines
+happened to land under the cap — reproducing the partial break the
+rule exists to reject, one argument at a time:
+
+```java
+        theCollection.forEach(element -> element.someLongMethodName(
+            firstArgument,
+            secondArgument,
+            thirdArg));
+```
+
+The inconsistency was visible from the outside: `foo(bar(a, b, c))`
+already broke before its argument, while `foo(x -> bar(a, b, c))`
+did not. Expression-bodied lambdas, ternaries and casts all fell
+through. Escalating gives the argument a column of its own:
+
+```java
+        theCollection.forEach(
+            element -> element.someLongMethodName(firstArgument,
+                                                  secondArgument,
+                                                  thirdArg));
+```
+
+On its own this moves 20 of the 504 corpus files and costs four
+lines; the two exemption fixes below then reclaim five, so the group
+lands one line below where it started, still at 20 files. Lines over
+80 (1571), advisory count (289) and convergence (one file needing a
+second pass, none a third) are unchanged throughout, and the
+named-node sequence of every one of the 504 files is identical
+before and after — the whole group is layout-only.
+
+Two cases are left slightly worse rather than papered over. Where
+the escalated column is no roomier, the argument still wraps and a
+line has been spent for nothing; and in one shape out of 252
+generated — a sole cast argument — the escalated form is a column
+WIDER than the priority-1 form it replaced, 81 against 79, so it
+trades a partial break for an over-long line. An advisory fires, no
+corpus file hits it, and the multi-argument cascade has always
+behaved this way, so the inconsistency would be in special-casing
+it. Choosing between the two columns by
+which one fits is exactly the comparative probe this release removed
+from the chain cascade for making output depend on the previous
+pass, so the monotone "did it wrap" test is kept and the residual
+case accepted.
+
+### Exemptions from that rule that were not firing
+
+Generalising the rule to every single-argument shape means anything
+that inherently owns its rows but is missing from the exemption list
+now escalates instead. The first two below are pre-existing bugs the
+change surfaced; the third is a gap the generalisation itself opened.
+
+A **text block** never qualified as owning its rows, because the
+check tested for a `text_block` node type and tree-sitter-java has
+none — a text block parses as a `string_literal` with `"""`
+delimiters. The dead test made a trailing text block look like an
+argument that had wrapped, so the whole list escalated:
+
+```java
+        engine.addRecord(SzRecordKey.of(PASSENGERS, "ABC123"),
+                         """
+            {
+                "NAME_FULL": "Joe Schmoe"
+            }
+            """);
+```
+
+It now stays on the call line, which is both idiomatic and what the
+exemption always claimed to do:
+
+```java
+        engine.addRecord(SzRecordKey.of(PASSENGERS, "ABC123"), """
+            {
+                "NAME_FULL": "Joe Schmoe"
+            }
+            """);
+```
+
+**Redundant parentheses** hid the argument underneath them, so
+`((k, v) -> { … })` was not recognized as the block-bodied lambda it
+is and the body was pushed a level deeper for a paren the author
+merely happened to type. All four structural tests of a sole
+argument now ask their question of the expression rather than of the
+punctuation around it — the row-owning test, the block-bodied-lambda
+carve-out that exempts a lambda body from the enclosing fit check,
+the nested-call rule, and the single-argument binary test that
+drives spec C6 paren-alignment. Emission is untouched; only the
+decisions move. This also removed a copy of the same unwrapping loop
+that had been written inline at one of the call sites.
+
+The last of those mattered in its own right: `log(("a" + x + "b"))`
+and `log("a" + x + "b")` were paren-aligned identically before this
+release, and only the first of them stopped being so once the
+escalation rule arrived. Unwrapping keeps them together.
+
+The carve-out was the one that mattered most: a parenthesized
+block-bodied lambda with an over-long body line forfeited its
+exemption, failed the width check and escalated, pushing the whole
+body deeper — exactly the pathology the exemption exists to prevent.
+Each of the four unwrap sites is individually corpus-neutral, which
+is a property of them covering each other rather than of the corpus
+lacking the construct: `EntityDelta.java` does contain a
+parenthesized block-bodied lambda, and it moves if the whole group
+is reverted. Closing the gap therefore costs nothing to ship and
+leaves no half-fixed bug class.
+
+A **switch expression** was never in the exemption list at all. That
+did not bite before this release — HEAD and 0.6.0 both leave a sole
+`map.put(switch (k) { … })` argument alone — but the generalisation
+above would have made it escalate and take its whole body a level
+deeper. It is brace-delimited and self-closing,
+exactly like an anonymous class, and is now exempt. The exemption
+is not confined to sole arguments — like the other three it also
+stops a switch expression forcing a multi-argument list to break,
+which is the same treatment block lambdas and anonymous classes
+already get in that position. Measured across all 504 files it
+changes nothing, because no corpus file passes one to a call at
+all; it is here because the generalisation would otherwise have
+shipped a regression waiting for the first consumer to write one.
+
+An **array creation with an initializer**
+(`main(new String[] { … })`) has the same shape and is deliberately
+NOT exempt yet. The node to test is `array_creation_expression`:
+`array_initializer` is its `value` child and never appears in
+argument position at all, so an exemption written against that name
+would be dead code — the very trap the text-block fix above just
+sprang. Exempting the right node improves the sole-argument case
+but regresses multi-argument calls, where the initializer body
+indents from the line start rather than from the construct, landing
+at column 12 beneath an argument that begins at column 28. Five
+corpus files move, in both directions. That column is a separate
+defect in array emission; fixing it is the prerequisite, and until
+then the exemption would trade one bad shape for another.
+
+### Once one argument breaks, every later argument takes its own line
+
+Priority 1 broke before an argument only when the argument
+_immediately_ before it had gone multi-row. So a block-bodied lambda
+followed by two short arguments put the first on its own line and
+then packed the second onto it — the shape 0.7.0 emits today:
+
+```java
+        register(() -> {
+            doSomething();
+        },
+                 firstValue, secondValue);
+```
+
+The condition is now sticky: once any argument has spanned rows,
+every argument after it gets its own line.
+
+```java
+        register(() -> {
+            doSomething();
+        },
+                 firstValue,
+                 secondValue);
+```
+
+A text block reaches the same code path once the exemption above
+lets it keep priority 1, which is why the two changes ship
+together.
+
+One argument per line is what the standards document has always
+specified for text-block arguments, and what 0.6.0 produced. The
+exemptions above would otherwise have regressed it, because a text
+block that no longer forces the list to break leaves priority 1 in
+charge of what follows it. No corpus file changes.
+
+### Re-indenting a text block no longer changes what it prints
+
+The most serious defect found in this release's review rounds. It is
+**not** new in 0.7.0 — `_emit_text_block` is byte-identical to
+0.6.0's — but 0.7.0 widened the set of code that reaches it.
+
+`_emit_text_block` shifts a text block so its closing `"""` reaches
+the target column. A uniform shift is safe — JLS 3.10.6 strips the
+minimum leading whitespace across the non-blank content lines _and_
+the closing delimiter's line, so moving them together moves that
+minimum too. But when a leftward shift would take a line past column
+0, the emitter clamped that one line and let its neighbors travel,
+which silently rewrites the string:
+
+```java
+        // source — prints "AAAA\n    BBBB\n"
+        String s = go("""
+AAAA
+    BBBB
+                """);
+
+        // 0.7.0 before this fix — prints "AAAA\nBBBB\n"
+        String s = go("""
+AAAA
+BBBB
+            """);
+```
+
+The four-space indent of `BBBB` is gone. That is a change to program
+behavior, not to layout.
+
+In this particular shape — a text block as a call's sole argument —
+0.6.0 escapes, and not because of anything the re-indenting code
+does. It never runs: instrumenting `_emit_text_block` shows 0.6.0
+calling it **0 times in 216** shapes for each of the three argument
+positions and **216 of 216** for assignment, because in argument
+position 0.6.0 emits the list through source preservation instead.
+So the escape is about which positions reach the emitter, not about
+which direction it shifts. Put the same text block on the right of
+an assignment and 0.6.0 corrupts it exactly as 0.7.0 does, both
+printing `AAAA\nBBBB\n`.
+
+The clamp rested on a comment asserting that "the compiler will
+reject any source where a content line is indented less than the
+closing `"""`". It does not — the delimiter is one participant in
+the incidental-whitespace minimum, not a floor beneath the content,
+so such a block compiles and is meaningful. A leftward shift is now
+capped at the smallest indent actually present: the closing `"""`
+lands short of its target column when it has to, which is a layout
+compromise, where changing what the program prints is not.
+
+Measured by compiling and running every variant on JDK 21 — two
+content lines and the closing delimiter at each of columns
+0/4/8/16/24/32, in four syntactic positions, 864 blocks per
+formatter:
+
+| text block in… | 0.6.0  | 0.7.0 before | after |
+| -------------- | ------ | ------------ | ----- |
+| assignment     | 62/216 | 62/216       | 0/216 |
+| sole argument  | 0/216  | 62/216       | 0/216 |
+| last of two    | 0/216  | 62/216       | 0/216 |
+| first of two   | 0/216  | 62/216       | 0/216 |
+| **total**      | **62** | **248**      | **0** |
+
+A second sweep — 4,000 randomly generated blocks per formatter, one
+to four content lines at irregular columns up to 48, adding `return`
+as a fifth position, repeated over three seeds — agrees on the
+shape of the result. 0.6.0 fails in assignment and `return` position
+and in no argument position (513-529 hits, none outside those two);
+0.7.0 fails in all five (1,362); the fix fails in none, on every
+seed.
+
+So 0.7.0 did not create this bug. 0.6.0 already corrupted a text
+block assigned to a variable or returned directly; what 0.7.0's
+argument-column changes added was the three call positions. The
+ratio between the two depends entirely on which shapes a grid
+happens to contain, so no multiplier is quoted here.
+
+No corpus file is affected — no text block in the 504 files has
+content left of its delimiter — which is why a defect this old
+survived every corpus-based check in the release.
+
+### The standards document's text-block section was self-contradicting
+
+0.7.0 added a rule saying text blocks keep priority 1, without
+touching an older section stating that a call containing a text
+block "always uses a **priority 4** shape" and "does NOT try
+priority 1/2/3 forms". Both cannot hold, and until the exemption
+above actually started firing nothing acted on either.
+
+The older section is rewritten to describe what the formatter does,
+with all four worked examples re-derived from its output rather than
+edited by hand: the text block ends the call line, later arguments
+each take their own line, and they align under the call's opening
+paren. That last point is a separate correction. The document put
+those arguments at +4 from the statement, which is what 0.6.0 did;
+somewhere in 0.7.0 they moved to the paren-aligned column, and the
+document was never updated to match. The shift is already in this
+branch's HEAD, so none of the changes described above cause it; it
+is recorded here rather than reverted, because paren-alignment is
+what every other argument in the same position gets. The exemption list
+is updated in the same pass: it said "two argument forms", while the
+implementation has four.
 
 ### Four pre-existing defects fixed
 
@@ -1381,9 +1663,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 816/816 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 854/854 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 606 and the 210 missing
+  found, so a standalone clone collects 644 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -1400,29 +1682,66 @@ same commit. `requirements.txt` now says so in a comment.
   inline tag held whole, a candidate refused by the stability
   check, a block-tag word (`@Override`) inside prose, and a
   `@param` description that distributes. 41 new unit tests cover
-  the reflow helpers directly. Each of the three convergence
-  guards was verified by reverting it and confirming the suite
-  goes red.
+  the reflow helpers directly. Six more fixtures lock the
+  single-argument escalation and its exemptions: a wrapping
+  expression-bodied lambda, a wrapping ternary, a text block kept
+  on the call line, a parenthesized block-bodied lambda that must
+  not escalate, a text block whose trailing arguments each take
+  their own line, and a text block whose content sits left of its
+  closing delimiter and must keep its shape. 32 new unit tests
+  cover `_is_text_block`, `_unwrap_parens`, the escalation
+  invariant and the text-block re-indent — including a test
+  pinning the grammar fact that there is no `text_block` node
+  type, so a future tree-sitter that adds one fails loudly
+  rather than silently re-deadening the check, and a
+  five-shape check that re-indenting never changes a text
+  block's value, each run with and without an interior blank
+  line, so ten collected. Each of the three
+  convergence guards, five of the six new fixtures and every
+  new behavioral unit test was verified by reverting the
+  corresponding fix and confirming the suite goes red. The
+  exception is stated rather than glossed: the parenthesized
+  block-lambda fixture is a shape lock, not a discriminator —
+  the carve-out it is named for only bites when a body line
+  cannot be brought under 80 at all, and the only inputs that
+  do that render at a continuation column odd enough that
+  freezing it in a golden file would enshrine a defect. That
+  behavior is pinned by its unit test, which does go red on
+  revert. Two drafts were caught this way and rewritten: the
+  escalation assertion passed against the reverted formatter
+  until it was tightened, and that fixture was twice rebuilt
+  before being kept for what it actually locks.
   Deleting the single-line width estimator removed the 18 unit
   tests that covered it, so the count is not comparable with
   0.6.0's on a like-for-like basis.
 - Trial-formatted `senzing-commons-java`, `sz-sdk-java`,
   `sz-sdk-java-grpc` and `data-mart-replicator` — 504 files,
   comparing the output of 0.6.0 against the output of this
-  release on identical inputs.
+  release on identical inputs. The corpus is every `*.java`
+  under each repository's `src/`, taken at `146bac7` (106
+  files), `d0466b1` (116), `d3ba6e8` (32) and `eafaf55` (250)
+  respectively; `git archive HEAD src` from each reproduces it.
+  Recorded because every figure below is measured against that
+  set and none of them can be checked without it.
 - **No semantic change.** Comparing named-node sequences with
-  comments excluded, 503 of the 504 files are structurally
-  identical between the two releases. The one exception is
-  `SummaryStatsReportsTest.java`, where **two**
-  `if (cond) { return; }` bodies collapse to the Tier 1
-  `if (cond) return;` form — the file's `if` count is unchanged
-  at 71, with block consequences going 54 to 52 and bare
-  `return` 8 to 10. The lambda-body de-indent freed four
-  columns, taking the collapsed statement from 81 to 77 and so
-  inside the limit for the first time; the collapse itself is
-  existing documented policy, not new here. Both sites are
-  else-less, so there is no dangling-`else` hazard, and no file
-  in the corpus gains a parse error.
+  comments excluded, 500 of the 504 files are structurally
+  identical between the two releases. All four exceptions are
+  the same thing: a braced, else-less `return` consequence
+  collapsing to the Tier 1 `if (cond) return …;` form (two of
+  the seven return a value rather than bare). Every file's `if` count
+  is unchanged and only its `block` count falls —
+  `SummaryStatsReportsTest.java` by two (71 `if`s throughout,
+  block consequences 54 to 52 and bare `return` 8 to 10),
+  `AbstractListenerService.java` by three, and
+  `SzCrossSourceMatchCounts.java` and
+  `SzCrossSourceRelationCounts.java` by one each. Freed columns
+  brought each collapsed statement inside the limit for the
+  first time; the collapse itself is existing documented policy,
+  not new here. Every one of the seven sites is an else-less
+  `return`, so there is no dangling-`else` hazard, and no file
+  in the corpus gains a parse error. An earlier draft of this
+  entry claimed one exception rather than four, having
+  generalized from the single file that was inspected by hand.
 - Corpus idempotency, measured the same way for both releases
   (format pristine source once, format again, compare): **26
   files needed a second pass under 0.6.0, 1 under this release**.
@@ -1458,8 +1777,12 @@ same commit. `requirements.txt` now says so in a comment.
   fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
-- 337 of 504 trial files are reformatted, a net **+1,563 lines**
-  (about +0.7% against 220k). The release trades lines for
+- 338 of 504 trial files are reformatted, a net **+1,562 lines**
+  (about +0.7% against 220k). Both figures are measured against
+  **0.6.0's output**, not against pristine source — they are what
+  an adopter already on 0.6.0 sees when they bump the pin. Starting
+  from unformatted source instead, 407 of 504 files change and the
+  delta is +8,178 lines. The release trades lines for
   compliance and predictability: rule 1 breaks each nesting
   level of an embedded call onto its own row, and "if an
   argument breaks, the argument list breaks" turns a packed

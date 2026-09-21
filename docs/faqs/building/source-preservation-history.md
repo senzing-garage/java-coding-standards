@@ -3,9 +3,11 @@
 ## Question
 
 `_arg_list_takes_source_preserve_path` in `format_java.py` is short: an
-argument list is emitted verbatim from source only when it spans multiple
-rows AND either contains interleaved comments or sits inside a
-`// CSOFF` region. Earlier releases had several more rules in that
+argument list is emitted verbatim from source when it contains
+interleaved comments — regardless of how many rows it spans, since a
+single-row list with a comment in it is corrupted by the wrap engine
+just as surely — or when it spans multiple rows inside a `// CSOFF`
+region. Earlier releases had several more rules in that
 function. What were they, why did they exist, and what should I know
 before adding anything like them back?
 
@@ -119,8 +121,9 @@ a function of its own previous output, which produces two failure modes:
 
 The second bit the project more than once. `_arg_owns_its_rows` exists
 specifically to answer "does this argument span rows _inherently_?"
-structurally — block-bodied lambda, text block, anonymous class — and its
-docstring warns against reaching for `_node_spans_multiple_rows`. Two
+structurally — block-bodied lambda, text block, anonymous class, switch
+expression — and its docstring warns against reaching for
+`_node_spans_multiple_rows`. Two
 separate bugs came from ignoring that: an `arguments(Rectangle.class,
 Set.of(...))` call alternating between shapes, and the method-chain
 back-off test predicting multi-line emission from source rows, which

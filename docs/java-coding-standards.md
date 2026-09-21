@@ -383,9 +383,7 @@ When a parameter annotation has arguments that themselves wrap,
 the annotation+type pair cannot fit on a single line. The
 formatter promotes the parameter list directly to **priority 3**
 (next-line double-indented, one parameter per line) — parameters
-with multi-line annotations are never paren-aligned. This is an
-explicit short-circuit consistent with how text-block arguments
-force the next-line form (see "Text Blocks").
+with multi-line annotations are never paren-aligned.
 
 ---
 
@@ -1231,9 +1229,17 @@ priority 2:
                        parmE);
 ```
 
-Two argument forms are exempt, because spanning several lines is
+Some argument forms are exempt, because spanning several lines is
 inherent to them rather than the result of a wrap: block-bodied
-lambdas and text blocks. Both keep priority 1:
+lambdas, text blocks, anonymous classes and switch expressions —
+each of them brace- or delimiter-bounded, so the reader sees a
+closed block rather than a dangling continuation. All keep
+priority 1. Redundant parentheses around one of them do not
+forfeit the exemption. When such an argument is followed by
+others, every argument after it takes its own line; see "Text
+blocks as method-call arguments" for a worked example of that.
+
+A sole exempt argument simply keeps the call line:
 
 ```java
     this.performTest(() -> {
@@ -1602,8 +1608,14 @@ opening always terminates the line that introduces the text block
 ### Closing `"""` placement
 
 The closing `"""` lives on its own line at +4 from the introducing
-statement's column (single-indent). Content lines are at the same
-column as the closing `"""` or further right:
+statement's column (single-indent). Content lines usually sit at
+that column or further right, but they need not: per JLS 3.10.6 the
+closing delimiter is one participant in the incidental-whitespace
+minimum, not a floor beneath the content, so a block may legally
+indent its content less than its delimiter. Where moving such a
+block to +4 would push a content line past column 0, the formatter
+moves the whole block less far and leaves the delimiter short of
++4, rather than altering what the block spells:
 
 ```java
 String json = """
@@ -1626,20 +1638,35 @@ formatter does **not**:
 - Normalize spacing or alignment of content.
 - Reflow content paragraphs.
 
-The formatter only positions the opening and closing `"""` and
-ensures the closing's column is consistent. Internal lines are
-preserved byte-for-byte.
+The formatter positions the opening and closing `"""` and
+re-indents the block as a unit so the closing delimiter reaches
+its target column. Content lines move by the same amount as the
+delimiter, never independently, so the block's internal shape —
+and therefore the string the program sees — is unchanged. Where
+a leftward move would push some line past column 0, the whole
+block moves less far instead, and the closing `"""` stops short
+of its target rather than the content losing its shape.
 
 ### Text blocks as method-call arguments
 
-When a method call has a text block as one of its arguments
-(whether single or multiple), the surrounding call always uses a
-**priority 4 shape** (one argument per line, single-indent from
-the call statement) — the formatter does NOT try priority 1/2/3
-forms for calls containing a text block argument. The text
-block's opening `"""` ends the call line (after `(` for the first
-arg, or after `,` for subsequent args). Content lines and closing
-`"""` are at +4 from the call statement:
+A text block spans several lines because that is what it is, not
+because anything wrapped it, so it does not force the call to
+break before its first argument — see "If an argument breaks, the
+argument list breaks" above, where text blocks are one of the
+exempt forms. The text block's opening `"""` ends the call line (after
+`(` for the first argument, or after `,` for a later one). The
+formatter re-anchors the closing `"""` to +4 from the
+introducing statement, as described above, and moves the content
+lines by the same amount — so the block keeps its shape, though
+not its absolute column. Content is allowed to sit to the LEFT
+of the closing delimiter: per JLS 3.10.6 the delimiter is one
+participant in the incidental-whitespace minimum, not a floor
+beneath the content.
+
+Once any argument has spanned multiple rows, **every argument
+after it takes its own line**, so nothing is left jammed against
+a text block's closing delimiter. Those later arguments align
+under the call's opening `(`, in the usual paren-aligned column:
 
 ```java
 // Single text block argument:
@@ -1649,23 +1676,29 @@ service.executeQuery("""
     WHERE id = ?
     """);
 
-// Text block as first arg, simple second arg — every arg on its
-// own line at +4:
+// Text block as first arg, simple second arg:
 service.executeQuery("""
     SELECT *
     FROM users
     WHERE id = ?
     """,
-    userId);
+                     userId);
 
-// Multiple args including a text block, all on their own lines:
+// Multiple args including a text block — each later arg on its
+// own line:
 service.executeQuery("""
     SELECT *
     FROM users
     WHERE id = ?
     """,
-    userId,
-    IsolationLevel.READ_COMMITTED);
+                     userId,
+                     IsolationLevel.READ_COMMITTED);
+
+// A text block as the LAST argument keeps the earlier ones on
+// the call line, since nothing follows it to be jammed:
+engine.addRecord(SzRecordKey.of(PASSENGERS, "ABC123"), """
+    { "NAME_FULL": "Joe Schmoe" }
+    """);
 ```
 
 **Convention:** text blocks used directly inline as method-call
@@ -2301,13 +2334,16 @@ This invariant applies uniformly to:
   the same-method greedy P2 candidate): break before the next
   segment when the previous segment's argument list wrapped
   multi-row.
-- Argument lists — anti-stranding is handled implicitly by the
-  per-arg `widths_ok` width gate during speculative packing,
-  not by an explicit "previous arg wrapped → break" branch.
-  When a prior arg's emission wraps, the next pack-attempt
-  usually overflows the current line and falls back to a new-
-  line break naturally. This gives the same end-result as the
-  explicit check, but the mechanism is different.
+- Argument lists — priority 1 carries an explicit check, and it
+  is sticky: once ANY earlier argument has emitted multi-row,
+  every argument after it takes its own line. It has to be
+  sticky rather than "the argument immediately before me",
+  because a short argument following a multi-row one would
+  otherwise land on its own line and then have the argument
+  after THAT packed onto it. In the greedy packing tiers the
+  same effect arises implicitly instead, from the per-argument
+  `widths_ok` gate: once a prior argument has wrapped, the next
+  pack attempt overflows the line and breaks anyway.
 
 This is the same anti-stranding principle that 0.4.3's Bug 1 fix
 applied to method chains, generalized across constructs.
@@ -2412,15 +2448,18 @@ which literal / operand to split. Speculative emits earlier in
 the cascade that overflowed but rolled back don't fire — only
 the committed candidate's advisory persists.
 
-**Source-preservation with no fallback.** When the formatter
-encounters an argument list whose source already wraps multi-
-line, it may preserve the developer's layout verbatim
-(re-anchoring continuation columns at the canonical
-`paren_align_col + 4` or `block + 4` target). If the re-anchored
-layout still overflows 80 chars (because a contained string
-literal or expression is itself too long), the formatter fires
-the advisory and emits anyway — it does NOT fall back to a
-shallower column or to raw verbatim. The overflow becomes a
+**Source-preservation with no fallback.** The formatter preserves
+an argument list's authored layout in two cases, both of them
+ones where reflowing would be wrong rather than merely different:
+the list carries interleaved comments, or it sits in a
+`CSOFF`/`CSON` region. (0.7.0 removed a third, width-based
+trigger — "the authored first line still fits, so keep it" —
+which made the output depend on the previous pass.) Preserved
+lines are re-anchored to the canonical `paren_align_col + 4` or
+`block + 4` target. If the re-anchored layout still overflows 80
+chars (because a contained string literal or expression is itself
+too long), the formatter fires the advisory and emits anyway — it
+does NOT fall back to a shallower column or to raw verbatim. The overflow becomes a
 checkstyle LineLength violation the developer must resolve by
 splitting the offending literal at a word boundary, extracting
 a long expression to a local variable, or restructuring. This

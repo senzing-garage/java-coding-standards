@@ -4174,6 +4174,414 @@ class TestIsAnonymousClass:
         )
 
 
+def _sole_arg_of(snippet: str):
+    """The single argument of the snippet's outermost call."""
+    arg_lists = _arg_lists_of(snippet)
+    args = [c for c in arg_lists[0].named_children]
+    assert len(args) == 1, f"{snippet!r} -> {len(args)} args"
+    return args[0]
+
+
+class TestIsTextBlock:
+    """A text block must be recognized through `string_literal`.
+
+    tree-sitter-java exposes NO `text_block` node type, so the
+    obvious `node.type == "text_block"` test silently never
+    fires. `_arg_owns_its_rows` carried exactly that dead test
+    until 0.7.0, which made a text-block argument look like an
+    ordinary argument that had wrapped.
+    """
+
+    def test_grammar_has_no_text_block_node_type(self) -> None:
+        """Pin the grammar fact the helper exists to work around.
+
+        If a future tree-sitter-java DOES introduce a
+        `text_block` node, this fails and `_is_text_block`
+        should be revisited rather than left keying on the
+        delimiter.
+        """
+        tree = format_java.parse_source(
+            b'class A { void m() { f("""\n  hi\n  """); } }'
+        )
+        assert _nodes_of_type(tree.root_node, "text_block") == []
+
+    @pytest.mark.parametrize(
+        "snippet, expected",
+        [
+            ('f("""\n  hi\n  """);', True),
+            # An empty text block still has `"""` delimiters.
+            ('f("""\n""");', True),
+            # An ordinary string literal must NOT match.
+            ('f("hi");', False),
+            ('f(42);', False),
+        ],
+    )
+    def test_detection(self, snippet: str, expected: bool) -> None:
+        arg = _sole_arg_of(snippet)
+        assert format_java._is_text_block(arg) is expected
+
+    def test_text_block_owns_its_rows(self) -> None:
+        arg = _sole_arg_of('f("""\n  hi\n  """);')
+        assert format_java._arg_owns_its_rows(arg) is True
+
+    def test_text_block_argument_stays_on_the_call_line(
+        self,
+    ) -> None:
+        """A text block is inherent multi-row, not a wrap.
+
+        Regression lock: while the dead `text_block` test stood,
+        the trailing text block was treated as an argument that
+        had wrapped, so the whole list escalated and the literal
+        was pushed onto its own line.
+        """
+        src = (
+            b"public class A\n{\n    void m()\n    {\n"
+            b'        engine.addRecord(SzRecordKey.of(SRC, "ABC"), """\n'
+            b"            { }\n"
+            b'            """);\n'
+            b"    }\n}\n"
+        )
+        out = format_java.format_source(src)
+        out = out if isinstance(out, str) else out.decode()
+        assert 'of(SRC, "ABC"), """' in out
+
+
+class TestTextBlockShiftPreservesValue:
+    """A text block's compiled value must survive re-indenting.
+
+    `_emit_text_block` shifts every line so the closing `\"\"\"`
+    reaches its target column. A uniform shift is safe: JLS
+    3.10.6 strips the MINIMUM leading whitespace across the
+    non-blank content lines AND the closing delimiter's line, so
+    moving them together moves that minimum too.
+
+    What is not safe is clamping one line at column 0 while its
+    neighbors shift. The emitter used to do exactly that, on
+    the stated belief that content is never left of the closing
+    delimiter because "the compiler will reject" it. The
+    compiler does not: the delimiter is one participant in the
+    minimum, not a floor. `String s = \"\"\"\\nAAAA\\n    BBBB\\n
+    \"\"\"` with the delimiter far right compiles fine and prints
+    `AAAA\\n    BBBB\\n` — and the formatter silently turned it
+    into `AAAA\\nBBBB\\n`, changing what the program prints.
+    """
+
+    @staticmethod
+    def _relative_shape(text: str) -> list[tuple[int, str]]:
+        """The text block as JLS 3.10.6 renders it: each line's
+        indent relative to the smallest in the block, paired
+        with the line's content.
+
+        The content half matters. An indent-only comparison
+        would pass a formatter that dropped, duplicated or
+        rewrote a content line while leaving the indentation
+        pattern intact, which is exactly the class of bug this
+        test exists to catch.
+        """
+        lines = text.split("\n")
+        start = next(
+            i for i, l in enumerate(lines) if l.rstrip().endswith('"""')
+        )
+        end = next(
+            i for i in range(start + 1, len(lines))
+            if '"""' in lines[i]
+        )
+        raw = lines[start + 1:end + 1]
+        non_blank = [l for l in raw if l.strip() != ""]
+        floor = min(len(l) - len(l.lstrip(" ")) for l in non_blank)
+        # Blank lines are kept in the result even though JLS
+        # strips their whitespace: they still contribute a
+        # newline to the string, so dropping one changes the
+        # value. Filtering them out — as an earlier version of
+        # this helper did — left the guard unable to see that.
+        return [
+            ("", "") if l.strip() == ""
+            else (len(l) - len(l.lstrip(" ")) - floor, l.strip())
+            for l in raw
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second, closing",
+        [
+            (0, 4, 16),   # content entirely left of the closing
+            (16, 8, 32),  # straddling it
+            (24, 0, 32),  # far left, large shift
+            (8, 12, 8),   # the ordinary case, delimiter at the floor
+            (4, 8, 0),    # delimiter left of everything
+        ],
+    )
+    @pytest.mark.parametrize("blank_between", [False, True])
+    def test_relative_indentation_survives(
+        self,
+        first: int,
+        second: int,
+        closing: int,
+        blank_between: bool,
+    ) -> None:
+        gap = "\n" if blank_between else ""
+        src = (
+            "public class A\n{\n    void m()\n    {\n"
+            '        String s = go("""\n'
+            f"{' ' * first}AAAA\n{gap}{' ' * second}BBBB\n"
+            f"{' ' * closing}\"\"\");\n"
+            "    }\n}\n"
+        )
+        out = format_java.format_source(src.encode())
+        out = out if isinstance(out, str) else out.decode()
+        assert self._relative_shape(out) == self._relative_shape(src), (
+            f"re-indent changed the string's value\n{out}"
+        )
+
+
+class TestUnwrapParens:
+    """Redundant parentheses must not change a shape decision."""
+
+    @pytest.mark.parametrize(
+        "snippet, inner_type",
+        [
+            ("f((a));", "identifier"),
+            ("f(((a)));", "identifier"),
+            ("f(a);", "identifier"),
+            ("f((x -> { g(); }));", "lambda_expression"),
+        ],
+    )
+    def test_strips_every_layer(
+        self, snippet: str, inner_type: str
+    ) -> None:
+        arg = _sole_arg_of(snippet)
+        assert format_java._unwrap_parens(arg).type == inner_type
+
+    def test_parenthesized_block_lambda_owns_its_rows(self) -> None:
+        """`((k, v) -> { … })` is still a block-bodied lambda.
+
+        Without the unwrap the spare paren layer hides the
+        lambda, the argument looks like one that wrapped, and
+        the call escalates — moving the body a level deeper for
+        a paren the author merely happened to type.
+        """
+        arg = _sole_arg_of("f(((k, v) -> { g(); }));")
+        assert format_java._arg_owns_its_rows(arg) is True
+
+    def test_non_paren_node_is_returned_unchanged(self) -> None:
+        """A node that is not a paren group is passed through.
+
+        Deliberately NOT a claim about the `if not named: break`
+        guard inside the loop: that guard is unreachable from
+        Java source, since neither `()` nor `(/* c */)` is a
+        valid expression, so no test here can exercise it. It
+        stays as a cheap structural stop rather than because a
+        case is known to reach it.
+        """
+        tree = format_java.parse_source(b"class A { }")
+        root = tree.root_node
+        assert root.type == "program"
+        assert format_java._unwrap_parens(root) is root
+
+    def test_parenthesized_call_breaks_before_its_argument(
+        self,
+    ) -> None:
+        """A parenthesized call wraps like a bare one.
+
+        This pins the OUTCOME, not the route. The nested-call
+        rule's own type test was unwrapped for uniformity with
+        its three siblings, but reverting just that test changes
+        nothing observable — with or without it a parenthesized
+        call reaches the same two P4 candidates, either through
+        the rule or through the generic cascade below it. The
+        corpus is byte-identical either way. No test here claims
+        to pin that site; this one would stay green if it were
+        reverted, and is here because the outcome is worth
+        locking regardless of which branch delivers it.
+        """
+        src = (
+            "public class A\n{\n    void m()\n    {\n"
+            "        theCollection.forEach((element.someLongMethod"
+            "Name(firstArgument, secondArgument, thirdA)));\n"
+            "    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src)
+        out = out if isinstance(out, str) else out.decode()
+        call_line = next(
+            line for line in out.split("\n")
+            if "theCollection" in line
+        )
+        assert call_line.strip() == "theCollection.forEach(", out
+
+    def test_parenthesized_block_lambda_keeps_its_carve_out(
+        self,
+    ) -> None:
+        """Redundant parens must not cost the item-A carve-out.
+
+        A block-bodied lambda argument is exempt from the
+        arg-list fit check, because its body's widths are the
+        body's own business. Testing that on the parenthesized
+        node instead of the expression made a spare paren layer
+        forfeit the exemption, so an over-long body line
+        escalated the call and pushed the whole body a level
+        deeper — the exact pathology the carve-out prevents.
+        """
+        long_literal = "a" * 80
+        src = (
+            "public class A\n{\n    void m()\n    {\n"
+            "        relatedSources.forEach((("
+            "relationKey, relatedSourceSet) -> {\n"
+            f'            logger.log("{long_literal}");\n'
+            "        }));\n"
+            "    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src)
+        out = out if isinstance(out, str) else out.decode()
+        assert "relatedSources.forEach(((" in out, out
+
+
+class TestSoleArgumentWrapEscalation:
+    """The "if an argument breaks, the list breaks" invariant
+    must hold for a SINGLE argument too.
+
+    The multi-argument cascade consults `p1_invalid_wrap` at its
+    P1 commit check, and the nested-call rule rejects P1 when the
+    sole argument is a bare call. The generic single-argument
+    path consulted neither, so an argument of any other shape
+    committed through P1 whenever its wrapped lines happened to
+    fit — the exact partial break the flag exists to prevent.
+    """
+
+    @staticmethod
+    def _format(body: str) -> str:
+        src = (
+            "public class A\n{\n    void m()\n    {\n"
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src)
+        return out if isinstance(out, str) else out.decode()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # Expression-bodied lambda whose body wraps.
+            "        theCollection.forEach(element -> "
+            "element.someLongMethodName(firstArgument, "
+            "secondArgument, thirdArg));",
+            # Ternary.
+            "        theResultList.add(newBoundValue < 0L ? null "
+            ": String.valueOf(newBoundValue, extraArgument));",
+            # Cast whose operand wraps.
+            "        theResultList.add((SomeVeryLongTypeName) "
+            "buildTheThing(firstArgument, secondArgument, third));",
+        ],
+    )
+    def test_wrapping_sole_argument_breaks_before_itself(
+        self, body: str
+    ) -> None:
+        out = self._format(body)
+        call_line = next(
+            line for line in out.split("\n")
+            if "(" in line and line.strip().startswith(
+                ("theCollection", "theResultList")
+            )
+        )
+        # The call line must carry NOTHING but the receiver, the
+        # method name and the opening paren. Asserting only that
+        # it ends with `(` is too weak to discriminate: in the
+        # partial-break shape this test exists to reject, the
+        # line ends with the INNER call's paren —
+        # `theCollection.forEach(element -> element.check(`.
+        assert re.fullmatch(
+            r"[A-Za-z0-9_.]+\(", call_line.strip()
+        ), (
+            f"argument list stayed open on the call line: "
+            f"{call_line!r}\n{out}"
+        )
+
+    def test_every_argument_after_a_multi_row_one_breaks(
+        self,
+    ) -> None:
+        """Item 8's break is sticky, not one-argument-deep.
+
+        Testing only the argument immediately before let a short
+        argument land on its own line and then have the argument
+        after THAT packed onto it — so the list showed one break
+        and one pack, which is the partial shape the rule exists
+        to prevent.
+        """
+        out = self._format(
+            "        register(() -> {\n"
+            "            doSomething();\n"
+            "        }, firstValue, secondValue);"
+        )
+        tail = [
+            line.strip() for line in out.split("\n")
+            if "firstValue" in line or "secondValue" in line
+        ]
+        assert tail == ["firstValue,", "secondValue);"], out
+
+    def test_parenthesized_binary_keeps_paren_alignment(
+        self,
+    ) -> None:
+        """A spare paren must not cost spec C6 alignment.
+
+        `single_arg_binary` decides whether the sole argument
+        gets paren-aligned operator continuation. Testing it on
+        the parenthesized node sent `log(("a" + x))` down the
+        escalation path while `log("a" + x)` stayed aligned.
+        """
+        body = (
+            '        logger.log({0}"the first part of it " '
+            '+ theVariable + " and the second part"{1});'
+        )
+        for label, src in (
+            ("bare", body.format("", "")),
+            ("parenthesized", body.format("(", ")")),
+        ):
+            out = self._format(src)
+            call_line = next(
+                line for line in out.split("\n")
+                if "logger.log" in line
+            )
+            # Paren-aligned means the argument STARTS on the call
+            # line and its operators continue underneath. The
+            # escalated shape would leave `logger.log(` alone on
+            # the line. Not comparing the two outputs directly:
+            # the extra paren legitimately shifts the alignment
+            # column by one.
+            assert not call_line.rstrip().endswith("("), (
+                f"{label} form escalated instead of "
+                f"paren-aligning\n{out}"
+            )
+            assert '"the first part of it "' in call_line, out
+
+    def test_switch_expression_argument_still_uses_p1(self) -> None:
+        """A switch expression owns its rows like a block.
+
+        No corpus file passes a switch expression to a call at
+        all, so nothing outside this test would catch the
+        exemption being dropped — and without it the whole body
+        escalates a level deeper.
+        """
+        out = self._format(
+            "        map.put(switch (theKey) {\n"
+            "            case ALPHA -> computeTheAlphaValue();\n"
+            "            default -> computeTheDefaultValue();\n"
+            "        });"
+        )
+        assert "map.put(switch (theKey) {" in out, out
+
+    def test_row_owning_sole_argument_still_uses_p1(self) -> None:
+        """A block-bodied lambda must NOT escalate.
+
+        This is the shape the single-arg lambda fix exists to
+        protect; `_arg_owns_its_rows` is what keeps it out of
+        the escalation path.
+        """
+        out = self._format(
+            "        this.performTest(() -> {\n"
+            "            doSomethingUseful(alpha, beta);\n"
+            "        });"
+        )
+        assert "performTest(() -> {" in out
+
+
 class TestGroupInlineTags:
     """`{@tag …}` runs become one atomic token — when they fit."""
 
