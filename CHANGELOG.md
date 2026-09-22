@@ -1675,9 +1675,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 854/854 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 855/855 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 644 and the 210 missing
+  found, so a standalone clone collects 645 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -1694,13 +1694,15 @@ same commit. `requirements.txt` now says so in a comment.
   inline tag held whole, a candidate refused by the stability
   check, a block-tag word (`@Override`) inside prose, and a
   `@param` description that distributes. 41 new unit tests cover
-  the reflow helpers directly. Six more fixtures lock the
+  the reflow helpers directly. Seven more fixtures lock the
   single-argument escalation and its exemptions: a wrapping
   expression-bodied lambda, a wrapping ternary, a text block kept
   on the call line, a parenthesized block-bodied lambda that must
   not escalate, a text block whose trailing arguments each take
-  their own line, and a text block whose content sits left of its
-  closing delimiter and must keep its shape. 32 new unit tests
+  their own line, a text block whose content sits left of its
+  closing delimiter and must keep its shape, and a three-declarator
+  statement that has to reserve room for every name still to come,
+  not just the next one. 32 new unit tests
   cover `_is_text_block`, `_unwrap_parens`, the escalation
   invariant and the text-block re-indent — including a test
   pinning the grammar fact that there is no `text_block` node
@@ -1709,7 +1711,7 @@ same commit. `requirements.txt` now says so in a comment.
   five-shape check that re-indenting never changes a text
   block's value, each run with and without an interior blank
   line, so ten collected. Each of the three
-  convergence guards, five of the six new fixtures and every
+  convergence guards, six of the seven new fixtures and every
   new behavioral unit test was verified by reverting the
   corresponding fix and confirming the suite goes red. The
   exception is stated rather than glossed: the parenthesized
