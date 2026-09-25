@@ -263,6 +263,7 @@ class Emitter:
         "_arg_list_p4_fired",
         "_array_init_inline_only",
         "_anchor_escaped",
+        "_chain_ladder_fired",
         "_raw_rows_emitted",
         "warnings",
     )
@@ -350,6 +351,7 @@ class Emitter:
         # break-at-`=`, where the construct starts shallow
         # enough that the last resort is not reached.
         self._anchor_escaped: bool = False
+        self._chain_ladder_fired: bool = False
         # Set whenever an emit replays source rows verbatim through
         # `write_raw_lines`. Readers save-reset-check-restore, like
         # `_arg_list_p4_fired`. Distinguishes "this construct wrapped"
@@ -536,6 +538,7 @@ class Emitter:
             self._arg_list_p4_fired,
             self._array_init_inline_only,
             self._anchor_escaped,
+            self._chain_ladder_fired,
             self._raw_rows_emitted,
             len(self.warnings),
         )
@@ -544,7 +547,7 @@ class Emitter:
         self,
         snap: tuple[
             int, str, int, int, int | None, int | None, bool, bool,
-            bool, bool, int
+            bool, bool, bool, int
         ],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
@@ -565,6 +568,7 @@ class Emitter:
             arg_list_p4_fired,
             array_init_inline_only,
             anchor_escaped,
+            chain_ladder_fired,
             raw_rows_emitted,
             warnings_count,
         ) = snap
@@ -577,6 +581,7 @@ class Emitter:
         self._arg_list_p4_fired = arg_list_p4_fired
         self._array_init_inline_only = array_init_inline_only
         self._anchor_escaped = anchor_escaped
+        self._chain_ladder_fired = chain_ladder_fired
         self._raw_rows_emitted = raw_rows_emitted
         del self.warnings[warnings_count:]
 
@@ -6916,13 +6921,45 @@ def _emit_assignment_expression(
     # consumer trial). In those cases Step 2's break-at-`=`
     # shortens the first line to just `<LHS>`.
     saved = emitter.snapshot()
+    prev_laddered = emitter._chain_ladder_fired
+    emitter._chain_ladder_fired = False
     emit_inline_rhs()
     inline_fits = (
         emitter.last_lines_max_width(saved[0]) <= effective_max
     )
+    # The chain fell back to the dangling-receiver ladder at the
+    # inline column. Same probe as `_emit_variable_declarator`, and
+    # for the reason this function already states below: `Type x =
+    # RHS` and its bare twin `x = RHS` must not diverge on whether
+    # the LHS carries a type. Keep the break only when it BOTH stops
+    # laddering and fits, so a chain that ladders either way does not
+    # pay a line for nothing.
+    if inline_fits and emitter._chain_ladder_fired:
+        emitter.restore(saved)
+        emitter.newline()
+        emitter.push_indent()
+        emitter.write_indent()
+        emitter.write(op_text)
+        emitter.write(" ")
+        emitter._chain_ladder_fired = False
+        _emit_node(emitter, source, right_node)
+        probe_wins = (
+            not emitter._chain_ladder_fired
+            and emitter.last_lines_max_width(saved[0])
+            <= effective_max
+        )
+        emitter.pop_indent()
+        if probe_wins:
+            emitter._chain_ladder_fired = prev_laddered
+            return
+        emitter.restore(saved)
+        emitter._chain_ladder_fired = False
+        emit_inline_rhs()
     if inline_fits:
+        emitter._chain_ladder_fired = prev_laddered
         return
     emitter.restore(saved)
+    emitter._chain_ladder_fired = prev_laddered
 
     # Step 2: try break-at-operator with the RHS at block+4.
     # Continuation indent is one level deeper than the
@@ -11033,6 +11070,18 @@ def _emit_method_chain_wrapped(
 
     def emit_p3() -> None:
         if head is not None:
+            # The dangling-receiver ladder: the head sits alone at
+            # the end of its line and every segment drops to
+            # `p3_col`. The standards document makes dot-alignment
+            # the primary shape and this ladder the fallback "if
+            # the chain starts too far right for alignment to fit
+            # within 80 characters" — so record that we took it,
+            # letting a caller that can move the chain LEFT (the
+            # declarator's break-at-`=`) retry and win alignment
+            # back. Only the head-bearing form is flagged: with no
+            # head, `segments[0]` leads the line and nothing is
+            # stranded.
+            emitter._chain_ladder_fired = True
             _emit_node(emitter, source, head)
             wrap_from = 0
         else:
@@ -11655,6 +11704,8 @@ def _emit_variable_declarator(
     emitter.write(" = ")
     prev_escaped = emitter._anchor_escaped
     emitter._anchor_escaped = False
+    prev_laddered = emitter._chain_ladder_fired
+    emitter._chain_ladder_fired = False
     with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
     # 0.7.0: an inline RHS whose emission left a line starting LEFT of
@@ -11684,6 +11735,30 @@ def _emit_variable_declarator(
     # so a column test cannot tell a clean ladder from a real orphan.
     # The flag is set at the one place the escape actually happens.
     inline_orphan = emitter._anchor_escaped
+    # 0.7.0: the chain fell back to the dangling-receiver ladder at
+    # the inline column. The standards document treats that ladder
+    # as the fallback for "the chain starts too far right for
+    # alignment to fit", so before accepting it, check whether
+    # breaking at `=` moves the chain far enough left that it can
+    # dot-align after all:
+    #
+    #     java.sql.ResultSet tables = conn
+    #         .getMetaData()
+    #         .getTables(null, "public", "%", new String[] { "T" });
+    #
+    # becomes
+    #
+    #     java.sql.ResultSet tables
+    #         = conn.getMetaData()
+    #               .getTables(null, "public", "%", new String[] { "T" });
+    #
+    # The probe is a real emission, not an estimate, and it is kept
+    # only when it BOTH fits and stops laddering — so a chain that
+    # would ladder either way keeps the inline shape rather than
+    # spending a line to arrive at the same place. Both readings are
+    # functions of the AST and of fixed columns, so the decision does
+    # not depend on how the source happened to be laid out.
+    inline_laddered = emitter._chain_ladder_fired
     # `+ 1` accounts for the trailing `;` the parent
     # field_declaration / local_variable_declaration writes
     # after this emitter returns; `+ tail_reserve` accounts
@@ -11698,6 +11773,58 @@ def _emit_variable_declarator(
         emitter.last_lines_max_width(saved[0]) > _MAX_LINE
         or emitter.column + 1 + emitter.tail_reserve > _MAX_LINE
     )
+    if (
+        inline_laddered
+        and not inline_overflow
+        and not inline_orphan
+    ):
+        # Probe the break-at-`=` shape. Kept only when it BOTH
+        # stops laddering and fits; otherwise the inline shape is
+        # re-emitted and committed, so a chain that ladders either
+        # way does not pay a line to reach the same place.
+        emitter.restore(saved)
+        emitter.newline()
+        emitter.push_indent()
+        emitter.write_indent()
+        emitter.write("= ")
+        emitter._chain_ladder_fired = False
+        with _extra_tail_reserve(emitter, 1):
+            _emit_node(emitter, source, value)
+        probe_wins = (
+            not emitter._chain_ladder_fired
+            and emitter.last_lines_max_width(saved[0]) <= _MAX_LINE
+            and emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+        )
+        # `pop_indent()` before either exit: the win path keeps
+        # this emission and must leave the indent as it found it,
+        # and the lose path's `restore(saved)` would undo it
+        # anyway. Step 2 above documents the opposite convention
+        # for a path that ONLY ever restores; this one can commit,
+        # so it cannot rely on that.
+        emitter.pop_indent()
+        if probe_wins:
+            # The probe's own `_anchor_escaped` is deliberately
+            # dropped rather than propagated. An escape is evidence
+            # that the inline shape needs backing off TO the
+            # break-at-`=` shape — and the probe IS that shape, so
+            # there is nothing further to back off to. (The
+            # neighboring justification at the plain-commit exit
+            # reasons from `inline_orphan`, which describes the
+            # inline emission and does not cover this path.)
+            emitter._anchor_escaped = prev_escaped
+            emitter._chain_ladder_fired = prev_laddered
+            _fire_wrap_overflow_advisory(
+                emitter, node, cascade_start, "variable declarator"
+            )
+            return
+        # Re-emit the inline shape the probe displaced.
+        emitter.restore(saved)
+        emitter.write(" = ")
+        emitter._anchor_escaped = False
+        emitter._chain_ladder_fired = False
+        with _extra_tail_reserve(emitter, 1):
+            _emit_node(emitter, source, value)
+
     if not inline_overflow and not inline_orphan:
         # Hand back the flag as we found it. The reset above is a
         # local measurement device — it exists so `inline_orphan`
@@ -11716,6 +11843,7 @@ def _emit_variable_declarator(
         # is OR-ed in here because reaching this branch requires
         # `inline_orphan` to be False.
         emitter._anchor_escaped = prev_escaped
+        emitter._chain_ladder_fired = prev_laddered
         _fire_wrap_overflow_advisory(
             emitter, node, cascade_start, "variable declarator"
         )
@@ -11730,6 +11858,17 @@ def _emit_variable_declarator(
     with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
     emitter.pop_indent()
+    # Unlike `_anchor_escaped`, which deliberately accumulates across
+    # this backtrack (an escape anywhere under the value is evidence
+    # the enclosing construct needs), the ladder flag is a PER-
+    # DECLARATOR measurement: it answers "did THIS value's chain
+    # ladder", and an enclosing declarator must not read this one's
+    # answer as its own. Hand it back as we found it. Eight corpus
+    # sites exit here with it set; none of them currently changes
+    # output, because an outer probe indents this declarator deeper
+    # and so can only make it ladder harder — but that is an
+    # argument about today's geometry, not an invariant.
+    emitter._chain_ladder_fired = prev_laddered
     # Spec C1 emit-and-warn: the break-at-`=` shape may still
     # overflow when the value is a single atomic token
     # (long identifier / literal). Fire the advisory so

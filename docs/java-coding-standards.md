@@ -1919,6 +1919,30 @@ If the chain starts too far right for alignment to fit within
         .trim();
 ```
 
+When the chain is the value of a declaration or of a bare
+assignment, "too far right" is judged only after breaking at `=`,
+which moves the whole chain one indent from the statement and often
+leaves room to align after all. In those two positions the receiver
+is not left stranded at the end of a line while its own segments sit
+below it:
+
+```java
+    // NOT this — `conn` alone, carrying nothing.
+    java.sql.ResultSet tables = conn
+        .getMetaData()
+        .getTables(null, "public", "%", new String[] { "TABLE" });
+
+    // This — the head leads its first segment, the rest align.
+    java.sql.ResultSet tables
+        = conn.getMetaData()
+              .getTables(null, "public", "%", new String[] { "TABLE" });
+```
+
+The `=` break is only taken when it actually wins alignment. A
+chain whose receiver is long enough to force continuation
+indentation from either column keeps the shorter inline form
+rather than spending a line to reach the same shape.
+
 ### General Continuation Indentation
 
 The continuation indent is **+4 spaces per wrap LEVEL** — not per

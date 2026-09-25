@@ -4434,6 +4434,93 @@ class TestUnwrapParens:
         assert "relatedSources.forEach(((" in out, out
 
 
+class TestChainHeadNeverDangles:
+    """A chain's receiver must not be stranded at end of line.
+
+    The standards document makes dot-alignment the primary chain
+    shape and the `p3_col` ladder the fallback "if the chain
+    starts too far right for alignment to fit within 80
+    characters". A declarator can move the chain left by breaking
+    at `=` first, so the ladder is only correct once THAT has been
+    tried:
+
+        String statistic = MATCHED_COUNT          <- receiver alone
+            .matchKey(key)
+            .toString();
+
+        String statistic
+            = MATCHED_COUNT.matchKey(key)         <- head joins seg 1
+                           .toString();
+    """
+
+    @staticmethod
+    def _format(body: str) -> str:
+        src = (
+            "public class A\n{\n    void m()\n    {\n"
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src)
+        return out if isinstance(out, str) else out.decode()
+
+    @staticmethod
+    def _dangling_heads(text: str) -> list[str]:
+        """Lines ending in a bare receiver, followed by a `.`."""
+        lines = text.split("\n")
+        return [
+            lines[i] for i in range(len(lines) - 1)
+            if lines[i + 1].lstrip().startswith(".")
+            and re.search(r"[=(,]\s*[A-Za-z_][A-Za-z0-9_.]*\s*$",
+                          lines[i])
+        ]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "        String statistic = MATCHED_COUNT"
+            ".matchKey(crossMatchKey.getMatchKey())"
+            ".principle(crossMatchKey.getPrinciple()).toString();",
+            "        java.sql.ResultSet tables = conn.getMetaData()"
+            '.getTables(null, "public", "%", '
+            'new String[] { "TABLE" });',
+            # Taken from RecordReader as the corpus holds it: long
+            # enough that the inline shape strands `CSVFormat
+            # .Builder` and the tail's own argument escapes too.
+            "        if (flag) {\n"
+            "            CSVFormat csvFormat = CSVFormat.Builder"
+            ".create(CSVFormat.DEFAULT).setHeader()"
+            ".setSkipHeaderRecord(true).setIgnoreEmptyLines(true)"
+            ".setTrim(true).setIgnoreSurroundingSpaces(true).get();\n"
+            "        }",
+        ],
+    )
+    def test_receiver_is_not_stranded(self, body: str) -> None:
+        out = self._format(body)
+        assert self._dangling_heads(out) == [], out
+
+    def test_restraint_when_alignment_cannot_fit_either(
+        self,
+    ) -> None:
+        """Breaking at `=` must not be spent for nothing.
+
+        When the receiver is long enough that the chain ladders
+        from the `=` column too, the inline shape is kept — the
+        probe only wins when it actually buys alignment.
+        """
+        out = self._format(
+            "        String value = "
+            "theExtremelyLongReceiverIdentifierNameForThisTest"
+            ".firstSegmentMethodNameHere()"
+            ".secondSegmentMethodNameHere();"
+        )
+        assert "String value = theExtremelyLong" in out, out
+
+    def test_short_chain_is_left_alone(self) -> None:
+        """Nothing changes for a chain that already fits."""
+        out = self._format("        String s = a.b().c();")
+        assert "String s = a.b().c();" in out, out
+
+
 class TestSoleArgumentWrapEscalation:
     """The "if an argument breaks, the list breaks" invariant
     must hold for a SINGLE argument too.

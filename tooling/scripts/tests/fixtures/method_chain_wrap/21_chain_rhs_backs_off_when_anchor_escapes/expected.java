@@ -4,9 +4,9 @@ public class Demo
     {
         if (a) {
             if (b) {
-                String nativeResult = engine
-                    .getNativeApi()
-                    .getEntityByRecordId(dataSourceCode, recordID);
+                String nativeResult
+                    = engine.getNativeApi()
+                            .getEntityByRecordId(dataSourceCode, recordID);
             }
         }
     }

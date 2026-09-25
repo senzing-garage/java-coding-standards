@@ -527,6 +527,60 @@ what every other argument in the same position gets. The exemption list
 is updated in the same pass: it said "two argument forms", while the
 implementation has four.
 
+### A chain's receiver no longer dangles at the end of its line
+
+The standards document makes dot-alignment the primary shape for a
+method chain and continuation indentation the fallback "if the chain
+starts too far right for alignment to fit within 80 characters". The
+formatter judged "too far right" at the chain's inline column only,
+so a declaration whose value was a chain stranded its receiver:
+
+```java
+    String statistic = MATCHED_COUNT
+        .matchKey(crossMatchKey.getMatchKey())
+        .principle(crossMatchKey.getPrinciple())
+        .toString();
+```
+
+`MATCHED_COUNT` ends a line carrying nothing. Breaking at `=` first
+moves the whole chain one indent from the statement, which is
+usually room enough to align after all:
+
+```java
+    String statistic
+        = MATCHED_COUNT.matchKey(crossMatchKey.getMatchKey())
+                       .principle(crossMatchKey.getPrinciple())
+                       .toString();
+```
+
+A declaration now probes that shape whenever the chain laddered, and
+keeps it only when it BOTH stops laddering and fits — so a receiver
+long enough to force the ladder from either column keeps the shorter
+inline form rather than spending a line to arrive at the same place.
+A bare assignment (`x = chain` with no type) takes the same probe,
+because this release already holds that `Type x = RHS` and its
+reassignment twin must not diverge on whether the left side carries
+a type; without it the identical chain rendered two ways three lines
+apart.
+
+Ladders that survive in a declaration or an assignment are restraint
+rather than oversight, by construction rather than by measurement:
+the probe declines only when its own emission ladders too. A chain
+in any OTHER position keeps the inline shape whatever it does — the
+probe lives in those two emitters and nowhere else.
+
+This was already the documented intent in the code. The comment on
+the adjacent `_anchor_escaped` backtrack has always claimed it
+yields `= engine.getNativeApi()` with the tail aligned beneath; the
+formatter produced the ladder instead, and a golden fixture had
+frozen that divergence as expected output.
+
+**31 of the 504 corpus files change; 15 of the 35 files carrying a
+stranded receiver are resolved.** Lines over 80 (1571), advisories
+(289), total line count and convergence are all unchanged — both
+shapes are the same height — and the named-node sequence of every
+one of the 504 files is identical before and after.
+
 ### Four pre-existing defects fixed
 
 All four were surfaced by this release's own review rounds, and all four
@@ -1675,9 +1729,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 855/855 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 863/863 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 645 and the 210 missing
+  found, so a standalone clone collects 653 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -1694,7 +1748,7 @@ same commit. `requirements.txt` now says so in a comment.
   inline tag held whole, a candidate refused by the stability
   check, a block-tag word (`@Override`) inside prose, and a
   `@param` description that distributes. 41 new unit tests cover
-  the reflow helpers directly. Seven more fixtures lock the
+  the reflow helpers directly. Ten more fixtures lock the
   single-argument escalation and its exemptions: a wrapping
   expression-bodied lambda, a wrapping ternary, a text block kept
   on the call line, a parenthesized block-bodied lambda that must
@@ -1702,7 +1756,10 @@ same commit. `requirements.txt` now says so in a comment.
   their own line, a text block whose content sits left of its
   closing delimiter and must keep its shape, and a three-declarator
   statement that has to reserve room for every name still to come,
-  not just the next one. 32 new unit tests
+  not just the next one, a chain whose receiver must not be left
+  dangling, and a chain that ladders from either column and so
+  keeps the inline shape, and an assignment that must match its
+  declaration twin. 37 new unit tests
   cover `_is_text_block`, `_unwrap_parens`, the escalation
   invariant and the text-block re-indent — including a test
   pinning the grammar fact that there is no `text_block` node
@@ -1711,7 +1768,7 @@ same commit. `requirements.txt` now says so in a comment.
   five-shape check that re-indenting never changes a text
   block's value, each run with and without an interior blank
   line, so ten collected. Each of the three
-  convergence guards, six of the seven new fixtures and every
+  convergence guards, nine of the ten new fixtures and every
   new behavioral unit test was verified by reverting the
   corresponding fix and confirming the suite goes red. The
   exception is stated rather than glossed: the parenthesized
