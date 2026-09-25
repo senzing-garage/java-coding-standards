@@ -151,6 +151,30 @@ if (someVeryLongCondition
 }
 ```
 
+### Enhanced-`for` header wrapping
+
+When an enhanced-`for` header does not fit on one line, break
+**before the `:`**, with the colon leading the continuation line so
+the iterable stays visually attached to it. Because the header is
+now multi-line, the opening brace goes Allman per the
+[Multi-Line Conditions](#exception-multi-line-conditions) rule:
+
+```java
+    for (Map.Entry<String, Map<String, SzFlagMetaData>> entry
+            : parent.entrySet())
+    {
+        // ...
+    }
+```
+
+A header that fits keeps the same-line brace:
+
+```java
+    for (String name : names) {
+        // ...
+    }
+```
+
 ### Closing Brace Rules
 
 - `catch`, `finally`, `else`, `else if`, and `while` (in do-while)
@@ -359,9 +383,7 @@ When a parameter annotation has arguments that themselves wrap,
 the annotation+type pair cannot fit on a single line. The
 formatter promotes the parameter list directly to **priority 3**
 (next-line double-indented, one parameter per line) — parameters
-with multi-line annotations are never paren-aligned. This is an
-explicit short-circuit consistent with how text-block arguments
-force the next-line form (see "Text Blocks").
+with multi-line annotations are never paren-aligned.
 
 ---
 
@@ -400,10 +422,37 @@ after the longest parameter type:
     }
 ```
 
+A **single** parameter is never padded — the column exists to line up
+several names, and with one name there is nothing to line it up with,
+so the gutter would read as a mistake. A single parameter takes one
+space after its type on whichever priority it lands. A list containing
+a varargs parameter (`String... rest`) is likewise emitted one-per-line
+without padding, because its prefix is not a bare type and so a single
+measured width does not describe it.
+
 **Priority 3: Double-indented parameters** — when any single
 parameter line under Priority 2 exceeds 80 characters, line-break
 before the first parameter and place each parameter on its own line
-with double indentation (8 spaces from the method declaration).
+with double indentation (8 spaces from the method declaration). Priority 3
+is skipped when it would not actually gain room — that is, when the
+opening parenthesis already sits at or left of the double-indent
+column, breaking after it moves every parameter FURTHER right, so
+Priority 2 remains the narrowest shape and becomes the terminal
+candidate. What decides this is the column of the `(`, not the
+length of the method name: the return type, any modifiers and any
+type parameters all push it right.
+
+```java
+    // paren at column 11, double-indent would be 12 — keep Priority 2
+    void m(SomeExtremelyLongQualifiedTypeName a,
+           int aParameterWithAnExtremelyLongName)
+
+    // paren at column 19 — Priority 3 is genuinely narrower
+    StringBuffer m(
+            SomeExtremelyLongQualifiedTypeName a,
+            int aParameterWithAnExtremelyLongName)
+```
+
 Types are left-aligned vertically; names are aligned on the first
 4-space tab stop after the longest type:
 
@@ -1032,10 +1081,40 @@ line aligned to the first column after the opening parenthesis:
                        parameterC, parameterD);
 ```
 
+Priority 2 is skipped when the call is embedded in another
+expression — as a positional argument of another call, or as the
+receiver of a method chain. See
+[Nested-call wrap](#nested-call-wrap) below.
+
+**Priority 2b: Next-line, all arguments on one line** — if priority 2
+overflows because the call's own prefix leaves no useful room at the
+paren-aligned column, but **all** the arguments fit together on a
+single continuation line, break immediately after the opening
+parenthesis and place them there at **single indentation (4 spaces)**
+from the start of the call's line:
+
+```java
+    BadOptionParametersException ex = new BadOptionParametersException(
+        COMMAND_LINE, CONFIG, "--config", List.of());
+```
+
+This is the zero-arguments-on-the-call-line member of the same greedy
+family as priority 2, which is why it is numbered with it and tried
+immediately after it. The rule for the family is **two lines
+maximum**: zero or more arguments on the call line, and all remaining
+arguments on one continuation line. Priority 2 covers the "one or
+more on the call line" case; priority 2b covers "none on the call
+line". If the arguments will not fit on a single continuation line
+either, the greedy family is exhausted and the cascade falls through
+to priority 3.
+
+Like priority 2, this priority is skipped when the call is embedded
+in another expression — see [Nested-call wrap](#nested-call-wrap).
+
 **Priority 3: Paren-aligned, one argument per line** — if the
-argument list cannot fit in priority 2's two-line shape, place each
-argument on its own line, with all arguments left-aligned to the
-first column after the opening parenthesis:
+argument list fits neither two-line greedy shape (priority 2 or 2b),
+place each argument on its own line, with all arguments left-aligned
+to the first column after the opening parenthesis:
 
 ```java
     someVar.someMethod(parameterA,
@@ -1075,6 +1154,238 @@ The argument list either stays entirely on one line (priority 1),
 wraps with paren-aligned continuation (priorities 2–3), or fully
 unrolls onto next-line indented arguments (priority 4) — never
 mid-form.
+
+### If an argument breaks, the argument list breaks
+
+An argument that is too wide for the space left on the call line
+must not be packed onto it and then wrapped internally. Wrapping
+the argument in place satisfies the 80-character limit — every
+emitted line is under the cap — while still producing the
+anti-pattern above, because the argument's own continuation column
+is set by where the line ran out rather than by any structure:
+
+```java
+    // WRONG — arg 2 packed onto the call line, then wrapped.
+    assertThrows(IllegalStateException.class, () -> mapB.put("key2",
+                                                            "val2"));
+```
+
+Break the argument list instead, which gives the argument a full
+line to render on:
+
+```java
+    assertThrows(IllegalStateException.class,
+                 () -> mapB.put("key2", "val2"));
+```
+
+The rule holds at every priority above priority 4, which is the
+terminal fallback and where wrapping is permitted of necessity.
+Priority 3 is included even though each argument already has its
+own line there. In the clearest case the argument's continuation
+lands at exactly the column its siblings occupy, so it stops being
+distinguishable from an argument:
+
+```java
+                    // WRONG — is `+ " record not as expected:"`
+                    // an argument or a continuation?
+                    multilineFormat(rr.getFormat()
+                                    + " record not as expected:",
+                                    "RECORDS TEXT: ",
+                                    recordsText,
+                                    "EXPECTED: ",
+                                    expectedText);
+```
+
+Falling through to priority 4 moves the arguments to their own
+column and leaves the continuation unambiguously subordinate:
+
+```java
+                    multilineFormat(
+                        rr.getFormat() + " record not as expected:",
+                        "RECORDS TEXT: ",
+                        recordsText,
+                        "EXPECTED: ",
+                        expectedText);
+```
+
+That example needs its depth to reach priority 3 at all; at
+shallower indentation the same call fits priority 2. The rule
+applies to any argument that wraps, not only to the ambiguous
+case — a nested call's continuation sits at its own paren column,
+strictly deeper than its siblings and so never ambiguous, and it
+still breaks the list. Uniformity is the point: one question is
+asked of every argument at every priority, rather than a
+per-construct judgement about whether a given continuation happens
+to be confusable.
+
+This applies to any argument complex enough to wrap — a nested
+call, a lambda, an object creation, or a compound expression such
+as a long string concatenation. It does not affect simple
+arguments, which cannot wrap and so continue to pack under
+priority 2:
+
+```java
+    someVar.someMethod(parameterA, parameterB, parameterC, parameterD,
+                       parmE);
+```
+
+Some argument forms are exempt, because spanning several lines is
+inherent to them rather than the result of a wrap: block-bodied
+lambdas, text blocks, anonymous classes and switch expressions —
+each of them brace- or delimiter-bounded, so the reader sees a
+closed block rather than a dangling continuation. All keep
+priority 1. Redundant parentheses around one of them do not
+forfeit the exemption. When such an argument is followed by
+others, every argument after it takes its own line; see "Text
+blocks as method-call arguments" for a worked example of that.
+
+A sole exempt argument simply keeps the call line:
+
+```java
+    this.performTest(() -> {
+        doSomething();
+    });
+```
+
+### Nested-call wrap
+
+A call that is **embedded** in another expression wraps differently
+from a call at statement top level. "Embedded" means either of:
+
+- the call is a positional argument of another call, or
+- the call is the receiver of a method chain — one or more
+  `.segment()` calls follow it.
+
+An **expression-bodied lambda is transparent to rule 2**: in
+`assertThrows(Ex.class, () -> record(a, b, c))` the inner
+`record(…)` is embedded just as surely as in
+`assertThrows(Ex.class, record(a, b, c))`, because the reader is
+still holding the enclosing call in mind while reading the inner
+argument list. Curried lambdas (`a -> b -> record(…)`) resolve to
+whatever construct encloses the outermost lambda. Rules 1 and 3
+are not affected: rule 1 requires the sole argument to be a call,
+which a lambda is not, and rule 3 requires the chain's parent to
+be an argument list, which a lambda displaces.
+
+A **block-bodied lambda is opaque**. Its statements stand at their
+own indent and share their line with nothing, so the greedy tiers
+read perfectly well there:
+
+```java
+    assertThrows(SampleException.class, () -> {
+        consumerFactory.createConsumer(ConsumerKind.DATABASE,
+                                       configuration, 250L);
+    });
+```
+
+Rules 1 and 2 below use that definition as written, with the
+lambda carve-out noted above applying to rule 2 only. Rule 3 is
+narrower: it governs the chain tail only when the chain is the
+**sole** argument of its enclosing call — the position rule 1 has
+already broken out onto its own line. A chain that is one of
+several arguments keeps its ordinary tail layout.
+
+In those positions the priority 2 comma-packed form reads badly,
+because the reader must track a half-packed argument list and the
+enclosing construct at the same time. Three rules apply.
+
+**Rule 1 — break before a sole nested argument.** When a call's
+only argument is itself a method invocation (plain, or the head of
+a chain) that cannot stay on one line, break before it so it lands
+at single indentation from the start of the enclosing call's line:
+
+```java
+    reportUpdates.add(
+        builder(DATA_SOURCE_SUMMARY, ENTITY_COUNT, source, entityId)
+            .records(-1)
+            .build());
+```
+
+**Rule 2 — skip the greedy tiers (priority 2 and 2b).** Within an
+embedded call's own argument list, neither two-line greedy tier is
+used; the cascade goes priority 1 → priority 3 → priority 4. This
+keeps the argument list a single readable column:
+
+```java
+    reportUpdates.add(
+        builder(DATA_SOURCE_SUMMARY,
+                ENTITY_COUNT,
+                dataSourceCode,
+                targetSourceCode,
+                entityId)
+            .records(-1)
+            .build());
+```
+
+Rule 2 applies regardless of how many arguments the **enclosing**
+call has — the shape it prevents is equally hard to read either
+way. Rule 1, by contrast, only applies when there is a single
+argument to break before; with several arguments the enclosing call
+wraps by its own cascade:
+
+```java
+    record(source, builder(DATA_SOURCE_SUMMARY,
+                           ENTITY_COUNT,
+                           dataSourceCode,
+                           entityId)
+                       .build());
+```
+
+**Rule 3 — uniform chain tail.** Chain segments following an
+embedded call always go one per line, anchored at the chain's own
+start column plus 4. The anchor is deliberately relative to the
+chain rather than to the enclosing statement; anchoring to the
+statement pulls the tail far to the left of the chain it belongs
+to, orphaning it.
+
+#### Shapes that are not produced
+
+Two otherwise-plausible layouts are excluded on purpose. Both are
+readable in isolation, but selecting them requires comparing how
+two different continuation columns fit, and that comparison is not
+stable across formatting passes — the same construct can rank the
+columns differently on a second pass and oscillate.
+
+```java
+    // NOT PRODUCED — the enclosing call is left inline. Note the
+    // inner list's paren-alignment is fine on its own (shape D
+    // above uses it); what is excluded is anchoring it to the
+    // enclosing call's paren, which makes the column a function of
+    // the receiver's length so it drifts rightward with deeper
+    // nesting and longer receivers.
+    reportUpdates.add(builder(DATA_SOURCE_SUMMARY,
+                              ENTITY_COUNT,
+                              entityId).records(-1)
+                                       .build());
+```
+
+```java
+    // NOT PRODUCED — first chain segment hung off the inner
+    // call's closing paren, later segments dot-aligned under it.
+    // The dot-align column derives from the callee name plus the
+    // argument widths, so it matches no structural indent.
+    reportUpdates.add(
+        builder(DATA_SOURCE_SUMMARY,
+                ENTITY_COUNT,
+                entityId).records(-1)
+                         .build());
+```
+
+Excluding both leaves a two-tier cascade with a single fit test:
+break the enclosing call, pack the arguments if they fit at the
+new column, otherwise one per line — and the tail is always one
+segment per line.
+
+Per rule 3's narrower scope above, a chain that is one of several
+arguments is untouched by it — rule 1 never broke that chain out,
+so its tail keeps the ordinary dot-aligned layout, which reads well
+when the receiver is a plain identifier:
+
+```java
+    assertEquals("expected", actualMethod.replaceAll("\\s", "")
+                                         .replaceAll("\\n", " ")
+                                         .trim());
+```
 
 ---
 
@@ -1297,8 +1608,14 @@ opening always terminates the line that introduces the text block
 ### Closing `"""` placement
 
 The closing `"""` lives on its own line at +4 from the introducing
-statement's column (single-indent). Content lines are at the same
-column as the closing `"""` or further right:
+statement's column (single-indent). Content lines usually sit at
+that column or further right, but they need not: per JLS 3.10.6 the
+closing delimiter is one participant in the incidental-whitespace
+minimum, not a floor beneath the content, so a block may legally
+indent its content less than its delimiter. Where moving such a
+block to +4 would push a content line past column 0, the formatter
+moves the whole block less far and leaves the delimiter short of
++4, rather than altering what the block spells:
 
 ```java
 String json = """
@@ -1321,20 +1638,35 @@ formatter does **not**:
 - Normalize spacing or alignment of content.
 - Reflow content paragraphs.
 
-The formatter only positions the opening and closing `"""` and
-ensures the closing's column is consistent. Internal lines are
-preserved byte-for-byte.
+The formatter positions the opening and closing `"""` and
+re-indents the block as a unit so the closing delimiter reaches
+its target column. Content lines move by the same amount as the
+delimiter, never independently, so the block's internal shape —
+and therefore the string the program sees — is unchanged. Where
+a leftward move would push some line past column 0, the whole
+block moves less far instead, and the closing `"""` stops short
+of its target rather than the content losing its shape.
 
 ### Text blocks as method-call arguments
 
-When a method call has a text block as one of its arguments
-(whether single or multiple), the surrounding call always uses a
-**priority 4 shape** (one argument per line, single-indent from
-the call statement) — the formatter does NOT try priority 1/2/3
-forms for calls containing a text block argument. The text
-block's opening `"""` ends the call line (after `(` for the first
-arg, or after `,` for subsequent args). Content lines and closing
-`"""` are at +4 from the call statement:
+A text block spans several lines because that is what it is, not
+because anything wrapped it, so it does not force the call to
+break before its first argument — see "If an argument breaks, the
+argument list breaks" above, where text blocks are one of the
+exempt forms. The text block's opening `"""` ends the call line (after
+`(` for the first argument, or after `,` for a later one). The
+formatter re-anchors the closing `"""` to +4 from the
+introducing statement, as described above, and moves the content
+lines by the same amount — so the block keeps its shape, though
+not its absolute column. Content is allowed to sit to the LEFT
+of the closing delimiter: per JLS 3.10.6 the delimiter is one
+participant in the incidental-whitespace minimum, not a floor
+beneath the content.
+
+Once any argument has spanned multiple rows, **every argument
+after it takes its own line**, so nothing is left jammed against
+a text block's closing delimiter. Those later arguments align
+under the call's opening `(`, in the usual paren-aligned column:
 
 ```java
 // Single text block argument:
@@ -1344,23 +1676,29 @@ service.executeQuery("""
     WHERE id = ?
     """);
 
-// Text block as first arg, simple second arg — every arg on its
-// own line at +4:
+// Text block as first arg, simple second arg:
 service.executeQuery("""
     SELECT *
     FROM users
     WHERE id = ?
     """,
-    userId);
+                     userId);
 
-// Multiple args including a text block, all on their own lines:
+// Multiple args including a text block — each later arg on its
+// own line:
 service.executeQuery("""
     SELECT *
     FROM users
     WHERE id = ?
     """,
-    userId,
-    IsolationLevel.READ_COMMITTED);
+                     userId,
+                     IsolationLevel.READ_COMMITTED);
+
+// A text block as the LAST argument keeps the earlier ones on
+// the call line, since nothing follows it to be jammed:
+engine.addRecord(SzRecordKey.of(PASSENGERS, "ABC123"), """
+    { "NAME_FULL": "Joe Schmoe" }
+    """);
 ```
 
 **Convention:** text blocks used directly inline as method-call
@@ -1580,6 +1918,30 @@ If the chain starts too far right for alignment to fit within
         .toString()
         .trim();
 ```
+
+When the chain is the value of a declaration or of a bare
+assignment, "too far right" is judged only after breaking at `=`,
+which moves the whole chain one indent from the statement and often
+leaves room to align after all. In those two positions the receiver
+is not left stranded at the end of a line while its own segments sit
+below it:
+
+```java
+    // NOT this — `conn` alone, carrying nothing.
+    java.sql.ResultSet tables = conn
+        .getMetaData()
+        .getTables(null, "public", "%", new String[] { "TABLE" });
+
+    // This — the head leads its first segment, the rest align.
+    java.sql.ResultSet tables
+        = conn.getMetaData()
+              .getTables(null, "public", "%", new String[] { "TABLE" });
+```
+
+The `=` break is only taken when it actually wins alignment. A
+chain whose receiver is long enough to force continuation
+indentation from either column keeps the shorter inline form
+rather than spending a line to reach the same shape.
 
 ### General Continuation Indentation
 
@@ -1996,13 +2358,16 @@ This invariant applies uniformly to:
   the same-method greedy P2 candidate): break before the next
   segment when the previous segment's argument list wrapped
   multi-row.
-- Argument lists — anti-stranding is handled implicitly by the
-  per-arg `widths_ok` width gate during speculative packing,
-  not by an explicit "previous arg wrapped → break" branch.
-  When a prior arg's emission wraps, the next pack-attempt
-  usually overflows the current line and falls back to a new-
-  line break naturally. This gives the same end-result as the
-  explicit check, but the mechanism is different.
+- Argument lists — priority 1 carries an explicit check, and it
+  is sticky: once ANY earlier argument has emitted multi-row,
+  every argument after it takes its own line. It has to be
+  sticky rather than "the argument immediately before me",
+  because a short argument following a multi-row one would
+  otherwise land on its own line and then have the argument
+  after THAT packed onto it. In the greedy packing tiers the
+  same effect arises implicitly instead, from the per-argument
+  `widths_ok` gate: once a prior argument has wrapped, the next
+  pack attempt overflows the line and breaks anyway.
 
 This is the same anti-stranding principle that 0.4.3's Bug 1 fix
 applied to method chains, generalized across constructs.
@@ -2107,15 +2472,18 @@ which literal / operand to split. Speculative emits earlier in
 the cascade that overflowed but rolled back don't fire — only
 the committed candidate's advisory persists.
 
-**Source-preservation with no fallback.** When the formatter
-encounters an argument list whose source already wraps multi-
-line, it may preserve the developer's layout verbatim
-(re-anchoring continuation columns at the canonical
-`paren_align_col + 4` or `block + 4` target). If the re-anchored
-layout still overflows 80 chars (because a contained string
-literal or expression is itself too long), the formatter fires
-the advisory and emits anyway — it does NOT fall back to a
-shallower column or to raw verbatim. The overflow becomes a
+**Source-preservation with no fallback.** The formatter preserves
+an argument list's authored layout in two cases, both of them
+ones where reflowing would be wrong rather than merely different:
+the list carries interleaved comments, or it sits in a
+`CSOFF`/`CSON` region. (0.7.0 removed a third, width-based
+trigger — "the authored first line still fits, so keep it" —
+which made the output depend on the previous pass.) Preserved
+lines are re-anchored to the canonical `paren_align_col + 4` or
+`block + 4` target. If the re-anchored layout still overflows 80
+chars (because a contained string literal or expression is itself
+too long), the formatter fires the advisory and emits anyway — it
+does NOT fall back to a shallower column or to raw verbatim. The overflow becomes a
 checkstyle LineLength violation the developer must resolve by
 splitting the offending literal at a word boundary, extracting
 a long expression to a local variable, or restructuring. This
@@ -2467,8 +2835,8 @@ Javadoc comment lines must conform to the 80-character line limit.
 ### Prose Paragraphs
 
 Reflow prose text to fill lines as close to 80 characters as possible.
-Do **not** leave orphaned short words (1-3 words) on a line by
-themselves unless it is the very last line of the paragraph.
+Do **not** leave an orphaned short line (1-3 words) in the MIDDLE of
+a paragraph — a short line followed by more prose is always wrong:
 
 **Bad:**
 
@@ -2484,10 +2852,50 @@ themselves unless it is the very last line of the paragraph.
 
 ```java
     /**
-     * The number of milliseconds to sleep between checks on the
-     * locks required for tasks that have been postponed.
+     * The number of milliseconds to sleep between checks on the locks required
+     * for tasks that have been postponed.
      */
 ```
+
+A short LAST line is not an error — packing the first line tight is a
+perfectly good answer, and a paragraph whose last line already
+carries a real clause is left alone. But when the formatter is
+reflowing a paragraph anyway and a greedy fill WOULD strand a 1-3
+word fragment at the end, it balances the breaks instead — across
+the whole paragraph, however many lines it runs to. From this
+source:
+
+```java
+    /**
+     * Returns the total number of milliseconds that elapsed from the moment this batch was first created until the point at which it was finally closed.
+     */
+```
+
+greedy strands the last line, and balancing spreads the same three
+lines evenly:
+
+```java
+    // greedy
+     * Returns the total number of milliseconds that elapsed from the moment
+     * this batch was first created until the point at which it was finally
+     * closed.
+    // balanced
+     * Returns the total number of milliseconds that
+     * elapsed from the moment this batch was first created
+     * until the point at which it was finally closed.
+```
+
+Balancing never costs a line: if the content fits in fewer lines,
+fewer lines are used.
+
+Note for adopters: the formatter balances only when it is already
+reflowing a paragraph — because a line overflows, or because the
+first word of the next line would have fitted on the line before it.
+A paragraph already wrapped tidily inside the limit is left as the
+author wrote it rather than rewritten for evenness alone, so
+adopting this release does not churn existing javadoc. The greedy
+block above is itself such a paragraph: fed back to the formatter it
+comes out unchanged.
 
 ### Tag Descriptions (@param, @return, @throws)
 
@@ -2496,22 +2904,69 @@ align with the start of the description text (not the tag keyword):
 
 ```java
     /**
-     * @param category  The category for the report.
-     * @param startDate The start date, or <code>null</code>
-     *                  if no start date filter is applied.
-     * @return The generated report, or <code>null</code> if
-     *         the specified parameter is <code>null</code> or
-     *         an empty string.
-     * @throws IllegalArgumentException If the specified category
-     *         is not a recognized report category.
+     * @param category The category for the report.
+     * @param startDate The start date, or <code>null</code> if no start date
+     *                  filter is applied.
+     * @return The generated report, or <code>null</code> if the specified
+     *         parameter is <code>null</code> or an empty string.
+     * @throws IllegalArgumentException If the specified category is not a
+     *                                  recognized report category.
      */
 ```
+
+Note that the continuation column follows the tag and its parameter
+name, so it differs per tag — `@throws` with a long exception type
+indents further than `@param`. Earlier revisions of this document
+showed every continuation at a single shared column, which
+contradicted the rule stated just above it.
 
 ### HTML and Inline Tags
 
 Lines containing `{@link ...}`, `{@code ...}`, `<code>...</code>`,
 `<p>`, `<ul>`, `<li>`, `<pre>`, etc. should be treated as part of the
 prose flow and not left as orphaned short lines.
+
+An inline tag is **one unit** and is not broken across a line
+boundary. Javadoc renders the broken form correctly, but it reads
+badly:
+
+**Bad:**
+
+```java
+    /**
+     * The identifier of the {@link
+     * SampleRequestHandler} that accepted this particular request.
+     */
+```
+
+**Good:**
+
+```java
+    /**
+     * The identifier of the {@link SampleRequestHandler}
+     * that accepted this particular request.
+     */
+```
+
+A tag wider than the available line is the one exception — holding
+it together would overflow the limit, which is worse than the
+break, so it stays split.
+
+There is a second, subtler limit. A line that STARTS with `{@` or
+`<` splits a paragraph, and a line that is not prose at all — a
+leading `@` block tag, an `<li>`, an indent of its own — ends the
+paragraph entirely. Moving any of those to the head of a line
+changes how the paragraph is grouped on the next formatting pass,
+and the pass after that can reflow it differently. A layout that
+would do this is rejected in favour of the previous one, because a
+stable layout beats a prettier one that does not survive being
+formatted twice. In practice this leaves a small number of
+paragraphs — those whose tag is long enough that it can only sit on
+a line of its own — reflowed greedily with the tag still split.
+
+This limit does not apply to `@param` / `@return` / `@throws`
+descriptions, which are re-flowed by their own handler and are never
+split at a tag, so no boundary can arise there.
 
 ### Reflow invariants
 

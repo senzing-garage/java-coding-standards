@@ -4,9 +4,7 @@ public class Demo
     {
         String[] args = null;
         try {
-            for (int i = 0;
-                 i < 10;
-                 i++)
+            for (int i = 0; i < 10; i++)
             {
                 args = new String[] {
                     "--port", "9080", "--interface", "localhost"

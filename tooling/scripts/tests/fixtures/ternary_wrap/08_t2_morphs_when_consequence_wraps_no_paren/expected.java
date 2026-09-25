@@ -1,9 +1,9 @@
 public class Demo
 {
     public String describe(boolean flag,
-                           String userName,
-                           int recordCount,
-                           String detailedStatus)
+                           String  userName,
+                           int     recordCount,
+                           String  detailedStatus)
     {
         return flag
             ? "userName=[ " + userName

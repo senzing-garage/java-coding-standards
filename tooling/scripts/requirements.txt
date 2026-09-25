@@ -4,16 +4,23 @@
 # Install locally with:
 #     pip install -r tooling/scripts/requirements.txt
 #
-# Python 3.10+ is required (tree-sitter 0.25.x dropped support for
-# 3.9). The pinned versions below are kept tight so that parses
-# are deterministic across developer machines and CI; bumps go
-# through the standards-repo dependabot cooldown and the
-# calibration-gate re-run.
+# Python 3.10+ is required (tree-sitter declares
+# `Requires-Python >=3.10` as of the 0.25 line). The pinned
+# versions below are kept tight so that parses are deterministic
+# across developer machines and CI; bumps go through the
+# standards-repo dependabot cooldown and the calibration-gate
+# re-run.
+#
+# IMPORTANT — every pin here is mirrored by the `GRAMMAR_VERSION`
+# dict in `format_java.py`, and `TestGrammarVersionPins` fails the
+# build when the two drift. Dependabot can only edit this file, so
+# its bump PRs always arrive red; bump `GRAMMAR_VERSION` in the
+# same commit to make them green.
 
-# tree-sitter Python binding. 0.25.2 (Apr 2025) is the current
+# tree-sitter Python binding. 0.26.0 (Jul 2026) is the current
 # stable line. Pins like this also constrain Dependabot — set the
 # range carefully when bumping.
-tree-sitter==0.25.2
+tree-sitter==0.26.0
 
 # tree-sitter-java grammar. 0.23.5 (Dec 2024) is the current
 # stable. The formatter dispatches on grammar node names; the
