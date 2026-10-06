@@ -3915,8 +3915,20 @@ def _splits_inline_tag(lines: list[str]) -> bool:
 def _min_ragged_lines(
     tokens: list[str], max_content: int, max_lines: int
 ) -> list[str] | None:
-    """Break `tokens` into at most `max_lines` lines, minimizing the
-    sum of squared slack.
+    """Break `tokens` into the FEWEST lines that fit, and among
+    arrangements of that many, the one minimizing the sum of
+    squared slack.
+
+    Line count comes first deliberately. `best[0][k]` holds the
+    least cost achievable in at most `k` lines and is non-increasing
+    in `k`, so `best[0][max_lines]` would be the globally cheapest
+    arrangement — but it can buy a lower cost by spending an extra
+    row, and a javadoc paragraph that grows a line to look tidier is
+    a bad trade. Scanning `k` upward and taking the first that fits
+    picks the shortest arrangement, then balances within it.
+    Selecting the global minimum instead changes nothing across the
+    504-file corpus; the orders agree there, and this is the one to
+    keep when they diverge.
 
     The slack of EVERY line counts, the last one included. Classic
     minimum-raggedness leaves the last line free, which packs the
@@ -5331,8 +5343,11 @@ def _emit_switch_expression(
     # condition's RENDERED output spans more than one line, the
     # brace drops to its own line at the switch's indent so the
     # condition stays visually separate from the body. Mirrors
-    # `_emit_if_statement`, including the +2 tail reserve for the
-    # `) {` that follows the condition.
+    # `_emit_if_statement`, including the +2 tail reserve. The two
+    # characters are the space and the `{` — the closing `)` is
+    # emitted by the condition itself, which is a
+    # `parenthesized_expression` carrying both of its own parens.
+    # Named precisely so the count is not "corrected" to 3 later.
     emitter.write("switch ")
     cond_start_line_count = emitter.line_count
     prev_reserve = emitter.set_tail_reserve(
@@ -6536,9 +6551,11 @@ def _emit_enhanced_for_statement(
     # emits against the bare limit and the `)` lands in column 81 —
     # silently, idempotent on re-run, and so beyond the reach of a
     # reformat.
-    # Every sibling construct reserves for its own closer: basic
-    # `for` and `if` reserve 2 for `) {`, this path needs 1 because
-    # the Allman brace moves to the next line.
+    # Every sibling construct reserves for its own closer. Basic
+    # `for` and `if` reserve 2 — their condition node emits its own
+    # `)`, leaving ` {`; enhanced-`for` reserves 3 because it writes
+    # the `)` itself. This path needs 1, because the Allman brace
+    # moves to the next line and only the `)` is left.
     prev_close_reserve = emitter.set_tail_reserve(
         emitter.tail_reserve + 1
     )
@@ -6592,8 +6609,12 @@ def _emit_while_statement(
         # If so, switch to Allman brace — the rendered output
         # has a multi-row header even though the source didn't.
         # Bump tail_reserve so the condition's wrap engine
-        # accounts for the upcoming `) {` (3 chars: `)`, ` `,
-        # `{`) when deciding to wrap.
+        # accounts for what follows it when deciding to wrap.
+        # Two characters, not three: the condition is a
+        # `parenthesized_expression` and emits its own `)`, so
+        # only ` ` and `{` are still to come. (Enhanced-`for`
+        # reserves 3 for the same-looking tail because there the
+        # `)` really is still outstanding.)
         cond_start_line_count = emitter.line_count
         prev_reserve = emitter.set_tail_reserve(
             emitter.tail_reserve + 2
@@ -6970,7 +6991,13 @@ def _emit_assignment_expression(
         if probe_wins:
             emitter._chain_ladder_fired = prev_laddered
             return
+        # Re-emit the inline shape the probe displaced. Both
+        # measurement flags are cleared first, as the declarator's
+        # matching path does: `restore` has already rewound the
+        # buffer, so anything either flag still holds was recorded
+        # by the probe emission that is now being thrown away.
         emitter.restore(saved)
+        emitter._anchor_escaped = False
         emitter._chain_ladder_fired = False
         emit_inline_rhs()
     if inline_fits and not inline_orphan:

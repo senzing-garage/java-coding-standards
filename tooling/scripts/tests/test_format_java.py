@@ -5329,6 +5329,13 @@ class TestSnapshotRestoreCoversSpeculationFlags:
             "_anchor_escaped": False
         }
 
+    # Scope note: this walks the slots that hold a `bool` at
+    # construction. A speculation flag introduced as `None` or as
+    # an int would be skipped silently rather than failing here.
+    # Every such flag so far is a bool, and widening the check
+    # would mean guessing which non-bool slots are speculation
+    # state and which are buffers — so the narrow version is kept
+    # and its limit written down.
     def test_every_bool_slot_survives_a_roundtrip(self) -> None:
         """Catches a NEW flag added to `__slots__` but not to the
         snapshot tuple — the failure mode the two cases above are
@@ -5363,33 +5370,61 @@ class TestAdvisoryWidthPatchGuard:
     safety net is one nobody can tell is still wired up.
     """
 
-    def test_coherent_warning_is_patched(self) -> None:
-        warning = format_java.FormatterWarning(
-            line=1, column=1,
-            message="x wrap could not fit within 80 chars "
-                    "(max line width 86). Fix it.",
-            width=86,
+    @staticmethod
+    def _fire_over(seeded_message: str, seeded_width: int):
+        """Drive the real de-duplication path and return the kept warning.
+
+        Builds an emitter holding one advisory, puts a 90-column
+        line in front of it, and calls
+        `_fire_wrap_overflow_advisory` over a node whose line
+        range contains that advisory — which is the situation the
+        de-duplication exists for. The widening branch is taken
+        because 90 exceeds the seeded width.
+        """
+        emitter = format_java.Emitter()
+        emitter.warnings.append(
+            format_java.FormatterWarning(
+                line=1, column=1,
+                message=seeded_message,
+                width=seeded_width,
+            )
         )
-        stale = f"max line width {warning.width}"
-        patched = warning.message.replace(stale, "max line width 87", 1)
-        assert patched != warning.message
-        assert "max line width 87" in patched
+        emitter.write("x" * 90)
+        tree = format_java.parse_source(b"class A { void m() { } }")
+        format_java._fire_wrap_overflow_advisory(
+            emitter, tree.root_node, 0, "argument list"
+        )
+        assert len(emitter.warnings) == 1, (
+            "de-duplication must keep exactly one advisory"
+        )
+        return emitter.warnings[0]
+
+    def test_coherent_warning_is_patched(self) -> None:
+        kept = self._fire_over(
+            "x wrap could not fit within 80 chars "
+            "(max line width 86). Fix it.",
+            86,
+        )
+        assert kept.width == 90
+        assert "max line width 90" in kept.message
+        assert "max line width 86" not in kept.message
 
     def test_inconsistent_warning_is_left_alone(self) -> None:
         """If `width` and `message` ever disagree, the phrase is not
         found and the message must be left as-is rather than
         half-corrected."""
-        warning = format_java.FormatterWarning(
-            line=1, column=1,
-            message="x wrap could not fit within 80 chars "
-                    "(max line width 99). Fix it.",
-            width=86,                       # deliberately inconsistent
+        original = (
+            "x wrap could not fit within 80 chars "
+            "(max line width 99). Fix it."
         )
-        stale = f"max line width {warning.width}"
-        patched = warning.message.replace(stale, "max line width 87", 1)
-        assert patched == warning.message, (
+        kept = self._fire_over(original, 86)
+        assert kept.message == original, (
             "an inconsistent warning must be left intact, not part "
             "rewritten"
+        )
+        assert kept.width == 86, (
+            "width must not advance while the message still names "
+            "the old number — the pair has to stay coherent"
         )
 
     def test_phrase_occurs_once_so_count_is_safe(self) -> None:
@@ -5434,6 +5469,13 @@ class TestCatchHeaderComments:
         "catch (IllegalStateException | java.io.IOException /* t */ e)",
         "catch (IllegalStateException // why\n        | java.io.IOException e)",
         "catch (IllegalStateException /* a */ | java.io.IOException /* b */ e)",
+        # Single-type headers reach the refusal too, and they are
+        # the ones adopters are most likely to have: before 0.7.0
+        # these formatted "successfully" while silently deleting
+        # the comment, so this is the case where the refusal is a
+        # visible change rather than a rescue from broken output.
+        "catch (Exception /* ignored */ e)",
+        "catch (/* lead */ Exception e)",
     )
 
     def _fmt(self, header: str) -> str:

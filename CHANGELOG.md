@@ -1041,6 +1041,14 @@ worse failure. Deleting the comments would also have "fixed" the
 syntax, and was rejected on the same principle: a formatter may not
 buy valid output with the author's text.
 
+The refusal reaches single-type headers too, and that is where an
+adopter is most likely to notice it: `catch (Exception /* why */ e)`
+formatted "successfully" in 0.6.0 — the comment was simply deleted
+on the way through — and now refuses instead. It is the same silent
+loss as the other two positions rather than a new restriction, but
+it is the case where a file that used to format no longer does, so
+it is called out here rather than left to be discovered.
+
 A refusal is loud, leaves the file byte-identical, and does not fail
 the run — the CLI reports it and exits 0 — so an adopter gets one
 stderr line naming the file and the remedy while everything else
@@ -1729,9 +1737,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 863/863 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 866/866 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 653 and the 210 missing
+  found, so a standalone clone collects 656 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -1748,7 +1756,7 @@ same commit. `requirements.txt` now says so in a comment.
   inline tag held whole, a candidate refused by the stability
   check, a block-tag word (`@Override`) inside prose, and a
   `@param` description that distributes. 41 new unit tests cover
-  the reflow helpers directly. Ten more fixtures lock the
+  the reflow helpers directly. Eleven more fixtures lock the
   single-argument escalation and its exemptions: a wrapping
   expression-bodied lambda, a wrapping ternary, a text block kept
   on the call line, a parenthesized block-bodied lambda that must
@@ -1759,7 +1767,9 @@ same commit. `requirements.txt` now says so in a comment.
   not just the next one, a chain whose receiver must not be left
   dangling, and a chain that ladders from either column and so
   keeps the inline shape, and an assignment that must match its
-  declaration twin. 37 new unit tests
+  declaration twin, and a parameter list whose longest type is
+  exactly a multiple of four, pinning that the name column lands
+  strictly past the grid rather than on it. 37 new unit tests
   cover `_is_text_block`, `_unwrap_parens`, the escalation
   invariant and the text-block re-indent — including a test
   pinning the grammar fact that there is no `text_block` node
@@ -1768,7 +1778,7 @@ same commit. `requirements.txt` now says so in a comment.
   five-shape check that re-indenting never changes a text
   block's value, each run with and without an interior blank
   line, so ten collected. Each of the three
-  convergence guards, nine of the ten new fixtures and every
+  convergence guards, ten of the eleven new fixtures and every
   new behavioral unit test was verified by reverting the
   corresponding fix and confirming the suite goes red. The
   exception is stated rather than glossed: the parenthesized
