@@ -6018,29 +6018,19 @@ def _emit_catch_clause(
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
     emitter.write(") ")
-    # Width AND single-line. Catch is the odd one out among the
-    # cascades: its siblings measure with `last_lines_max_width`,
-    # which is multi-row-safe by construction, while this one reads
-    # `emitter.column` — the LAST row only. So a header that had
-    # already wrapped could pass on a narrow final row while an
-    # earlier row was over the limit.
+    # Width AND single-line. This cascade reads `emitter.column` —
+    # the last row only — where its siblings use the multi-row-safe
+    # `last_lines_max_width`, so a header that had already wrapped
+    # could pass on a narrow final row while an earlier row ran
+    # over.
     #
-    # The conjunct is currently a no-op, and the reason is worth
-    # recording because it was NOT one until recently. Comments are
-    # named children of `catch_type`, so they used to be collected
-    # as union types; a multi-row comment then moved `line_count`
-    # and this check was genuinely load-bearing. The header is now
-    # refused outright if it carries a comment — see
-    # `_refuse_catch_header_comments`, called before anything is
-    # emitted — so no comment node ever reaches this cascade.
-    # Verified across the 504-file corpus and 150 constructed
-    # multi-catch shapes, zero differences either way.
-    #
-    # Kept anyway: it costs one comparison, and the invariant it
-    # states ("line_count must not move") is the one a future
-    # wrapping type emitter would break. Note `write_raw_lines`
-    # appends rows WITHOUT calling `newline()`, so "no emitter calls
-    # newline()" would be the wrong way to phrase that invariant.
+    # The second conjunct is a no-op today: nothing in a catch
+    # header can move `line_count` now that a header carrying a
+    # comment is refused outright (`_refuse_catch_header_comments`).
+    # It is kept rather than deleted because it costs one comparison
+    # and states the invariant a future wrapping type emitter would
+    # break. Not an `assert`: rejecting priority 1 degrades to the
+    # next tier, where raising would abort the file.
     p1_fits = (
         emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
         and emitter.line_count == p1_saved[0]
@@ -6989,7 +6979,16 @@ def _emit_assignment_expression(
         )
         emitter.pop_indent()
         if probe_wins:
+            # Both flags, not just the ladder one. Step 1 cleared
+            # `_anchor_escaped` to measure THIS right-hand side, so
+            # leaving it cleared here would discard an escape an
+            # enclosing construct had already recorded — a lambda
+            # block or anonymous-class body holding this assignment
+            # would then read False and commit the very orphaned
+            # shape the flag exists to prevent. The declarator's
+            # matching exit restores both for the same reason.
             emitter._chain_ladder_fired = prev_laddered
+            emitter._anchor_escaped = prev_escaped
             return
         # Re-emit the inline shape the probe displaced. Both
         # measurement flags are cleared first, as the declarator's
@@ -8501,12 +8500,15 @@ def _emit_formal_parameters(
     emit_p2(p2_name_col)
     if emitter.last_lines_max_width(saved2[0]) <= effective_max:
         return
-    # P3: next-line, one per line at p3_indent_col. Falls back
-    # to paren_col when no p3_indent_col was supplied (the
-    # caller is presumably comfortable with the resulting layout
-    # — the formatter still emits the wrap so any remaining
-    # overflow surfaces as a checkstyle LineLength rather than
-    # silent under-formatting).
+    # P3: next-line, one per line at p3_indent_col. The
+    # `paren_col` fallback is defensive, not live: reaching this
+    # cascade requires `force_wrap=True` (everything else returns
+    # above), and all three such callers pass an explicit
+    # `p3_indent_col`. Verified by raising here on None across the
+    # 504-file corpus and all fixture inputs — never hit. Kept so
+    # the function stays total, since the alternative on a future
+    # caller is a crash mid-file rather than a wrap that merely
+    # surfaces as a checkstyle LineLength.
     p3_col = p3_indent_col if p3_indent_col is not None else paren_col
     if p3_col >= paren_col:
         # Priority 3 exists to escape a paren column pushed far right by
