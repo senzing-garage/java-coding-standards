@@ -6923,10 +6923,28 @@ def _emit_assignment_expression(
     saved = emitter.snapshot()
     prev_laddered = emitter._chain_ladder_fired
     emitter._chain_ladder_fired = False
+    prev_escaped = emitter._anchor_escaped
+    emitter._anchor_escaped = False
     emit_inline_rhs()
     inline_fits = (
         emitter.last_lines_max_width(saved[0]) <= effective_max
     )
+    # Same orphan check `_emit_variable_declarator` runs, for the
+    # same reason this function states below: `Type x = RHS` and its
+    # bare twin `x = RHS` must not diverge on whether the left side
+    # carries a type. A single-argument call that fell to the
+    # paren-defer tier anchored its argument block-relatively, so the
+    # argument is unmoored from the `(` that owns it; width alone
+    # cannot see that, because every line is under the cap.
+    #
+    # Today this never fires here: the paren-defer tier anchors at
+    # the statement indent + 4, which is where the block-indent tier
+    # it follows already tried, so reaching it means the width check
+    # has failed and `inline_fits` is False. Zero hits across the
+    # 504-file corpus and ~6,000 generated shapes. The check is here
+    # so the twin invariant holds by construction rather than by that
+    # coincidence of column arithmetic, which no test pins.
+    inline_orphan = emitter._anchor_escaped
     # The chain fell back to the dangling-receiver ladder at the
     # inline column. Same probe as `_emit_variable_declarator`, and
     # for the reason this function already states below: `Type x =
@@ -6934,7 +6952,7 @@ def _emit_assignment_expression(
     # the LHS carries a type. Keep the break only when it BOTH stops
     # laddering and fits, so a chain that ladders either way does not
     # pay a line for nothing.
-    if inline_fits and emitter._chain_ladder_fired:
+    if inline_fits and not inline_orphan and emitter._chain_ladder_fired:
         emitter.restore(saved)
         emitter.newline()
         emitter.push_indent()
@@ -6955,11 +6973,13 @@ def _emit_assignment_expression(
         emitter.restore(saved)
         emitter._chain_ladder_fired = False
         emit_inline_rhs()
-    if inline_fits:
+    if inline_fits and not inline_orphan:
         emitter._chain_ladder_fired = prev_laddered
+        emitter._anchor_escaped = prev_escaped
         return
     emitter.restore(saved)
     emitter._chain_ladder_fired = prev_laddered
+    emitter._anchor_escaped = prev_escaped
 
     # Step 2: try break-at-operator with the RHS at block+4.
     # Continuation indent is one level deeper than the
@@ -7013,12 +7033,24 @@ def _emit_assignment_expression(
     #     Committing break-at-`=` when inline overflows
     #     converges both passes to the same shape.
     saved = emitter.snapshot()
+    prev_escaped = emitter._anchor_escaped
+    emitter._anchor_escaped = False
     emit_inline_rhs()
     inline_overflow = (
         emitter.last_lines_max_width(saved[0]) > _MAX_LINE
         or emitter.column + emitter.tail_reserve > _MAX_LINE
     )
-    if not inline_overflow:
+    # Orphan check, as in Step 1 and as `_emit_variable_declarator`
+    # Step 3 does: an argument anchored block-relatively is unmoored
+    # from the `(` that owns it, and no width test can see that.
+    inline_orphan = emitter._anchor_escaped
+    if not inline_overflow and not inline_orphan:
+        # Hand the flag back as found. An escape recorded by a
+        # declarator nested in this RHS (inside a lambda block or
+        # anonymous-class body) is that declarator's business and
+        # has already been acted on; clearing it here would hide it
+        # from an enclosing construct that still needs it.
+        emitter._anchor_escaped = prev_escaped
         _fire_wrap_overflow_advisory(
             emitter, node, cascade_start, "assignment"
         )
@@ -7031,6 +7063,7 @@ def _emit_assignment_expression(
     emitter.write(" ")
     _emit_node(emitter, source, right_node)
     emitter.pop_indent()
+    emitter._anchor_escaped = prev_escaped
     # Spec C1 emit-and-warn: the break-at-`=` shape may itself
     # overflow when the RHS cannot be broken further (long
     # literal or single-token identifier). Fire the advisory so
