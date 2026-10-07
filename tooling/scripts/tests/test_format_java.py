@@ -5444,6 +5444,64 @@ class TestAdvisoryWidthPatchGuard:
         assert message.count("max line width") == 1
 
 
+class TestArrayInitializerComments:
+    """A comment among array elements is refused, not inlined.
+
+    tree-sitter makes a comment a NAMED child, so it arrives as an
+    element and gets a separator on each side. A block comment
+    yields `{ /* a */, "x" }` — a stray comma — and a `//` comment
+    swallows every element after it plus the closing brace. Both
+    fail to compile, verified with the Java compiler.
+
+    0.6.0 escaped the multi-row case by replaying the array from
+    source; 0.7.0 retired that path for an alignment defect and
+    removed the protection with it. Single-row arrays corrupt in
+    0.6.0 too.
+    """
+
+    BODIES = (
+        'String[] a = new String[] { /* a */ "x", "y" };',
+        'String[] a = new String[] { "x" /* t */, "y" };',
+        'String[] a = new String[] { "x", "y" /* tail */ };',
+        'String[] a = new String[] {\n'
+        '            "x",   // why\n'
+        '            "y"\n'
+        '        };',
+        'int[] b = new int[] { 1, /* two */ 2 };',
+    )
+
+    @pytest.mark.parametrize("body", BODIES)
+    def test_every_comment_position_is_refused(
+        self, body: str
+    ) -> None:
+        src = (
+            "public class T\n{\n    void t()\n    {\n        "
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        with pytest.raises(
+            NotImplementedError, match="array initializer"
+        ):
+            format_java.format_source(src)
+
+    def test_comment_outside_the_braces_still_formats(self) -> None:
+        """The refusal is scoped to comments among the elements.
+
+        A comment on the statement above, or inside a nested
+        expression that owns its own emitter, must not trip it.
+        """
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            "        // leading comment is fine\n"
+            '        String[] a = new String[] { "x", "y" };\n'
+            "    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src)
+        out = out if isinstance(out, str) else out.decode()
+        assert "// leading comment is fine" in out
+        assert '{ "x", "y" }' in out
+
+
 class TestCatchHeaderComments:
     """A comment in a catch header is refused, not mangled.
 

@@ -42,7 +42,7 @@ Coverage
 --------
 
 `format_source()` handles every Java construct exercised by
-the 235 fixture pairs under `tooling/scripts/tests/fixtures/`
+the fixture pairs under `tooling/scripts/tests/fixtures/`
 and every file in the senzing-commons-java consumer codebase
 (106 files, 0 refusals). Constructs deliberately out-of-scope
 for 0.3.0:
@@ -351,6 +351,16 @@ class Emitter:
         # break-at-`=`, where the construct starts shallow
         # enough that the last resort is not reached.
         self._anchor_escaped: bool = False
+        # 0.7.0: set when a method chain commits the
+        # dangling-receiver ladder — head alone at the end of its
+        # line, every segment below at `p3_col`. The standards
+        # document makes that the fallback for "the chain starts
+        # too far right for alignment to fit", so the declarator
+        # and assignment cascades read it to probe break-at-`=`,
+        # which moves the chain left and often wins alignment
+        # back. Per-construct, not accumulating: each reader
+        # clears it before measuring and restores it after, unlike
+        # `_anchor_escaped`, whose evidence is meant to propagate.
         self._chain_ladder_fired: bool = False
         # Set whenever an emit replays source rows verbatim through
         # `write_raw_lines`. Readers save-reset-check-restore, like
@@ -491,16 +501,16 @@ class Emitter:
         self,
     ) -> tuple[
         int, str, int, int, int | None, int | None, bool, bool, bool,
-        bool, int
+        bool, bool, int
     ]:
         """Capture the emitter state for speculative emission.
 
         Returns a tuple `(lines_count, current, indent,
         tail_reserve, paren_align_col, paren_expr_col,
         arg_list_p4_fired, array_init_inline_only,
-        anchor_escaped, raw_rows_emitted, warnings_count)`
-        suitable for `restore()` — eleven fields, in the order
-        `restore()` unpacks them. The
+        anchor_escaped, chain_ladder_fired, raw_rows_emitted,
+        warnings_count)` suitable for `restore()` — twelve
+        fields, in the order `restore()` unpacks them. The
         wrap-priority engines use the pattern:
 
             saved = emitter.snapshot()
@@ -5061,6 +5071,32 @@ def _emit_array_initializer(
     if not elements:
         emitter.write("{}")
         return
+    # tree-sitter exposes a comment as a NAMED child, so it lands in
+    # `elements` and gets a separator written on each side — the same
+    # shape that produced `catch (A | /* why */ | B e)` before
+    # `_refuse_catch_header_comments`. Here it emits
+    # `{ /* a */, "x" }`, a stray comma, and for a `//` comment it is
+    # worse: the comment runs to end of line and swallows every
+    # element after it plus the closing brace. Both fail to compile.
+    #
+    # 0.6.0 escaped the multi-row case by replaying such an array
+    # from source; 0.7.0 retired that path for an alignment defect
+    # and took this protection with it. Single-row arrays were never
+    # protected and corrupt in 0.6.0 too.
+    #
+    # Refused rather than reflowed, for the reason the catch header
+    # is: placing a comment correctly among array elements needs a
+    # rule per position, and any position left unhandled goes on
+    # silently corrupting. A refusal leaves the file byte-identical
+    # and exits 0. No array initializer in the 504-file corpus holds
+    # a comment, so the practical cost is nil.
+    for child in node.named_children:
+        if child.type in ("line_comment", "block_comment"):
+            raise NotImplementedError(
+                "a comment inside an array initializer is not yet "
+                "supported — it would be emitted as an element and "
+                "break the array. Move it above the statement."
+            )
 
     if emitter._array_init_inline_only:
         # Caller (variable_declarator / assignment_expression

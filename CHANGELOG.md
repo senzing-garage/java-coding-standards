@@ -1259,6 +1259,39 @@ components have broken every row can sit under the limit; the check
 would pass and commit. It is rejected the same way the argument-list
 cascade rejects an argument that wrapped.
 
+### A comment among array elements is refused, not inlined
+
+Retiring the array-creation source-preserve path (below) took a
+protection with it. tree-sitter makes a comment a NAMED child, so it
+arrives as an element and gets a separator written on each side:
+
+```java
+    String[] a = new String[] { /* a */, "x", "y" };
+```
+
+a stray comma, and the Java compiler rejects it. A `//` comment is
+worse — it runs to end of line and swallows every element after it
+along with the closing brace:
+
+```java
+    String[] a = new String[] { "alpha", // first one, "bravo", "charlie" };
+```
+
+A three-element array becomes one, and the file no longer compiles.
+Both were confirmed with the compiler in each direction: the source
+compiles and the formatted output does not.
+
+The multi-row case is a regression in this release — 0.6.0 replayed
+such an array verbatim and got it right. The single-row case is
+older and corrupts in 0.6.0 too.
+
+A comment among array elements is now REFUSED, matching the catch
+header. Placing one correctly needs a rule per position, and any
+position left unhandled goes on silently corrupting, which is the
+failure worth avoiding. The refusal leaves the file byte-identical,
+reports one line to stderr and exits 0. No array initializer in the
+504-file corpus holds a comment, so nothing in the trial changes.
+
 ### Escalation exemptions, and array initializers stop preserving
 
 Extending the argument-breaks rule to priority 3 exposed two ways the
@@ -1737,9 +1770,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 866/866 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 872/872 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 656 and the 210 missing
+  found, so a standalone clone collects 662 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
