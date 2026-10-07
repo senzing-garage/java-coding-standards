@@ -45,6 +45,13 @@ changed on the next pass. Files needing a second pass to settle
 fall from 26 to 1, and nothing in the corpus now fails to
 converge at all.
 
+A note on reading the rest of this entry: the per-change sections
+below quote the corpus figures **as they stood at that change**,
+because the cost of each decision is only legible against what
+preceded it. Those are not the release's totals. The final numbers
+are in "Verification" at the end, and where a mid-release figure is
+likely to be mistaken for one it is marked.
+
 ### Nested-call wrap
 
 A call embedded in another expression — as a positional
@@ -1378,7 +1385,9 @@ concatenation:
 
 Cost: 126 files take a different shape and the corpus grows 606 lines
 (+0.27%). Lines over 80 are unchanged, files needing a second pass are
-unchanged at 6, and the count of files reformatted against 0.6.0 moves
+unchanged at 6 _as of this change_ — later work takes that to 1; see
+"Verification" for the release's final figures — and the count of
+files reformatted against 0.6.0 moves
 only 322 to 324 — 124 of those 126 files were already being reformatted,
 so an adopter's diff grows by two files.
 
