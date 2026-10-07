@@ -1348,8 +1348,9 @@ columns differently on a second pass and oscillate.
 
 ```java
     // NOT PRODUCED — the enclosing call is left inline. Note the
-    // inner list's paren-alignment is fine on its own (shape D
-    // above uses it); what is excluded is anchoring it to the
+    // inner list's paren-alignment is fine on its own — rule 1's
+    // multi-argument example above uses exactly it. What is
+    // excluded is anchoring that column to the
     // enclosing call's paren, which makes the column a function of
     // the receiver's length so it drifts rightward with deeper
     // nesting and longer receivers.
@@ -2479,8 +2480,14 @@ the list carries interleaved comments, or it sits in a
 `CSOFF`/`CSON` region. (0.7.0 removed a third, width-based
 trigger — "the authored first line still fits, so keep it" —
 which made the output depend on the previous pass.) Preserved
-lines are re-anchored to the canonical `paren_align_col + 4` or
-`block + 4` target. If the re-anchored layout still overflows 80
+lines are emitted VERBATIM, at the columns the author wrote. They
+are deliberately not re-anchored: in both surviving cases the
+columns carry meaning — an aligned comment block, or a region the
+author marked `CSOFF` precisely to stop the formatter touching it —
+so moving them would defeat the preservation. A consequence worth
+knowing: if the enclosing statement is re-indented, the preserved
+rows do not follow, and the block can end up aligned with nothing.
+If the preserved layout overflows 80
 chars (because a contained string literal or expression is itself
 too long), the formatter fires the advisory and emits anyway — it
 does NOT fall back to a shallower column or to raw verbatim. The

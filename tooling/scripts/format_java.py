@@ -2792,7 +2792,7 @@ def _inner_would_invert_paren_align(
         current = stack.pop()
         if current.type == "argument_list" and (
             _arg_list_takes_source_preserve_path(
-                emitter, source, current
+                source, current
             )
         ):
             src = _node_source_text(source, current)
@@ -6610,6 +6610,24 @@ def _emit_enhanced_for_statement(
     emitter.write(")")
     emitter.pop_indent()
     emitter.pop_indent()
+    # Spec C1 emit-and-warn. This is the terminal shape — breaking
+    # before `:` is the last move available — so an iterable that
+    # still overflows commits anyway, and every other terminal
+    # commit in the formatter says so. This one did not: a header
+    # whose iterable is a single unbreakable identifier produced an
+    # over-long line in silence. Pre-existing (0.6.0 emits 110
+    # columns here against this release's 87, both without a word),
+    # and the odd one out now that parameter lists, javadoc
+    # structural lines, field access, multi-catch and the declarator
+    # all advise. Fired before the body so the warning points at the
+    # header, not at whatever the body happens to contain.
+    _fire_wrap_overflow_advisory(
+        emitter, node, saved[0], "enhanced-for header",
+        remedy=(
+            "Break before `:` is the last shape available. Shorten "
+            "the iterable expression or hoist it to a local."
+        ),
+    )
     emitter.newline()
     emitter.write_indent()
     _emit_node(emitter, source, body)
@@ -9203,7 +9221,7 @@ def _max_source_preserve_line_width(
 
 
 def _arg_list_takes_source_preserve_path(
-    emitter: Emitter, source: bytes, node: Node
+    source: bytes, node: Node
 ) -> bool:
     """Return True when `_emit_argument_list` would emit `node`
     verbatim from source (`write_raw_lines`) instead of falling
@@ -9574,7 +9592,7 @@ def _emit_argument_list(
     # first line past 80 chars and there's no CSOFF marker),
     # fall through to the wrap engine, which picks fresh
     # break points appropriate to the new column.
-    if _arg_list_takes_source_preserve_path(emitter, source, node):
+    if _arg_list_takes_source_preserve_path(source, node):
         src_text = _node_source_text(source, node)
         # 0.5.0 item 4 — context-aware source-preservation
         # with no-fallback policy.
@@ -10962,7 +10980,7 @@ def _emit_method_chain_wrapped(
         # own emit (which is when the chain has already
         # committed to P1).
         if _arg_list_takes_source_preserve_path(
-            emitter, source, args
+            source, args
         ):
             return True
         # An argument that OWNS its rows still emits multi-line

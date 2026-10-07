@@ -1592,15 +1592,20 @@ was measured and rejected), are recorded in the new
 `building/source-preservation-history` FAQ so the reasoning survives
 the code.
 
-**Preserved continuation columns are re-anchored.** Where
-preservation still applies, it replayed the author's columns
-literally, so re-indenting the enclosing statement left the
-continuation aligned with nothing. Every preserved row now shifts by
-the construct's own displacement, floored at the canonical
-continuation column so a large negative shift cannot drag rows left
-of it. Internal alignment survives because all rows move together,
-and idempotency holds by construction: on a later pass the source
-column is the emit column, so the shift is zero.
+**Preserved continuation columns are re-anchored — then the path
+that needed it was removed.** Mid-release, preservation replayed the
+author's columns literally, so re-indenting the enclosing statement
+left the continuation aligned with nothing; every preserved row was
+made to shift by the construct's own displacement, floored at the
+canonical continuation column.
+
+That shift no longer runs. The width-triggered preservation it
+served is gone (see "a dead preservation path" below), and the two
+cases that survive — interleaved comments, and `CSOFF` regions —
+emit verbatim on purpose, because their columns carry meaning. So
+the shipped behaviour is: preserved rows keep the author's columns
+and do not follow a re-indented statement. The standards document
+said the opposite until this was checked against the formatter.
 
 **Preservation yields to the nested-call rules.** It no longer fires
 for the shapes those rules own outright, nor when the source shows an
