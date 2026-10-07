@@ -49,3 +49,55 @@ jobs:
 
       - name: Run pytest
         run: pytest tooling/scripts/tests/ --verbose
+
+  # The fuzz and perf gates need a real-world Java corpus.
+  # `resolve_java_corpus()` falls back to `<consumer>/src`, which only
+  # exists when this repo is checked out as a submodule of a consumer
+  # project — so in the standalone checkout the `pytest` job above uses,
+  # `test_fuzz_corpus.py` and `test_performance.py` silently skip. That
+  # left the AST round-trip and idempotency properties not gated in CI.
+  # This job supplies a corpus so they actually run.
+  corpus-gate:
+    name: "Corpus gate: AST round-trip, idempotency, perf"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned to a release tag rather than tracking `main` on purpose:
+      # the corpus is test input, so it must not move underneath this
+      # repo. Tracking `main` would let an unrelated consumer commit
+      # turn standards CI red. Bump the tag deliberately when you want
+      # the gate to cover newer consumer code.
+      - name: Check out Java corpus (senzing-commons-java 4.0.1)
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: senzing-garage/senzing-commons-java
+          ref: "4.0.1"
+          path: .corpus
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tooling/scripts/tests/requirements.txt
+
+      # Only the corpus-dependent gates; the matrix job above already
+      # covers the fixture suite across every OS and Python version.
+      - name: Run corpus gates
+        env:
+          SENZING_JAVA_FUZZ_CORPUS: ${{ github.workspace }}/.corpus/src
+        run: |
+          pytest tooling/scripts/tests/test_fuzz_corpus.py \
+                 tooling/scripts/tests/test_performance.py --verbose

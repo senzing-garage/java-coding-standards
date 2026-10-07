@@ -7,9 +7,7 @@ public class Demo
 
     public Demo(int x)
     {
-        this(aaaaaaaaaaaaaaa,
-             bbbbbbbbbbbbbbb,
-             ccccccccccccccc,
+        this(aaaaaaaaaaaaaaa, bbbbbbbbbbbbbbb, ccccccccccccccc,
              ddddddddddddddd);
     }
 }

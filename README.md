@@ -19,11 +19,15 @@ checkstyle/
                                              checkstyle-suppressions-local.xml
 
 docs/
-    java-coding-standards.md              — the canonical 912-line rules doc
+    java-coding-standards.md              — the canonical rules doc
     faqs/                                 — shared FAQs the FAQ server bundles
+        building/consumer-trial-checklist.md
+        building/formatter-python-environment.md
         building/java-formatting-standards.md
         building/javadoc-reflow-conventions.md
+        building/source-preservation-history.md
         conventions/adding-new-faqs.md
+        conventions/cspell-word-list-policy.md
         testing/system-stubs-and-output-capture.md
 
 tooling/

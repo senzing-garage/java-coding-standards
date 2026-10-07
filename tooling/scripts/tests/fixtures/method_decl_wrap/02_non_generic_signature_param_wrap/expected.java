@@ -1,7 +1,8 @@
 public class Demo
 {
-    public static void processInputAndProduce(File sourceDirectoryOrFile,
-                                              OutputStream targetOutputStream)
+    public static void processInputAndProduce(
+            File            sourceDirectoryOrFile,
+            OutputStream    targetOutputStream)
     {
     }
 }

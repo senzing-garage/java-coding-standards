@@ -1,5 +1,5 @@
 public class Demo
 {
-    public native int searchByAttributes(String jsonData,
-                                         StringBuffer response);
+    public native int searchByAttributes(String          jsonData,
+                                         StringBuffer    response);
 }
