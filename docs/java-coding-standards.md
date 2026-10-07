@@ -2483,8 +2483,9 @@ lines are re-anchored to the canonical `paren_align_col + 4` or
 `block + 4` target. If the re-anchored layout still overflows 80
 chars (because a contained string literal or expression is itself
 too long), the formatter fires the advisory and emits anyway — it
-does NOT fall back to a shallower column or to raw verbatim. The overflow becomes a
-checkstyle LineLength violation the developer must resolve by
+does NOT fall back to a shallower column or to raw verbatim. The
+overflow becomes a checkstyle LineLength violation the developer
+must resolve by
 splitting the offending literal at a word boundary, extracting
 a long expression to a local variable, or restructuring. This
 breaks the propagation cycle where source-preserved verbatim

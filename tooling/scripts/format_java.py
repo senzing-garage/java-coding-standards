@@ -1824,6 +1824,16 @@ def _emit_field_declaration(
     # `_emit_assignment_with_array_rhs` measures against a plain
     # `effective_max`. Hence the reserve goes around each VALUE
     # emission, where the tier checks have already been restored.
+    # Scope: this measures the declaration as emitted, which is
+    # BEFORE `_attach_trailing_side_comments` runs in the class-body
+    # loop. A trailing `// …` that pushes the finished line past 80
+    # is therefore invisible here, and no advisory fires for it. The
+    # line is still over the limit and checkstyle still rejects it,
+    # so this under-reports rather than hides — and the behavior is
+    # not new: 0.6.0 leaves 836 such lines in the trial corpus
+    # against this release's 834. Moving the advisory after
+    # attachment would change when ~834 advisories fire, which is
+    # not a late-release change; recorded here instead.
     _fire_wrap_overflow_advisory(
         emitter, node, decl_start, "declaration",
         remedy=(
@@ -3494,6 +3504,14 @@ _JAVADOC_BLOCK_TOKENS: Final[tuple[str, ...]] = (
 
 
 _LINE_LENGTH_EXEMPT_MARKERS: Final[tuple[str, ...]] = (
+    # `"a href"` cannot match without `"href"` also matching, so it
+    # is redundant as a substring test — and kept anyway, because
+    # the checkstyle `ignorePattern` this mirrors spells both
+    # (`a href|href|http://|...`). The list is a transcription, not
+    # a reduction: dropping the redundant alternative would make
+    # it diverge from the pattern it exists to track, and from the
+    # copy `TestLineLengthExemptMatchesCheckstyle` checks the XML
+    # against.
     "a href",
     "href",
     "http://",

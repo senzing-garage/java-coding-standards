@@ -137,3 +137,27 @@ resolved so this document does not contradict `CHANGELOG.md`.
 - Optional: surface the 23 line-comment orphan candidates as advisories
   through the existing `FormatterWarning` channel, leaving the judgment
   to a human.
+- Retiring the paragraph splitter's `{@`-at-line-start rule. The
+  CHANGELOG calls this "the only javadoc item on the backlog"; it was
+  missing here, and the two documents disagreed.
+- Array creation with an initializer does not get the row-owning
+  exemption. It qualifies on the same reasoning as the other four
+  forms, but granting it regresses multi-argument calls, where the
+  initializer body indents from the line start rather than from the
+  construct and lands left of its own brace. Five corpus files move,
+  in both directions. The indent origin is the prerequisite.
+- A declaration and its bare-assignment twin still diverge whenever
+  the inline shape fits by wrapping internally. A declared
+  `Object x = recv.a().b(c)` breaks at `=`, while the assignment
+  `this.x = recv.a().b(c)` stays inline with the chain wrapped.
+  Pre-existing and identical in 0.6.0. The two emitters claim to
+  mirror each other and do not.
+- The save/reset/restore of `_anchor_escaped` and
+  `_chain_ladder_fired` is hand-repeated at roughly six sites, and has
+  been got wrong twice in one release. A context manager, as
+  `_extra_tail_reserve` already does for `tail_reserve`, would make
+  the discipline enforceable rather than remembered.
+- The declaration advisory measures before the trailing side
+  comments are attached, so a trailing `// …` that pushes the line
+  past 80 goes unreported. Checkstyle still rejects the line.
+  Moving the advisory would change when roughly 834 of them fire.
