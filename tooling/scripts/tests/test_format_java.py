@@ -6140,12 +6140,26 @@ class TestBreakProbeIsShared:
             )
 
     def test_the_helper_has_one_definition(self) -> None:
-        """A second copy is how the two drifted the first time."""
+        """A second copy is how the two drifted the first time.
+
+        Parsed for the same reason as the test above: counting the
+        text `def <name>(` would also match a comment or docstring
+        that happened to contain it.
+        """
+        import ast
+
         name = format_java._break_probe_wins.__name__
-        source = Path(format_java.__file__).read_text(
-            encoding="utf-8"
+        tree = ast.parse(
+            Path(format_java.__file__).read_text(encoding="utf-8")
         )
-        assert source.count("def %s(" % name) == 1
+        definitions = [
+            node for node in ast.walk(tree)
+            if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef)
+            )
+            and node.name == name
+        ]
+        assert len(definitions) == 1, definitions
 
     @staticmethod
     def _probe(rows: list[str], column: int, reserve: int,

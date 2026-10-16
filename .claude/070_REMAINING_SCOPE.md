@@ -15,7 +15,8 @@ This document holds two lists.
    under "Still deferred to 0.8".
 
 The two lists are separate. Counts from one do not describe the
-other.
+other. A third short section at the end records items that belong
+to neither, having surfaced while doing the work.
 
 ## 1. Deep orphan — a construct emitted left of the `(` it belongs to
 
@@ -277,3 +278,14 @@ each noted where it occurs.
   than merely report it.
 
   The best-diagnosed item here; worth doing first in 0.8.
+
+## Also deferred, noted during the release
+
+Not part of either list above — these surfaced while doing the work
+rather than in the census or the 2026-10-15 review, and are
+recorded here so the backlog is complete in one place.
+
+- **Extending nested-call rules 1 and 3 through lambdas.** 0.7.0
+  taught the traversal to reach through a lambda body for rule 2
+  only. The CHANGELOG says so where it describes the tail
+  placement, and calls the rest a separate change. It is.
