@@ -5988,7 +5988,7 @@ class TestBreakProbeIsShared:
     # These two read source text, which is ordinarily the wrong
     # tool. It is the right one here, and the history says why: the
     # two probes were OUTPUT-IDENTICAL on every input anyone could
-    # find, so no behavioural test could have caught them drifting
+    # find, so no behavioral test could have caught them drifting
     # — the twin-agreement tests in this file were green through
     # the whole period the conditions disagreed. What needs pinning
     # is the structure, not the output.
