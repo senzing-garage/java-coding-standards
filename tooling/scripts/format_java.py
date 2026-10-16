@@ -8633,6 +8633,15 @@ def _emit_formal_parameters(
     # the function stays total, since the alternative on a future
     # caller is a crash mid-file rather than a wrap that merely
     # surfaces as a checkstyle LineLength.
+    #
+    # Note what the fallback actually does, because "stays total"
+    # undersells it: with `p3_indent_col=None` it sets `p3_col ==
+    # paren_col`, so the `>=` test below is trivially true and P3
+    # is SKIPPED, committing the priority-2 terminal instead. That
+    # is the right degradation — a "next-line" tier anchored at the
+    # paren column is not a next-line shape at all and could not
+    # buy width — but a caller passing None gets a two-tier
+    # cascade, not a three-tier one.
     p3_col = p3_indent_col if p3_indent_col is not None else paren_col
     if p3_col >= paren_col:
         # Priority 3 exists to escape a paren column pushed far right by

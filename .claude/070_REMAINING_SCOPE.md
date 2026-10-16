@@ -6,8 +6,14 @@ files across `senzing-commons-java`, `sz-sdk-java`, `sz-sdk-java-grpc`
 and `data-mart-replicator`.
 
 **All four census findings are resolved in 0.7.0**, as are three of
-the four items this document originally deferred — see the two
-sections at the end for what shipped and what remains.
+the four items THIS CENSUS originally deferred.
+
+Those four are not the same set as the six under "Still deferred to
+0.8" near the end. The census list is the one numbered 1-4 below; the
+six are a later backlog, reviewed item by item on 2026-10-15 and
+recorded in its own section. Both sections are kept because they
+answer different questions: what the census found, and what is left
+after it.
 
 ## 1. Deep orphan — a construct emitted left of the `(` it belongs to
 
@@ -127,9 +133,13 @@ resolved so this document does not contradict `CHANGELOG.md`.
 ## Reviewed item by item, 2026-10-15
 
 Each item below was walked through with a worked example from the
-504-file corpus and decided individually. Figures are measured at
-`f34045f`, not estimated; two that were carried from earlier drafts
-turned out to be wrong and are corrected in place.
+504-file corpus and decided individually, on the date in the heading
+above. Figures are measured rather than estimated, against the
+implementation each entry describes — not against a single commit,
+since the item accepted here shipped after this section was written
+and its figures were re-measured then. Several figures carried from
+earlier drafts turned out to be wrong and are corrected in place,
+each noted where it occurs.
 
 ### In 0.7.0
 
