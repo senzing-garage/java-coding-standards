@@ -5710,8 +5710,8 @@ class TestArrayInitializerComments:
     ) -> None:
         """A proxy for "it compiles".
 
-        The shapes in `CASES` were also run through javac 21 and
-        executed, and each printed the same array as the source it
+        The shapes in `CASES` were also compiled with the Java
+        compiler on JDK 21 and executed, and each printed the same array as the source it
         came from. That cannot run in the unit suite, so the parse
         check stands in for it here.
         """
