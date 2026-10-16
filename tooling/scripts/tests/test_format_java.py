@@ -38,7 +38,7 @@ def _format_in_method(
 
     Several test classes each grew their own copy of this, which
     drifted: some passed `warnings_out=[]` and some did not, and
-    one decoded unconditionally while its neighbours guarded with
+    one decoded unconditionally while its neighbors guarded with
     `isinstance`. Shared here so the wrapper and the return-type
     normalization have one definition.
 
