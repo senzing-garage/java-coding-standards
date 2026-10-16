@@ -7074,10 +7074,28 @@ def _emit_assignment_expression(
         emitter.write(" ")
         emitter._chain_ladder_fired = False
         _emit_node(emitter, source, right_node)
+        # Measured exactly as `_emit_variable_declarator`'s probe
+        # measures it, and as `inline_fits` above now does: the
+        # reserve (which here includes the `;`) is charged to the
+        # row that carries it and not to the rows above. Reading
+        # the rows with `last_lines_max_width` against
+        # `effective_max` instead charges every row, which made
+        # this probe a column stricter than the declarator's — so
+        # a shape the declarator's probe accepts could lose this
+        # one, and the twins this function exists to keep in step
+        # would part again at the boundary. No corpus file and no
+        # generated shape reaches that today; the conditions are
+        # held identical so that stays true by construction rather
+        # than by luck. `_anchor_escaped` is checked for the same
+        # reason: the declarator's probe declines an escaped
+        # emission and this one must too.
+        _probe_rows = emitter._lines[saved[0]:]
         probe_wins = (
             not emitter._chain_ladder_fired
-            and emitter.last_lines_max_width(saved[0])
-            <= effective_max
+            and not emitter._anchor_escaped
+            and max((len(r) for r in _probe_rows), default=0)
+            <= _MAX_LINE
+            and emitter.column <= effective_max
         )
         emitter.pop_indent()
         if probe_wins:

@@ -5779,6 +5779,10 @@ class TestDeclaratorHandsBackSpeculationFlags:
         emitter.write_indent()
         emitter.write("Object ")
         for name, value in seed.items():
+            # `setattr` would happily invent the attribute, so a
+            # flag renamed in `Emitter` would leave this test
+            # asserting on something the emitter never reads.
+            assert hasattr(emitter, name), name
             setattr(emitter, name, value)
         format_java._emit_variable_declarator(emitter, source, node)
         text = "\n".join([*emitter._lines, emitter._current])

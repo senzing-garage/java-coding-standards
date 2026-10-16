@@ -670,6 +670,18 @@ reserve to the row that pays it. **No corpus file changes** — real
 code does not land a continuation row on the boundary — so the
 evidence is the sweep, which a test now runs at every width.
 
+The ladder probe in the assignment emitter is held to the same
+reading. It had kept `last_lines_max_width(...) <= effective_max`,
+charging the reserve to every row, while the declarator's probe and
+the `inline_fits` test beside it charge it only to the row that
+carries it. A shape the declarator's probe accepts could therefore
+lose the assignment's, parting the twins again at the same boundary.
+Nothing reaches it — the two conditions were instrumented and
+disagreed on **0 of 504 corpus files and 0 of 10,800 generated
+pairs** — and no corpus file changes, so this keeps a comment that
+calls the two "the same probe" honest rather than fixing an observed
+defect.
+
 Each statement is judged independently. Both flags are reset before
 the speculative emission, so no statement reads a neighbor's
 answer, and two adjacent declarations may legitimately settle on
