@@ -4327,24 +4327,30 @@ class TestTextBlockShiftPreservesValue:
         """
         lines = text.split("\n")
         start = next(
-            i for i, l in enumerate(lines) if l.rstrip().endswith('"""')
+            i for i, line in enumerate(lines)
+            if line.rstrip().endswith('"""')
         )
         end = next(
             i for i in range(start + 1, len(lines))
             if '"""' in lines[i]
         )
         raw = lines[start + 1:end + 1]
-        non_blank = [l for l in raw if l.strip() != ""]
-        floor = min(len(l) - len(l.lstrip(" ")) for l in non_blank)
+        non_blank = [line for line in raw if line.strip() != ""]
+        floor = min(
+            len(line) - len(line.lstrip(" ")) for line in non_blank
+        )
         # Blank lines are kept in the result even though JLS
         # strips their whitespace: they still contribute a
         # newline to the string, so dropping one changes the
         # value. Filtering them out — as an earlier version of
         # this helper did — left the guard unable to see that.
         return [
-            ("", "") if l.strip() == ""
-            else (len(l) - len(l.lstrip(" ")) - floor, l.strip())
-            for l in raw
+            ("", "") if line.strip() == ""
+            else (
+                len(line) - len(line.lstrip(" ")) - floor,
+                line.strip(),
+            )
+            for line in raw
         ]
 
     @pytest.mark.parametrize(
@@ -5312,14 +5318,13 @@ class TestFieldAccessCommitAndWarn:
             "EightyColumnsXXXXXXXXX().someField;\n    }"
         )
         assert len(over) == 2
-        # `>=` would let a duplicate on one line stand in for a
-        # missing advisory on the other, which is the exact failure
-        # this test exists to catch. Match them to their lines.
+        # A bare `>=` would let a duplicate advisory on one line
+        # stand in for a missing one on the other, which is the
+        # exact failure this test exists to catch. Pair them up
+        # instead: every overflowing line must have an advisory
+        # reporting ITS width, which also pins that neither is
+        # under-reported.
         assert len(warnings) == 2, warnings
-        # `>=` would let a duplicate on one line stand in for a
-        # missing advisory on the other. Pair them up instead: each
-        # overflowing line must have an advisory reporting ITS
-        # width, which also pins that neither is under-reported.
         assert sorted(w.width for w in warnings) == sorted(over), (
             warnings, over
         )
