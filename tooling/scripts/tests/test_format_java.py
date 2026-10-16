@@ -4224,7 +4224,7 @@ class TestIsAnonymousClass:
 def _sole_arg_of(snippet: str):
     """The single argument of the snippet's outermost call."""
     arg_lists = _arg_lists_of(snippet)
-    args = [c for c in arg_lists[0].named_children]
+    args = list(arg_lists[0].named_children)
     assert len(args) == 1, f"{snippet!r} -> {len(args)} args"
     return args[0]
 
