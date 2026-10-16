@@ -17,13 +17,17 @@
 # its bump PRs always arrive red; bump `GRAMMAR_VERSION` in the
 # same commit to make them green.
 
-# tree-sitter Python binding. 0.26.0 (Jul 2026) is the current
-# stable line. Pins like this also constrain Dependabot — set the
-# range carefully when bumping.
+# tree-sitter Python binding. 0.26.0 was released 2026-06-30 and
+# was still the latest on PyPI when checked on 2026-10-16. The
+# release date is a fact; "latest" is not, so it carries the date
+# it was checked rather than claiming to be current forever.
+# Dependabot will say when that changes. Pins like this also
+# constrain Dependabot — set the range carefully when bumping.
 tree-sitter==0.26.0
 
-# tree-sitter-java grammar. 0.23.5 (Dec 2024) is the current
-# stable. The formatter dispatches on grammar node names; the
-# emitter assumes the specific node-name set this version emits,
-# so bumping requires a calibration-gate run.
+# tree-sitter-java grammar. 0.23.5 was released 2024-12-21 and was
+# still the latest on PyPI when checked on 2026-10-16. The
+# formatter dispatches on grammar node names; the emitter assumes
+# the specific node-name set this version emits, so bumping
+# requires a calibration-gate run.
 tree-sitter-java==0.23.5
