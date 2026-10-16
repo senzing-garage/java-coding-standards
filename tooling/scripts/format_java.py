@@ -98,7 +98,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Final, TextIO
+from typing import Callable, Final, Iterator, TextIO
 
 import tree_sitter_java
 from tree_sitter import Language, Node, Parser, Tree
@@ -3551,8 +3551,10 @@ def _line_length_exempt(text: str) -> bool:
     `static final.*<.*>` of the same text. Being more precise would
     make the formatter advise about lines the build ignores, which
     is exactly the noise this check exists to remove.
-    `TestLineLengthExemptMatchesCheckstyle` pins the equivalence. `^package.*` and
-    `^import.*` are anchored, so they are tested with `startswith`
+    `TestLineLengthExemptMatchesCheckstyle` pins the equivalence.
+
+    `^package.*` and `^import.*` are anchored, so they are tested
+    with `startswith`
     on the raw text rather than on a stripped copy — a `package`
     keyword indented inside a line is not a package declaration.
     No trailing space is required, because the regex does not
@@ -3815,7 +3817,9 @@ def _javadoc_reflow_words(
 
 
 @contextmanager
-def _extra_tail_reserve(emitter: "Emitter", extra: int):
+def _extra_tail_reserve(
+    emitter: "Emitter", extra: int
+) -> Iterator[None]:
     """Raise `emitter.tail_reserve` by `extra` for the duration.
 
     The declarator cascades need the VALUE to wrap knowing a `;`
@@ -9232,40 +9236,6 @@ def _current_line_leading_spaces(emitter: "Emitter") -> int:
     if not stripped:
         return len(current)
     return len(current) - len(stripped)
-
-
-def _max_source_preserve_line_width(
-    lines: list[str],
-    prefix_col: int,
-    tail_reserve: int,
-) -> int:
-    """Return the max on-disk width of a source-preserved
-    block, matching the per-line accounting in
-    `_fire_wrap_overflow_advisory`.
-
-    - Line 0 is prefixed by `prefix_col` chars of emit-line
-      context (whatever the emitter already wrote before the
-      arg list) — mirrors `emitter.column + len(lines[0])`.
-    - The LAST line receives `tail_reserve` chars for the
-      parent's trailing tokens (`;`, `)`, etc.).
-    - Intermediate lines render verbatim, no adjustment.
-    - Single-line inputs treat that line as both first AND
-      last, so `prefix_col + len(lines[0]) + tail_reserve`.
-
-    Shared between the 0.5.2 F shift-up-overflow guard and
-    the post-emit overflow advisory in `_emit_argument_list`
-    so both use identical width math.
-    """
-    if not lines:
-        return 0
-    first_width = prefix_col + len(lines[0])
-    if len(lines) == 1:
-        return first_width + tail_reserve
-    last_width = len(lines[-1]) + tail_reserve
-    return max(
-        first_width, last_width,
-        *(len(ln) for ln in lines[1:-1]),
-    )
 
 
 def _arg_list_takes_source_preserve_path(

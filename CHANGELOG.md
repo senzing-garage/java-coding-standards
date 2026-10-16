@@ -236,8 +236,9 @@ Arguments that inherently own multiple rows are exempt, so
 block-bodied lambdas, text blocks, anonymous classes and switch
 expressions — see "Exemptions from that rule that were not firing"
 below, which is where the last two joined the list and where the
-text-block test turns out never to have fired. The exemption tests only structural properties of the
-node and deliberately never consults the source layout: doing so
+text-block test turns out never to have fired. The exemption tests
+only structural properties of the node and deliberately never
+consults the source layout: doing so
 makes the answer depend on whether an earlier pass already wrapped
 the argument, which oscillated
 `arguments(Rectangle.class, Set.of(…), …)` between two shapes on
@@ -828,8 +829,9 @@ text further reintroduces the comma-spacing trap documented in
 On its own the accepted form left both aggregate counts exactly
 where they were at the time it was measured — 1573 over-long lines
 and the 305 advisories that preceded the LineLength-exemption fix
-below — with layout changes confined to 2 files. The unchanged counts, not output identity,
-are the evidence that it under-reserves nothing that mattered.
+below — with layout changes confined to 2 files. The unchanged
+counts, not output identity, are the evidence that it under-reserves
+nothing that mattered.
 
 Fixture `method_chain_wrap/26_receiver_reserve_ignores_arg_layout` locks
 it, and goes red if the reserve computation alone is reverted.
@@ -1784,8 +1786,9 @@ same reason. Structurally-owned rows are the only rows the wrap
 engine cannot reclaim, so they are the only ones that legitimately
 strand a chain tail.
 
-One construct in the corpus still takes a second pass to settle — a chain-with-lambda re-shape. What this release eliminates is the harder case: output that
-never settles at all.
+One construct in the corpus still takes a second pass to settle — a
+chain-with-lambda re-shape. What this release eliminates is the
+harder case: output that never settles at all.
 
 ### Argument lists: all-on-one-continuation-line tier (priority 2b)
 

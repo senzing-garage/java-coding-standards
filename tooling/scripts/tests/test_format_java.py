@@ -28,6 +28,54 @@ _TOOLING_DIR = _SCRIPTS_DIR.parent
 _REPO_ROOT = _TOOLING_DIR.parent
 
 
+def _format_in_method(
+    body: str,
+    signature: str = "void m()",
+    class_name: str = "A",
+) -> str:
+    """Format `body` as the sole contents of a method and return
+    the result as text.
+
+    Several test classes each grew their own copy of this, which
+    drifted: some passed `warnings_out=[]` and some did not, and
+    one decoded unconditionally while its neighbours guarded with
+    `isinstance`. Shared here so the wrapper and the return-type
+    normalization have one definition.
+
+    `warnings_out=[]` is always passed, so a test that does not
+    care about advisories does not have them written to the
+    collector the caller did not supply.
+    """
+    source = (
+        "public class %s\n{\n    %s\n    {\n%s\n    }\n}\n"
+        % (class_name, signature, body)
+    ).encode()
+    out = format_java.format_source(source, warnings_out=[])
+    return out if isinstance(out, str) else out.decode()
+
+
+# Two declarations used by both the flag-hand-back tests and the
+# ladder-guard tests. Shared so the two classes cannot drift onto
+# subtly different inputs while claiming to describe the same two
+# cascade exits.
+#
+# `_INLINE_DECLARATION` commits at the declarator's Step 1: every
+# row fits and the chain keeps its dot-aligned shape.
+# `_LADDERING_DECLARATION` is refused there — dot-aligning its
+# chain overflows, so the chain engine falls back to the ladder and
+# the declarator must read that as "the clean shape did not fit"
+# and break at `=` instead.
+_INLINE_DECLARATION = (
+    "        Object cachedEntity = engine.getNativeApi()"
+    ".getEntityByRecordId(dataSource, recordId);"
+)
+_LADDERING_DECLARATION = (
+    "        Object entityForThisRecord = engine"
+    ".getNativeApi().getEntityByRecordId(dataSource, recordId);"
+)
+
+
+
 # ---------------------------------------------------------------------------
 # Version-pin consistency
 # ---------------------------------------------------------------------------
@@ -4382,16 +4430,25 @@ class TestUnwrapParens:
     ) -> None:
         """A parenthesized call wraps like a bare one.
 
-        This pins the OUTCOME, not the route. The nested-call
-        rule's own type test was unwrapped for uniformity with
-        its three siblings, but reverting just that test changes
-        nothing observable — with or without it a parenthesized
-        call reaches the same two P4 candidates, either through
-        the rule or through the generic cascade below it. The
-        corpus is byte-identical either way. No test here claims
-        to pin that site; this one would stay green if it were
-        reverted, and is here because the outcome is worth
-        locking regardless of which branch delivers it.
+        A SHAPE lock, not a route test, despite living beside the
+        `_unwrap_parens` unit tests. It fails if this construct
+        stops reaching the P4 candidates — the assertion below is
+        on emitted layout, and the input is a single long line
+        that only P4 breaks this way.
+
+        What it does NOT do is discriminate the unwrap at the
+        nested-call rule's own type test. That test was unwrapped
+        for uniformity with its three siblings, and reverting just
+        it changes nothing observable: with or without it a
+        parenthesized call reaches the same two P4 candidates,
+        either through the rule or through the generic cascade
+        below it, and the corpus is byte-identical either way. No
+        test claims to pin that site, because no input has been
+        found that separates the two routes.
+
+        (Reviewers have twice read the paragraph above as "this
+        test cannot fail". It can; it just cannot fail for that
+        one reason.)
         """
         src = (
             "public class A\n{\n    void m()\n    {\n"
@@ -4455,13 +4512,7 @@ class TestChainHeadNeverDangles:
 
     @staticmethod
     def _format(body: str) -> str:
-        src = (
-            "public class A\n{\n    void m()\n    {\n"
-            + body
-            + "\n    }\n}\n"
-        ).encode()
-        out = format_java.format_source(src)
-        return out if isinstance(out, str) else out.decode()
+        return _format_in_method(body)
 
     @staticmethod
     def _dangling_heads(text: str) -> list[str]:
@@ -4535,13 +4586,7 @@ class TestSoleArgumentWrapEscalation:
 
     @staticmethod
     def _format(body: str) -> str:
-        src = (
-            "public class A\n{\n    void m()\n    {\n"
-            + body
-            + "\n    }\n}\n"
-        ).encode()
-        out = format_java.format_source(src)
-        return out if isinstance(out, str) else out.decode()
+        return _format_in_method(body)
 
     @pytest.mark.parametrize(
         "body",
@@ -5557,7 +5602,10 @@ class TestCatchHeaderComments:
         text = self._fmt(
             "catch (IllegalStateException | java.io.IOException e)"
         )
-        header = next(l for l in text.split("\n") if "catch (" in l)
+        header = next(
+            line for line in text.split("\n")
+            if "catch (" in line
+        )
         assert header.count("|") == 1, header
         assert "IllegalStateException" in header
 
@@ -5600,15 +5648,11 @@ class TestDeclarationMatchesAssignmentTwin:
 
     @staticmethod
     def _format(body: str) -> str:
-        src = (
-            "public class A\n{\n"
-            "    void m(SzEngine engine, String dataSource,\n"
-            "           String recordId, long startTime)\n    {\n"
-            + body
-            + "\n    }\n}\n"
-        ).encode()
-        out = format_java.format_source(src, warnings_out=[])
-        return out if isinstance(out, str) else out.decode()
+        return _format_in_method(
+            body,
+            "void m(SzEngine engine, String dataSource,\n"
+            "           String recordId, long startTime)",
+        )
 
     # Each case pairs a declaration with the bare assignment that
     # differs only in whether the left side carries a type. The
@@ -5801,17 +5845,8 @@ class TestDeclaratorHandsBackSpeculationFlags:
         text = "\n".join([*emitter._lines, emitter._current])
         return {name: getattr(emitter, name) for name in seed}, text
 
-    # Commits at the new Step 1: every row fits, nothing laddered.
-    INLINE = (
-        "        Object cachedEntity = engine.getNativeApi()"
-        ".getEntityByRecordId(dataSource, recordId);"
-    )
-    # Rejected by Step 1 (the chain ladders), so it leaves by a
-    # later exit instead.
-    LADDERS = (
-        "        Object entityForThisRecord = engine"
-        ".getNativeApi().getEntityByRecordId(dataSource, recordId);"
-    )
+    INLINE = _INLINE_DECLARATION
+    LADDERS = _LADDERING_DECLARATION
 
     @pytest.mark.parametrize(
         "statement,commits_inline",
@@ -5882,15 +5917,11 @@ class TestInlineValueGuardedAgainstLadder:
 
     @staticmethod
     def _format(body: str) -> str:
-        src = (
-            "public class A\n{\n"
-            "    void m(SzEngine engine, String dataSource,\n"
-            "           String recordId)\n    {\n"
-            + body
-            + "\n    }\n}\n"
-        ).encode()
-        out = format_java.format_source(src, warnings_out=[])
-        return out if isinstance(out, str) else out.decode()
+        return _format_in_method(
+            body,
+            "void m(SzEngine engine, String dataSource,\n"
+            "           String recordId)",
+        )
 
     @staticmethod
     def _dangling_heads(text: str) -> list[str]:
@@ -5902,15 +5933,7 @@ class TestInlineValueGuardedAgainstLadder:
                           lines[i])
         ]
 
-    # Dot-aligning this chain overflows (the tail reaches column
-    # 83), so the chain engine ladders instead. The declarator
-    # must read that as "the clean shape did not fit" and break at
-    # `=`, which recovers the horizontal space the left-hand side
-    # was spending.
-    LADDERS = (
-        "        Object entityForThisRecord = engine"
-        ".getNativeApi().getEntityByRecordId(dataSource, recordId);"
-    )
+    LADDERS = _LADDERING_DECLARATION
 
     # Both ladder tests also pass on the pre-change formatter,
     # whose Step 1 refused every multi-row value and so could not
