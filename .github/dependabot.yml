@@ -15,19 +15,18 @@ updates:
           - "senzing-factory/*"
     schedule:
       interval: "daily"
+  # One pip entry only. `tooling/scripts/tests/requirements.txt`
+  # pulls in the runtime pins via `-r ../requirements.txt`, so this
+  # single directory already covers both files — PR #43 bumped
+  # pytest in the tests file from here. A second entry for
+  # `/tooling/scripts/tests` duplicates the same dependency set and
+  # opens two identical PRs for every bump (#23/#24, #38/#39,
+  # #43/#44, #46/#47), so do not re-add one.
   - package-ecosystem: "pip"
     assignees:
       - "barrycaceres"
     cooldown:
       default-days: 21
     directory: "/tooling/scripts"
-    schedule:
-      interval: "daily"
-  - package-ecosystem: "pip"
-    assignees:
-      - "barrycaceres"
-    cooldown:
-      default-days: 21
-    directory: "/tooling/scripts/tests"
     schedule:
       interval: "daily"
