@@ -6895,6 +6895,57 @@ def _emit_assignment_with_array_rhs(
     )
 
 
+def _break_probe_wins(
+    emitter: "Emitter", since: int, extra_tail: int = 0
+) -> bool:
+    """Return True when a break-at-`=` probe emission is worth
+    keeping over the inline shape it displaced.
+
+    `_emit_variable_declarator` and `_emit_assignment_expression`
+    both probe this shape when an inline chain fell back to the
+    dangling-receiver ladder, and both must answer identically:
+    `Type x = RHS` and its bare twin `x = RHS` are the same
+    construct wearing a type, and 0.7.0 exists in part because the
+    two emitters had drifted apart with nothing but a comment
+    asserting they had not. Two copies of a condition plus a note
+    saying "keep these identical" is the arrangement that failed.
+    This is that note, enforced.
+
+    The probe is kept only when it BOTH stops laddering and fits,
+    so a chain that ladders from either column keeps the shorter
+    inline form rather than spending a line to arrive at the same
+    place.
+
+    `since` is the `lines_count` field of the snapshot taken
+    before the value was emitted.
+
+    `extra_tail` is trailing characters the caller's PARENT will
+    write that `emitter.tail_reserve` does not already cover: 1
+    for a declarator, whose enclosing declaration writes the `;`
+    itself, and 0 for an assignment, where
+    `_emit_expression_statement` has already folded that `;` into
+    the reserve. Only the final row is charged for it — the rows
+    above never receive those characters.
+
+    `_anchor_escaped` is deliberately NOT consulted. An escape
+    says the INLINE shape needs backing off to the break-at-`=`
+    shape, and the probe IS that shape, so there is nothing
+    further to back off to. (A previous commit added the check on
+    the assignment side only, justified by the claim that the
+    declarator's probe already made it. It did not. The check was
+    output-neutral across the corpus and every generated shape,
+    but it was reasoning from a false premise, and unifying here
+    is what surfaced that.)
+    """
+    rows = emitter._lines[since:]
+    return (
+        not emitter._chain_ladder_fired
+        and max((len(row) for row in rows), default=0) <= _MAX_LINE
+        and emitter.column + extra_tail + emitter.tail_reserve
+        <= _MAX_LINE
+    )
+
+
 def _emit_assignment_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -7063,12 +7114,12 @@ def _emit_assignment_expression(
     # coincidence of column arithmetic, which no test pins.
     inline_orphan = emitter._anchor_escaped
     # The chain fell back to the dangling-receiver ladder at the
-    # inline column. Same probe as `_emit_variable_declarator`, and
-    # for the reason this function already states below: `Type x =
-    # RHS` and its bare twin `x = RHS` must not diverge on whether
-    # the LHS carries a type. Keep the break only when it BOTH stops
-    # laddering and fits, so a chain that ladders either way does not
-    # pay a line for nothing.
+    # inline column. Literally the same probe as
+    # `_emit_variable_declarator` — both call `_break_probe_wins`,
+    # which is where the "keep it only when it BOTH stops laddering
+    # and fits" rule lives, and which exists so `Type x = RHS` and
+    # its bare twin `x = RHS` cannot diverge on whether the LHS
+    # carries a type.
     if inline_fits and not inline_orphan and emitter._chain_ladder_fired:
         emitter.restore(saved)
         emitter.newline()
@@ -7078,29 +7129,10 @@ def _emit_assignment_expression(
         emitter.write(" ")
         emitter._chain_ladder_fired = False
         _emit_node(emitter, source, right_node)
-        # Measured exactly as `_emit_variable_declarator`'s probe
-        # measures it, and as `inline_fits` above now does: the
-        # reserve (which here includes the `;`) is charged to the
-        # row that carries it and not to the rows above. Reading
-        # the rows with `last_lines_max_width` against
-        # `effective_max` instead charges every row, which made
-        # this probe a column stricter than the declarator's — so
-        # a shape the declarator's probe accepts could lose this
-        # one, and the twins this function exists to keep in step
-        # would part again at the boundary. No corpus file and no
-        # generated shape reaches that today; the conditions are
-        # held identical so that stays true by construction rather
-        # than by luck. `_anchor_escaped` is checked for the same
-        # reason: the declarator's probe declines an escaped
-        # emission and this one must too.
-        _probe_rows = emitter._lines[saved[0]:]
-        probe_wins = (
-            not emitter._chain_ladder_fired
-            and not emitter._anchor_escaped
-            and max((len(r) for r in _probe_rows), default=0)
-            <= _MAX_LINE
-            and emitter.column <= effective_max
-        )
+        # `extra_tail` is 0 here: this statement's `tail_reserve`
+        # already carries the `;` that `_emit_expression_statement`
+        # folded into it, where a declarator's does not.
+        probe_wins = _break_probe_wins(emitter, saved[0])
         emitter.pop_indent()
         if probe_wins:
             # Both flags, not just the ladder one. Step 1 cleared
@@ -12028,10 +12060,13 @@ def _emit_variable_declarator(
         emitter._chain_ladder_fired = False
         with _extra_tail_reserve(emitter, 1):
             _emit_node(emitter, source, value)
-        probe_wins = (
-            not emitter._chain_ladder_fired
-            and emitter.last_lines_max_width(saved[0]) <= _MAX_LINE
-            and emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+        # `extra_tail=1` for the `;` the enclosing field or
+        # local-variable declaration writes after this emitter
+        # returns, which this statement's `tail_reserve` does not
+        # cover. The assignment twin passes 0, because its reserve
+        # already does.
+        probe_wins = _break_probe_wins(
+            emitter, saved[0], extra_tail=1
         )
         # `pop_indent()` before either exit: the win path keeps
         # this emission and must leave the indent as it found it,

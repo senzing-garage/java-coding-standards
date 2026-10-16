@@ -5971,3 +5971,78 @@ class TestInlineValueGuardedAgainstLadder:
         assert sorted(first.split("\n")) == sorted(
             second.split("\n")
         ), (first, second)
+
+
+class TestBreakProbeIsShared:
+    """The break-at-`=` probe must have exactly one definition.
+
+    0.7.0's headline fix exists because `_emit_variable_declarator`
+    and `_emit_assignment_expression` had drifted apart while a
+    comment asserted they had not. The probe was the last place
+    that arrangement survived: two copies of a condition and a note
+    saying "hold these identical". Extracting `_break_probe_wins`
+    replaced the note; these tests stop a future edit from quietly
+    reintroducing a second copy.
+    """
+
+    def test_both_emitters_call_the_shared_helper(self) -> None:
+        import inspect
+
+        for fn in (
+            format_java._emit_variable_declarator,
+            format_java._emit_assignment_expression,
+        ):
+            assert "_break_probe_wins(" in inspect.getsource(fn), (
+                "%s no longer calls the shared probe" % fn.__name__
+            )
+
+    def test_the_helper_has_one_definition(self) -> None:
+        """A second copy is how the two drifted the first time."""
+        source = Path(format_java.__file__).read_text(
+            encoding="utf-8"
+        )
+        assert source.count("def _break_probe_wins(") == 1
+
+    @staticmethod
+    def _probe(rows: list[str], column: int, reserve: int,
+               laddered: bool = False, escaped: bool = False,
+               extra_tail: int = 0) -> bool:
+        emitter = format_java.Emitter()
+        emitter._lines = list(rows)
+        emitter._current = "x" * column
+        emitter.set_tail_reserve(reserve)
+        emitter._chain_ladder_fired = laddered
+        emitter._anchor_escaped = escaped
+        return format_java._break_probe_wins(
+            emitter, 0, extra_tail=extra_tail
+        )
+
+    def test_ladder_loses(self) -> None:
+        assert self._probe([], 10, 0, laddered=True) is False
+
+    def test_clean_short_emission_wins(self) -> None:
+        assert self._probe(["a" * 40], 10, 0) is True
+
+    def test_row_above_the_limit_loses(self) -> None:
+        assert self._probe(["a" * 81], 10, 0) is False
+        assert self._probe(["a" * 80], 10, 0) is True
+
+    def test_final_row_is_charged_the_tail(self) -> None:
+        """Only the last row pays `extra_tail` + the reserve."""
+        # 80 columns with nothing to follow: fits.
+        assert self._probe([], 80, 0) is True
+        # The same row with a `;` still to write: does not.
+        assert self._probe([], 80, 0, extra_tail=1) is False
+        # And the reserve stacks on top of `extra_tail`.
+        assert self._probe([], 79, 1, extra_tail=1) is False
+        assert self._probe([], 78, 1, extra_tail=1) is True
+
+    def test_anchor_escape_does_not_lose_the_probe(self) -> None:
+        """An escape is a reason to back off TO this shape.
+
+        The probe IS the break-at-`=` shape, so there is nothing
+        further to back off to. Pinned because a previous commit
+        added this check on the assignment side alone, justified by
+        the claim that the declarator already made it — it did not.
+        """
+        assert self._probe(["a" * 40], 10, 0, escaped=True) is True
