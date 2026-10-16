@@ -1944,6 +1944,58 @@ chain whose receiver is long enough to force continuation
 indentation from either column keeps the shorter inline form
 rather than spending a line to reach the same shape.
 
+### Breaking at `=` in a declaration or assignment
+
+A declaration and its bare-assignment twin differ only in whether
+the left-hand side carries a type, and they wrap the same way. The
+value stays on the `=` line whenever every row it emits fits within
+80 characters and the value kept its clean shape:
+
+```java
+    Object cachedEntity = engine.getNativeApi()
+                                .getEntityByRecordId(dataSource, recordId);
+
+    this.cachedEntityAB = engine.getNativeApi()
+                                .getEntityByRecordId(dataSource, recordId);
+```
+
+Breaking at `=` is what recovers horizontal space when that fails.
+Give the left-hand side its own line when the value's first row or
+any of its continuation rows would pass 80 characters, or when a
+chain value could only fit by falling back to continuation
+indentation — the dangling-receiver shape the chain section above
+rejects:
+
+```java
+    Object entityForThisRecord
+        = engine.getNativeApi().getEntityByRecordId(dataSource, recordId);
+
+    this.entityForThisRecord
+        = engine.getNativeApi().getEntityByRecordId(dataSource, recordId);
+```
+
+This is about the chain shape specifically. An argument list that
+wraps to its own `+4` block indent is NOT a reason to break at `=`
+— the value still begins on the `=` line, and its arguments take
+the indent beneath:
+
+```java
+    boolean ready = Boolean.FALSE.equals(
+        resultMap.get(key).getProcessedValue());
+```
+
+Each statement is judged on its own. Two neighboring declarations
+of similar shape may legitimately settle on different forms, and a
+statement that has to break at `=` does not pull its neighbors
+with it:
+
+```java
+    Object entity = engine.getNativeApi()
+                          .getEntityByRecordId(dataSource, recordId);
+    Object entityForThisRecord
+        = engine.getNativeApi().getEntityByRecordId(dataSource, recordId);
+```
+
 ### General Continuation Indentation
 
 The continuation indent is **+4 spaces per wrap LEVEL** — not per

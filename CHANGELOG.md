@@ -588,6 +588,102 @@ stranded receiver are resolved.** Lines over 80 (1571), advisories
 shapes are the same height — and the named-node sequence of every
 one of the 504 files is identical before and after.
 
+### A declaration now wraps like its bare-assignment twin
+
+`_emit_assignment_expression` has carried a comment since 0.6.0
+saying that `Type x = RHS` and its bare twin `x = RHS` "should
+format identically rather than diverging on whether the LHS carries
+a type". The invariant was false whenever the value wrapped into a
+shape the assignment would have kept inline, and had been since at
+least 0.6.0, which renders this exact pair byte-identically to this
+release before the fix. That is a statement about this pair and not
+about the construct: 0.7.0's own chain-head work moved other shapes
+of it on both sides.
+
+The two emitters tested different things. The declarator's first
+step required the value on ONE line, so any value that wrapped fell
+through to break-at-`=`; the assignment's accepted a multi-row value
+as long as every row fit, and kept it inline. Across 108 generated
+pairs varying receiver length, segment count, argument width and
+name width — 98 of which have a value that wraps — the two settled
+on different shapes in 27:
+
+```java
+    Object cachedEntity
+        = engine.getNativeApi().getEntityByRecordId(dataSource, recordId);
+
+    this.cachedEntityAB = engine.getNativeApi()
+                                .getEntityByRecordId(dataSource, recordId);
+```
+
+The declarator now admits the same multi-row value, so both render
+the second shape and all 108 pairs agree. The other 71 wrapping
+pairs never diverged to begin with: the inline shape overflows or
+ladders for both members, so both already broke at `=`, and they
+still do. It is not the width test alone, though: a value
+whose rows all fit may have reached that state by falling back to
+continuation indentation internally, which is the dangling-receiver
+shape the preceding entry exists to remove. Every row of it is
+short, so width cannot see it:
+
+```java
+    Object entityForThisRecord = engine
+        .getNativeApi()
+        .getEntityByRecordId(dataSource, recordId);
+```
+
+The inline shape is therefore kept only when the value ALSO left
+the ladder and anchor-escape flags clear — the same two readings
+the probe in the preceding entry already takes. Anything else falls
+to break-at-`=`, which recovers the horizontal space the left-hand
+side was spending. Taking the width test on its own reads as an
+improvement and is not: it triples dangling receivers across the
+corpus, **84 to 275, over 21 files to 42**, while appearing to fix
+48 more lines than this change does, because ladder rows are short.
+(Counted with the `_dangling_heads` helper in
+`TestInlineValueGuardedAgainstLadder` — a row ending in a bare
+receiver followed by a row opening with `.` — so the figures are
+reproducible from the shipped test.)
+A unit test pins that distinction so the cheaper-looking version
+cannot be reintroduced.
+
+One narrower divergence was found while reviewing this change and
+fixed with it. `effective_max` subtracts the statement's reserve,
+which for an expression statement includes the `;`, but only the
+final row ever carries that `;`. The assignment charged every row
+for it and the declaration charged only the last, so the assignment
+was a column stricter. With a block-anchored value — a block lambda,
+anonymous class or array initializer, whose continuation rows indent
+from the statement and so do not move with the left-hand side — a
+first row of exactly 80 characters was accepted by a declaration and
+refused by its twin:
+
+```java
+    Object xxxxxxxxxxxxxxxxxxxxxxxxxxxxx = someInterface.register((evt) -> {
+    this.yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+        = someInterface.register((evt) -> {
+```
+
+Sweeping left-hand-side widths 30 to 45 over such a value, that was
+the only width that still disagreed. The assignment now charges the
+reserve to the row that pays it. **No corpus file changes** — real
+code does not land a continuation row on the boundary — so the
+evidence is the sweep, which a test now runs at every width.
+
+Each statement is judged independently. Both flags are reset before
+the speculative emission, so no statement reads a neighbor's
+answer, and two adjacent declarations may legitimately settle on
+different shapes — verified by formatting the same pair in both
+orders and comparing byte-for-byte.
+
+**200 of the 504 corpus files change.** Lines over 80 fall from
+**1571 to 1562**, no file gains one, and two lose seven and two
+respectively. Total lines rise 221,099 to 221,163 (+64); advisories
+(289) and convergence (one file needing a second pass, none a
+third) are unchanged, as is the dangling-receiver count at 84 across
+21 files. The named-node sequence of every one of the 504 files is
+identical before and after.
+
 ### Four pre-existing defects fixed
 
 All four were surfaced by this release's own review rounds, and all four

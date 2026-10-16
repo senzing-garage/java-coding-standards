@@ -5573,3 +5573,230 @@ class TestCatchHeaderComments:
         ).encode()
         out = format_java.format_source(src, warnings_out=[]).decode()
         assert "// ordinary" in out
+
+
+class TestDeclarationMatchesAssignmentTwin:
+    """`Type x = RHS` and its bare twin `x = RHS` must settle on
+    the same shape.
+
+    `_emit_assignment_expression` has carried a comment asserting
+    this since 0.6.0, and it was false the whole time: the
+    declarator's Step 1 required the value on ONE line, so any
+    value that wrapped internally fell through to break-at-`=`,
+    while the assignment's Step 1 accepted a multi-row value whose
+    rows all fit and kept it inline.
+
+        Object cachedEntity                     <- declaration
+            = engine.getNativeApi().getEntityByRecordId(ds, id);
+
+        this.cachedEntity = engine.getNativeApi()   <- assignment
+                                  .getEntityByRecordId(ds, id);
+
+    The declarator now admits the same multi-row value, guarded on
+    the value having kept its clean shape — see
+    `TestInlineValueGuardedAgainstLadder` for why that guard is
+    load-bearing rather than belt-and-braces.
+    """
+
+    @staticmethod
+    def _format(body: str) -> str:
+        src = (
+            "public class A\n{\n"
+            "    void m(SzEngine engine, String dataSource,\n"
+            "           String recordId, long startTime)\n    {\n"
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src, warnings_out=[])
+        return out if isinstance(out, str) else out.decode()
+
+    # Each case pairs a declaration with the bare assignment that
+    # differs only in whether the left side carries a type. The
+    # left-hand sides are the same width, so the two emissions
+    # start the value at the same column and any difference in
+    # shape is a real divergence rather than an artifact of width.
+    TWINS = [
+        # Method chain — the shape that motivated the item.
+        (
+            "        Object cachedEntity = engine.getNativeApi()"
+            ".getEntityByRecordId(dataSource, recordId);",
+            "        this.cachedEntityAB = engine.getNativeApi()"
+            ".getEntityByRecordId(dataSource, recordId);",
+        ),
+        # Binary expression — the value wraps on its operator.
+        (
+            "        long elapsedTimeNanos = (System.nanoTime() "
+            "- startTime) / ONE_MILLION_CONST;",
+            "        this.elapsedTimeNanos = (System.nanoTime() "
+            "- startTime) / ONE_MILLION_CONST;",
+        ),
+        # Argument list — the value wraps inside its own parens.
+        (
+            "        PooledConnection pooled = new "
+            "PooledConnection(this.connector.openConnection());",
+            "        this.pooledConnectionAB = new "
+            "PooledConnection(this.connector.openConnection());",
+        ),
+    ]
+
+    @staticmethod
+    def _shape(text: str, lhs: str) -> list[str]:
+        """The emitted rows for the statement starting at `lhs`,
+        with the left-hand side itself replaced by a placeholder
+        so two twins of equal width compare equal when — and only
+        when — they wrapped the same way."""
+        lines = text.split("\n")
+        start = next(
+            i for i, line in enumerate(lines) if lhs in line
+        )
+        rows = []
+        for line in lines[start:]:
+            rows.append(line.replace(lhs, "<LHS>"))
+            if line.rstrip().endswith(";"):
+                break
+        return rows
+
+    @pytest.mark.parametrize(
+        "decl,assign", TWINS, ids=["chain", "binary", "arg_list"]
+    )
+    def test_twins_agree(self, decl: str, assign: str) -> None:
+        out = self._format(decl + "\n" + assign)
+        decl_lhs = decl.strip().split(" = ")[0]
+        assign_lhs = assign.strip().split(" = ")[0]
+        assert len(decl_lhs) == len(assign_lhs), (
+            "test setup: left-hand sides must be the same width "
+            f"({decl_lhs!r} vs {assign_lhs!r})"
+        )
+        assert (
+            self._shape(out, decl_lhs)
+            == self._shape(out, assign_lhs)
+        ), out
+
+    def test_twins_agree_on_the_80_column_boundary(self) -> None:
+        """The last way the two could still disagree.
+
+        `effective_max` for an expression statement subtracts the
+        `;`, but only the final row ever carries it. The
+        assignment used to charge every row for it and so refused
+        a first row of exactly 80 that a declaration accepted.
+        Only a block-anchored value exposes it — the continuation
+        rows are indented from the statement, so they do not move
+        with the left-hand side and the first row can sit on the
+        limit by itself.
+        """
+        diverged = []
+        for width in range(30, 46):
+            decl_lhs = "Object " + "x" * (width - 7)
+            assign_lhs = "this." + "y" * (width - 5)
+            assert len(decl_lhs) == len(assign_lhs) == width
+            body = (
+                "        %s = someInterface.register("
+                "(evt) -> { handle(evt); });\n"
+                "        %s = someInterface.register("
+                "(evt) -> { handle(evt); });"
+                % (decl_lhs, assign_lhs)
+            )
+            out = self._format(body)
+            if self._shape(out, decl_lhs) != self._shape(
+                out, assign_lhs
+            ):
+                diverged.append(width)
+        assert diverged == [], diverged
+
+    def test_declaration_keeps_the_inline_chain(self) -> None:
+        """The specific regression: before the fix this emitted a
+        line holding nothing but `Object cachedEntity`."""
+        out = self._format(self.TWINS[0][0])
+        assert (
+            "Object cachedEntity = engine.getNativeApi()" in out
+        ), out
+
+
+class TestInlineValueGuardedAgainstLadder:
+    """Admitting a multi-row value is correct only while the value
+    kept its clean shape.
+
+    Accepting any emission whose rows happen to fit also accepts
+    the dangling-receiver ladder, because the chain engine falls
+    back to it internally and every row it produces is short:
+
+        Object entityForThisRecord = engine
+            .getNativeApi()
+            .getEntityByRecordId(dataSource, recordId);
+
+    That shape is the one the release's chain-head work removed,
+    and width alone cannot see it — so the guard reads the ladder
+    and orphan flags rather than the ruler. Measured on the
+    504-file corpus, dropping it triples dangling receivers (82 ->
+    265 across 20 -> 40 files) while appearing to IMPROVE
+    compliance, since ladder rows are short.
+    """
+
+    @staticmethod
+    def _format(body: str) -> str:
+        src = (
+            "public class A\n{\n"
+            "    void m(SzEngine engine, String dataSource,\n"
+            "           String recordId)\n    {\n"
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src, warnings_out=[])
+        return out if isinstance(out, str) else out.decode()
+
+    @staticmethod
+    def _dangling_heads(text: str) -> list[str]:
+        lines = text.split("\n")
+        return [
+            lines[i] for i in range(len(lines) - 1)
+            if lines[i + 1].lstrip().startswith(".")
+            and re.search(r"[=(,]\s*[A-Za-z_][A-Za-z0-9_.]*\s*$",
+                          lines[i])
+        ]
+
+    # Dot-aligning this chain overflows (the tail reaches column
+    # 83), so the chain engine ladders instead. The declarator
+    # must read that as "the clean shape did not fit" and break at
+    # `=`, which recovers the horizontal space the left-hand side
+    # was spending.
+    LADDERS = (
+        "        Object entityForThisRecord = engine"
+        ".getNativeApi().getEntityByRecordId(dataSource, recordId);"
+    )
+
+    # Both ladder tests also pass on the pre-change formatter,
+    # whose Step 1 refused every multi-row value and so could not
+    # reach the ladder either. They discriminate against the
+    # NAIVE widening of Step 1 — the one-line "every row fits"
+    # test — which is the change a future reader is most likely
+    # to try.
+    def test_ladder_is_not_accepted_inline(self) -> None:
+        out = self._format(self.LADDERS)
+        assert self._dangling_heads(out) == [], out
+
+    def test_ladder_falls_back_to_break_at_equals(self) -> None:
+        out = self._format(self.LADDERS)
+        assert "Object entityForThisRecord\n" in out, out
+        assert (
+            "            = engine.getNativeApi()"
+            ".getEntityByRecordId(dataSource, recordId);" in out
+        ), out
+
+    def test_neighbors_decide_independently(self) -> None:
+        """A statement that falls back must not drag its
+        neighbor with it, in either order."""
+        fits = (
+            "        Object entity = engine.getNativeApi()"
+            ".getEntityByRecordId(dataSource, recordId);"
+        )
+        first = self._format(fits + "\n" + self.LADDERS)
+        second = self._format(self.LADDERS + "\n" + fits)
+        for out in (first, second):
+            assert (
+                "Object entity = engine.getNativeApi()" in out
+            ), out
+            assert "Object entityForThisRecord\n" in out, out
+        # Order must not change either statement's answer.
+        assert sorted(first.split("\n")) == sorted(
+            second.split("\n")
+        ), (first, second)

@@ -124,40 +124,144 @@ resolved so this document does not contradict `CHANGELOG.md`.
   collapse no longer gates on the SOURCE condition's row span.
   Second-pass files 6 to 1.
 
-## Still deferred to 0.8
+## Reviewed item by item, 2026-10-15
 
-- The last second-pass file, `AbstractSchedulingService.java`, a
-  chain-with-lambda that settles on pass 2. It is layout-dependent —
-  pristine source and pass-1 output share an AST yet format
-  differently — but the responsible read has NOT been identified. A
-  predicate trace diverges inside
-  `_arg_list_takes_source_preserve_path`, yet preservation fires zero
-  times on that file, so that answer is discarded and cannot be the
-  cause. Do not assume the chain cascade.
-- Optional: surface the 23 line-comment orphan candidates as advisories
-  through the existing `FormatterWarning` channel, leaving the judgment
-  to a human.
-- Retiring the paragraph splitter's `{@`-at-line-start rule. The
-  CHANGELOG calls this "the only javadoc item on the backlog"; it was
-  missing here, and the two documents disagreed.
-- Array creation with an initializer does not get the row-owning
-  exemption. It qualifies on the same reasoning as the other four
-  forms, but granting it regresses multi-argument calls, where the
-  initializer body indents from the line start rather than from the
-  construct and lands left of its own brace. Five corpus files move,
-  in both directions. The indent origin is the prerequisite.
-- A declaration and its bare-assignment twin still diverge whenever
-  the inline shape fits by wrapping internally. A declared
-  `Object x = recv.a().b(c)` breaks at `=`, while the assignment
-  `this.x = recv.a().b(c)` stays inline with the chain wrapped.
-  Pre-existing and identical in 0.6.0. The two emitters claim to
-  mirror each other and do not.
-- The save/reset/restore of `_anchor_escaped` and
-  `_chain_ladder_fired` is hand-repeated at roughly six sites, and has
-  been got wrong twice in one release. A context manager, as
-  `_extra_tail_reserve` already does for `tail_reserve`, would make
-  the discipline enforceable rather than remembered.
-- The declaration advisory measures before the trailing side
-  comments are attached, so a trailing `// …` that pushes the line
-  past 80 goes unreported. Checkstyle still rejects the line.
-  Moving the advisory would change when roughly 834 of them fire.
+Each item below was walked through with a worked example from the
+504-file corpus and decided individually. Figures are measured at
+`f34045f`, not estimated; two that were carried from earlier drafts
+turned out to be wrong and are corrected in place.
+
+### In 0.7.0
+
+- **A declaration and its bare-assignment twin format differently.**
+  A declared `Object x = recv.a().b(c)` breaks at `=`; the assignment
+  `this.x = recv.a().b(c)` stays inline with the chain wrapped — two
+  shapes for one construct, with the left-hand sides padded to equal
+  length so the right side starts at the same column. Of 108 generated
+  pairs varying receiver length, segment count, argument width and
+  name width, 98 have a value that wraps and **27** of those settled
+  on different shapes. (An earlier draft said 78 pairs diverging in
+  every case; re-measuring before the fix shipped corrected both
+  halves of that.)
+
+  `_emit_assignment_expression` carries a comment asserting the
+  opposite: that a declaration and "its bare-reassignment twin …
+  should format identically rather than diverging on whether the LHS
+  carries a type". The invariant was false and had been since at least
+  0.6.0, which renders this exact pair byte-identically to this
+  release before the fix — a statement about the pair, not the
+  construct, since 0.7.0's chain-head work moved other shapes of it.
+
+  **Shipped.** The declarator's Step 1 required the value on a single
+  line, so a wrapping chain fell to break-at-`=`, while the
+  assignment's accepted a multi-row value as long as every line fit.
+  The declarator now admits the same multi-row value — guarded on the
+  value having left the ladder and anchor-escape flags clear, because
+  a value whose rows all fit may have got there by falling back to
+  continuation indentation, which is the dangling-receiver shape this
+  release removed elsewhere. Width alone cannot see that: taking the
+  width test on its own looks like 48 more lines of compliance and is
+  really **84 → 275** dangling receivers across **21 → 42** files
+  (counted with the `_dangling_heads` helper the new tests ship).
+
+  Done on a spike branch and merged after the corpus confirmed it.
+  200 of 504 files change shape, over-80 **1571 → 1562** with no file
+  gaining one, advisories (289) and convergence (1 second-pass, 0
+  third) unchanged, and zero named-node-sequence differences. All 108
+  generated pairs now agree.
+
+### Decided against
+
+- **Array creation with an initializer does not get the row-owning
+  exemption, and should not.** Reviewed all five affected corpus
+  files one at a time; the preferred shape was the current one in
+  five cases out of five, including a long array whose elements wrap
+  either way.
+
+  The principle settles it independently of taste. The exemption is
+  for arguments whose multi-row-ness is _inherent_ — a block lambda,
+  anonymous class or text block cannot be one line. An array literal
+  such as `new String[] { a, b }` can. It spans rows only because
+  something wrapped it, which is exactly the case the "if an
+  argument breaks, the list breaks" rule exists to catch. The array
+  never qualified.
+
+  This is a decision, not a postponement: no later work makes the
+  array eligible.
+
+### Still deferred to 0.8
+
+- **An array initializer indents its body from the statement's line
+  start rather than from the construct.** Split out of the exemption
+  question above, where it was doing the arguing. In paren-aligned
+  position the contents land left of their own opening brace —
+  column 12 under a brace at column 28. A real emission defect,
+  independent of any exemption, and the reason the exemption looked
+  tempting in the first place.
+
+- **The last second-pass file, `AbstractSchedulingService.java`.**
+  Settles on pass 2 and is stable after. Pass 1 is NOT wrong: both
+  passes carry the same 2 over-80 lines and the same 2 advisories,
+  and are AST-identical to each other. Pass 2 is 20 lines shorter and
+  collapses `getBackingTasks().forEach(task -> {` onto one line. So
+  this is a cosmetic convergence gap, not a correctness one, and the
+  consumer-trial checklist already runs to convergence.
+
+  The responsible read has NOT been identified. An earlier claim of a
+  chain-cascade ordering problem was RETRACTED — the evidence was a
+  comparison of two inputs that already agreed. A trace diverges
+  inside `_arg_list_takes_source_preserve_path`, yet preservation
+  fires zero times on this file, so that answer is discarded too. The
+  only item here whose cost cannot be bounded.
+
+- **Advisories for line-comment orphans the formatter creates.**
+  **13**, not the 23 this document claimed before it was measured.
+  Those are runs where reflow stranded 1-3 words that the author had
+  not. A further ~716 such runs exist in the formatted corpus but are
+  author-written and untouched; advising on those would be noise.
+  Explicitly excluded from 0.7.0 once already.
+
+- **Retiring the paragraph splitter's `{@`-at-line-start rule.**
+  **458 sites** across the corpus stop short where the inline tag
+  would have fitted on the line above. The CHANGELOG calls this the
+  only javadoc item on the backlog, which is accurate but gives no
+  sense of scale — this is the largest blast radius on the list.
+
+  Not a fix but a rule REPLACEMENT: a tag-per-line list is a
+  legitimate authored shape, and the splitter cannot currently tell
+  it from a line it gave up on. Retiring the rule without that
+  distinction reflows deliberate layouts.
+
+- **Hand-managed save/reset/restore of `_anchor_escaped` and
+  `_chain_ladder_fired`** at 26 assignment sites. Recorded as a
+  MAINTAINABILITY item, not a latent defect — an earlier draft of
+  this document overstated it.
+
+  Two real leaks were found and fixed during the release (the
+  declarator's overflow backtrack, the assignment's probe-wins exit).
+  Both were output-neutral, and that was measured, not assumed:
+  reinstating both changes **0 of 504** corpus files and **0 of 552**
+  generated shapes that nest a declarator inside a lambda body or
+  anonymous-class body — the geometry the leak would have to corrupt.
+
+  A naive context manager would also be wrong. The two flags have
+  different lifetimes at the same call site: `_anchor_escaped`
+  deliberately ACCUMULATES across the declarator backtrack, while
+  `_chain_ladder_fired` is per-construct and must be restored.
+  Treating them alike reintroduces the bug class it is meant to
+  prevent.
+
+- **The declaration advisory is blind to trailing side comments.**
+  It measures the statement before `_attach_trailing_side_comments`
+  runs, so a trailing `// …` that pushes the line past 80 is never
+  reported: **834** such lines across 27 files, **831** of them with
+  no advisory. Demonstrated, unlike the item above.
+
+  Costs nothing in correctness — the line is over 80 and checkstyle
+  rejects it, so the channel under-reports rather than hides. Not a
+  regression either: 0.6.0 leaves 836. Awkward to fix late because
+  moving the advisory would take the count from 289 to over a
+  thousand, and the better answer may be to wrap the comment rather
+  than merely report it.
+
+  The best-diagnosed item here; worth doing first in 0.8.

@@ -7009,8 +7009,38 @@ def _emit_assignment_expression(
     prev_escaped = emitter._anchor_escaped
     emitter._anchor_escaped = False
     emit_inline_rhs()
+    # Per-row tail accounting, matching
+    # `_emit_variable_declarator`'s Step 1. `effective_max`
+    # already subtracts this statement's `tail_reserve`, which
+    # for an expression statement includes the `;`
+    # (`_emit_expression_statement` sets `tail_reserve + 1`).
+    # Only ONE row ever receives that `;` — the last — so holding
+    # the earlier rows to `effective_max` charged them for a
+    # character they never carry, making this test a column
+    # stricter than the declarator's.
+    #
+    # That one column was the last way the twins could still
+    # disagree. With a block-anchored value, whose continuation
+    # rows are indented from the statement and so do not move
+    # with the left-hand side, a first row of exactly 80 was
+    # accepted by a declaration and refused by its assignment
+    # twin:
+    #
+    #     Object xxxxxxxxxxxxxxxxxxxxxxxxxxxxx = api.register(e -> {
+    #     this.yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+    #         = api.register(e -> {
+    #
+    # Sweeping left-hand-side widths 30-45 over a block-lambda
+    # value, that was the sole divergence remaining, at width 36
+    # alone. Charging the reserve only to the row that pays it
+    # closes it, and changes nothing else: zero of the 504 corpus
+    # files move, because real code does not land a continuation
+    # row on the boundary.
+    _finalized_rows = emitter._lines[saved[0]:]
     inline_fits = (
-        emitter.last_lines_max_width(saved[0]) <= effective_max
+        max((len(row) for row in _finalized_rows), default=0)
+        <= _MAX_LINE
+        and emitter.column <= effective_max
     )
     # Same orphan check `_emit_variable_declarator` runs, for the
     # same reason this function states below: `Type x = RHS` and its
@@ -11753,18 +11783,27 @@ def _emit_variable_declarator(
                 verbatim, strip_trailing_ws=True
             )
             return
-    # Wrap-priority for assignment: prefer the cleanest single-
-    # line form over wrapping the value internally. Order:
+    # Wrap-priority for a declarator: keep the value on the `=`
+    # line while it stays clean, and spend a line on the LHS only
+    # when that buys something. Order:
     #
-    #   (1) Inline single-line: if `NAME = VALUE;` fits within
-    #       80 chars (value rendered single-line), use it.
+    #   (1) Inline: the value emits at the `=` column, single- OR
+    #       multi-row, provided every row fits and the value left
+    #       the ladder and anchor-escape flags clear. The
+    #       multi-row half of this is what keeps a declaration
+    #       agreeing with its bare-assignment twin.
     #   (2) Break-at-`=` single-line: if `= VALUE;` at the
     #       continuation column fits, use the break form. The
     #       VALUE renders single-line on the continuation; the
-    #       LHS gets its own line up through NAME.
+    #       LHS gets its own line up through NAME. Reached only
+    #       when (1) rejects — so a value that is multi-row
+    #       inline but single-row after the break now commits at
+    #       (1) rather than here.
     #   (3) Inline with value-wrap: fall back to letting the
     #       value emit its own wrap (method-call P2/P4, binary-
-    #       expression wrap, etc.).
+    #       expression wrap, etc.), with the ladder probe and the
+    #       overflow backtrack that (1) deliberately declines to
+    #       guess at.
     effective_max = _MAX_LINE - emitter.tail_reserve
 
     # 0.6.0: array-literal RHS gets its own cascade per the
@@ -11779,20 +11818,88 @@ def _emit_variable_declarator(
         )
         return
 
-    # Step 1: try inline single-line via speculative emission.
-    # If the value's emission stays on one line AND the line
-    # fits within the budget (counting the trailing `;` the
-    # field/local-variable declaration will write), commit.
+    # Step 1: try inline via speculative emission. Commit when
+    # every line fits within the budget (counting the trailing
+    # `;` the field/local-variable declaration will write) AND
+    # the value kept the clean shape.
+    #
+    # A multi-row value is admitted here, which is what keeps a
+    # declaration and its bare-assignment twin in agreement:
+    #
+    #     Object cachedEntity = engine.getNativeApi()
+    #                                 .getEntityByRecordId(ds, id);
+    #
+    # `_emit_assignment_expression`'s Step 1 accepts exactly that
+    # shape, so requiring a single line here would make `Type x =
+    # RHS` diverge from `x = RHS` on nothing but whether the left
+    # side carries a type — the divergence the comment below that
+    # function's Step 2 has asserted away since 0.6.0 without it
+    # ever having been true.
+    #
+    # The ladder and orphan guards are what keep the admission
+    # honest. A dangling-receiver ladder or a block-anchored
+    # escape is the chain engine reporting that the dot-aligned
+    # shape did NOT fit and it fell back internally; every row
+    # still measures under 80, so width alone cannot see it:
+    #
+    #     Object entityForThisRecord = engine
+    #         .getNativeApi()
+    #         .getEntityByRecordId(ds, id);
+    #
+    # Those fall through to Step 2, whose break-at-`=` recovers
+    # the horizontal space the inline shape spent on the left-hand
+    # side. Step 3 re-runs the same probe for the cases Step 2's
+    # single-line requirement turns away, so a chain that ladders
+    # either way still keeps the inline shape rather than paying a
+    # line to arrive at the same place.
+    #
+    # The decision is per-declarator by construction: both flags
+    # are reset before the speculative emit, so neither reads a
+    # neighboring statement's answer, and two adjacent
+    # declarations may legitimately settle on different shapes.
     saved = emitter.snapshot()
     emitter.write(" = ")
+    prev_escaped = emitter._anchor_escaped
+    emitter._anchor_escaped = False
+    prev_laddered = emitter._chain_ladder_fired
+    emitter._chain_ladder_fired = False
     with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
+    # The last row is measured exactly as Step 3 measures it:
+    # `column + 1 <= effective_max` is `column + 1 +
+    # tail_reserve <= _MAX_LINE` rearranged. The rows BEFORE it
+    # are held to `effective_max` where Step 3 uses `_MAX_LINE`,
+    # so with a non-zero reserve (a for-init reserves 2) this
+    # gate is up to two columns stricter than it strictly needs
+    # to be. Deliberate: erring tight can only decline the inline
+    # shape and send the value to Step 2, never admit a row past
+    # 80.
     inline_fits = (
-        emitter.line_count == saved[0]
+        emitter.last_lines_max_width(saved[0]) <= effective_max
         and emitter.column + 1 <= effective_max
+        and not emitter._anchor_escaped
+        and not emitter._chain_ladder_fired
     )
     if inline_fits:
+        # Hand both flags back as found, for the reason the Step 3
+        # commit states at length below: the resets above are
+        # local measurement devices, and a declarator nested
+        # inside this value (in a lambda block or anonymous-class
+        # body) must not clear evidence an enclosing construct
+        # recorded.
+        emitter._anchor_escaped = prev_escaped
+        emitter._chain_ladder_fired = prev_laddered
+        # No `_fire_wrap_overflow_advisory` here, unlike both of
+        # Step 3's commit exits. It would be dead code: the
+        # advisory early-returns unless some row exceeds
+        # `_MAX_LINE` counting the reserve, and the gate above is
+        # strictly tighter than that on every row. An advisory
+        # fired from this path would contradict the commit that
+        # fired it.
         return
+    # `saved` was snapshotted before the resets above and both
+    # flags are fields of the snapshot tuple, so this restores the
+    # incoming values without further bookkeeping.
     emitter.restore(saved)
 
     # Step 2: try break-at-`=` with single-line value.
