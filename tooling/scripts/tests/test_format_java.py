@@ -5699,6 +5699,7 @@ class TestDeclarationMatchesAssignmentTwin:
         limit by itself.
         """
         diverged = []
+        on_the_limit = []
         for width in range(30, 46):
             decl_lhs = "Object " + "x" * (width - 7)
             assign_lhs = "this." + "y" * (width - 5)
@@ -5711,10 +5712,22 @@ class TestDeclarationMatchesAssignmentTwin:
                 % (decl_lhs, assign_lhs)
             )
             out = self._format(body)
-            if self._shape(out, decl_lhs) != self._shape(
-                out, assign_lhs
-            ):
+            decl_rows = self._shape(out, decl_lhs)
+            if decl_rows != self._shape(out, assign_lhs):
                 diverged.append(width)
+            # `_shape` substitutes a placeholder for the left-hand
+            # side, so measure the row as it was actually emitted.
+            if len(decl_rows[0].replace("<LHS>", decl_lhs)) == 80:
+                on_the_limit.append(width)
+        # Without this the sweep passes vacuously: if the geometry
+        # ever shifts so that no width lands a first row ON 80, the
+        # agreement assertion below would still hold while testing
+        # nothing. The divergence this pins lived at that column and
+        # nowhere else.
+        assert on_the_limit, (
+            "no width put the first row on the 80-column limit, so "
+            "this sweep no longer exercises the boundary"
+        )
         assert diverged == [], diverged
 
     def test_declaration_keeps_the_inline_chain(self) -> None:
