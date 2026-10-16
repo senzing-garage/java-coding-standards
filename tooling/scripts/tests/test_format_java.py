@@ -5545,6 +5545,53 @@ class TestArrayInitializerComments:
         assert "// leading comment is fine" in out
         assert '{ "x", "y" }' in out
 
+    # Shapes where the initializer is empty or nested, which reach
+    # the element scan by a different route than the flat case
+    # above. All three refuse today; none was covered, so nothing
+    # would have reported it if one started emitting the
+    # non-compiling output the refusal exists to prevent.
+    NESTED_AND_EMPTY = (
+        "int[] a = { /* c */ };",
+        "int[][] a = { { 1, // why\n 2 }, { 3 } };",
+        "int[][] a = { /* c */ { 1 }, { 2 } };",
+    )
+
+    @pytest.mark.parametrize("body", NESTED_AND_EMPTY)
+    def test_empty_and_nested_forms_are_refused(
+        self, body: str
+    ) -> None:
+        src = (
+            "public class T\n{\n    void t()\n    {\n        "
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        with pytest.raises(
+            NotImplementedError, match="array initializer"
+        ):
+            format_java.format_source(src)
+
+    # The other half of a refusal: it must not over-trigger. An
+    # empty or nested initializer carrying NO comment is ordinary
+    # Java and has to keep formatting.
+    @pytest.mark.parametrize(
+        "body",
+        (
+            "int[] a = {};",
+            "int[][] a = { { 1, 2 }, { 3, 4 } };",
+        ),
+    )
+    def test_uncommented_empty_and_nested_still_format(
+        self, body: str
+    ) -> None:
+        src = (
+            "public class T\n{\n    void t()\n    {\n        "
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src, warnings_out=[])
+        out = out if isinstance(out, str) else out.decode()
+        assert body in out, out
+
 
 class TestCatchHeaderComments:
     """A comment in a catch header is refused, not mangled.
