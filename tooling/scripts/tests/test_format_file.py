@@ -106,6 +106,58 @@ def test_refused_file_exits_zero(tmp_path: Path) -> None:
     assert "refused: 1" in result.stderr
 
 
+def test_refusal_leaves_the_file_byte_identical(
+    tmp_path: Path,
+) -> None:
+    # The whole justification for refusing rather than reflowing is
+    # that the file is left exactly as the developer wrote it. That
+    # is asserted in the emitter comments and in the CHANGELOG and
+    # was not covered: the existing refusal test uses a module
+    # declaration and checks only the exit code.
+    #
+    # Both 0.7.0 refusals are exercised here, through the real CLI,
+    # with the bytes compared before and after.
+    cases = {
+        "ArrayComment.java": (
+            "public class ArrayComment\n"
+            "{\n"
+            "    void m()\n"
+            "    {\n"
+            "        String[] a = new String[] {\n"
+            '            "x",   // why this one\n'
+            '            "y"\n'
+            "        };\n"
+            "    }\n"
+            "}\n"
+        ),
+        "CatchComment.java": (
+            "public class CatchComment\n"
+            "{\n"
+            "    void m()\n"
+            "    {\n"
+            "        try {\n"
+            "            go();\n"
+            "        } catch (java.io.IOException /* why */ e) {\n"
+            "            handle(e);\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        ),
+    }
+    for name, text in cases.items():
+        java = tmp_path / name
+        java.write_text(text, encoding="utf-8")
+        before = java.read_bytes()
+
+        result = _run_format_file(str(java))
+
+        assert result.returncode == 0, (name, result.stderr)
+        assert "REFUSED" in result.stderr, (name, result.stderr)
+        assert java.read_bytes() == before, (
+            "%s was modified despite being refused" % name
+        )
+
+
 def test_parse_error_exits_nonzero(tmp_path: Path) -> None:
     # Genuine Java syntax errors fail the run (exit 1) so CI
     # surfaces them rather than silently overwriting source.
