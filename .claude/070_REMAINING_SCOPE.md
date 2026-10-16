@@ -5,15 +5,17 @@ wrong, the decision taken on each, and what shipped. Census covered 504
 files across `senzing-commons-java`, `sz-sdk-java`, `sz-sdk-java-grpc`
 and `data-mart-replicator`.
 
-**All four census findings are resolved in 0.7.0**, as are three of
-the four items THIS CENSUS originally deferred.
+This document holds two lists.
 
-Those four are not the same set as the six under "Still deferred to
-0.8" near the end. The census list is the one numbered 1-4 below; the
-six are a later backlog, reviewed item by item on 2026-10-15 and
-recorded in its own section. Both sections are kept because they
-answer different questions: what the census found, and what is left
-after it.
+1. **The census itself** — four findings, numbered 1-4 below. All
+   four are resolved in 0.7.0.
+2. **A later backlog** — eight items, reviewed one at a time on
+   2026-10-15 and recorded in the three sections at the end: one
+   accepted into 0.7.0, one rejected outright, and six deferred
+   under "Still deferred to 0.8".
+
+The two lists are separate. Counts from one do not describe the
+other.
 
 ## 1. Deep orphan — a construct emitted left of the `(` it belongs to
 

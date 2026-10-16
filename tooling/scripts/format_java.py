@@ -3686,9 +3686,10 @@ def _javadoc_is_prose_line(content: str) -> bool:
 
 _REFLOW_ORPHAN_MAX_WORDS: Final[int] = 3
 """A reflowed comment's last line is an orphan when it carries this
-many words or fewer. Three matches `feedback_comment_reflow`'s "never
-orphan 1-3 words on a continuation"; a fourth word makes the line read
-as a clause of its own rather than a fragment left behind."""
+many words or fewer. Three matches the standards document's "Prose
+Paragraphs" rule, which forbids leaving an orphaned short line of 1-3
+words; a fourth word makes the line read as a clause of its own rather
+than a fragment left behind."""
 
 
 def _balanced_reflow_words(
@@ -3708,8 +3709,9 @@ def _balanced_reflow_words(
         // pack the first line tight and this is what is left over
         // behind
 
-    Per `feedback_comment_reflow`: pack the first line tight OR
-    balance the breaks; never orphan 1-3 words on a continuation.
+    Per the standards document's "Prose Paragraphs" rule: pack the
+    first line tight OR balance the breaks; never orphan 1-3 words
+    on a continuation.
     Balancing is chosen because it reads better at the same line
     count — the rebuild can never need more lines than greedy, and
     falls back to the greedy result if it somehow does, which is what
@@ -4677,9 +4679,9 @@ def _emit_reflowed_line_comment(
     Greedy packed line 1 to `max_content` and left the
     remainder on line 2, which produced 1-3 word orphans when
     total content only slightly exceeded the per-line budget
-    (per `feedback_comment_reflow`: "pack first line tight
-    OR balance breaks; never orphan 1-3 words on a
-    continuation"). Balanced fill:
+    (the standards document's "Prose Paragraphs" rule: pack the
+    first line tight OR balance the breaks; never orphan 1-3
+    words on a continuation). Balanced fill:
 
       1. Runs greedy first to determine minimum line count `N`.
       2. Computes a soft `target` = total_content / N.
