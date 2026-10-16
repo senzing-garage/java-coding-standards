@@ -10,7 +10,7 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-10-15
+## [0.7.0] - 2026-10-16
 
 Formatting release. Started as a bug-fix pass over defects
 surfaced by running 0.6.0 across four consumer source bases,
