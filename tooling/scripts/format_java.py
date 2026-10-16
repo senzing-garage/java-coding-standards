@@ -907,7 +907,17 @@ def _fire_wrap_overflow_advisory(
             # Patching the rendered message by substring is only safe
             # because BOTH halves are produced here: the phrase below
             # is the one this function writes, and `existing.width`
-            # is the number it wrote. If that ever stops holding the
+            # is the number it wrote. What makes that hold is that
+            # this function owns the ONLY `FormatterWarning(...)` in
+            # the formatter — `width` and the "max line width N"
+            # sentence are set from the same `max_on_disk` in the
+            # same call, so they cannot disagree. (Two review rounds
+            # have asked whether an advisory built elsewhere could
+            # leave `width` at its `0` default and make the replace a
+            # no-op. None is built elsewhere; the default is never
+            # reached. `TestAdvisoryWidthPatchGuard` seeds the
+            # mismatched pair by hand to exercise this branch.) If
+            # that ever stops holding the
             # replace would silently no-op and the advisory would
             # keep understating the width, so the swap is verified
             # rather than assumed. Note this is about keeping `width`
