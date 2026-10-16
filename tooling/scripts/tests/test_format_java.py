@@ -5312,7 +5312,18 @@ class TestFieldAccessCommitAndWarn:
             "EightyColumnsXXXXXXXXX().someField;\n    }"
         )
         assert len(over) == 2
-        assert len(warnings) >= 2
+        # `>=` would let a duplicate on one line stand in for a
+        # missing advisory on the other, which is the exact failure
+        # this test exists to catch. Match them to their lines.
+        assert len(warnings) == 2, warnings
+        # `>=` would let a duplicate on one line stand in for a
+        # missing advisory on the other. Pair them up instead: each
+        # overflowing line must have an advisory reporting ITS
+        # width, which also pins that neither is under-reported.
+        assert sorted(w.width for w in warnings) == sorted(over), (
+            warnings, over
+        )
+        assert len({w.line for w in warnings}) == 2, warnings
 
     def test_fitting_field_access_stays_quiet(self) -> None:
         """The advisory is a no-op when the commit fits, so an
@@ -6004,10 +6015,12 @@ class TestInlineValueGuardedAgainstLadder:
 
     That shape is the one the release's chain-head work removed,
     and width alone cannot see it — so the guard reads the ladder
-    and orphan flags rather than the ruler. Measured on the
-    504-file corpus, dropping it triples dangling receivers (82 ->
-    265 across 20 -> 40 files) while appearing to IMPROVE
-    compliance, since ladder rows are short.
+    and orphan flags rather than the ruler. Dropping the guard
+    roughly triples dangling receivers across the trial corpus
+    while appearing to IMPROVE compliance, since ladder rows are
+    short. The CHANGELOG carries the measured counts; they are not
+    repeated here, because a number in two places drifts in one of
+    them — which is exactly what happened to these.
     """
 
     @staticmethod
@@ -6092,15 +6105,33 @@ class TestBreakProbeIsShared:
     # literal, so renaming it keeps these honest instead of
     # silently passing.
     def test_both_emitters_call_the_shared_helper(self) -> None:
+        """Parsed, not grepped.
+
+        A substring search is satisfied by a comment or docstring
+        that merely mentions the helper, so it could pass with the
+        real call deleted. An `ast.Call` node cannot be written in
+        a comment.
+        """
+        import ast
         import inspect
+        import textwrap
 
         name = format_java._break_probe_wins.__name__
         for fn in (
             format_java._emit_variable_declarator,
             format_java._emit_assignment_expression,
         ):
-            assert name + "(" in inspect.getsource(fn), (
-                "%s no longer calls %s" % (fn.__name__, name)
+            tree = ast.parse(
+                textwrap.dedent(inspect.getsource(fn))
+            )
+            calls = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == name
+            ]
+            assert calls, (
+                "%s contains no call to %s" % (fn.__name__, name)
             )
 
     def test_the_helper_has_one_definition(self) -> None:
