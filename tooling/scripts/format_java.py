@@ -9699,35 +9699,32 @@ def _emit_argument_list(
         # where source-preserved verbatim layouts silently
         # re-appeared each format pass.
         #
-        # CSOFF / has_comment cases are handled by the
-        # predicate above — they emit verbatim without
-        # column-remap (semantic columns are part of their
-        # meaning).
-        comments_present = any(
-            c.type in ("line_comment", "block_comment")
-            for c in node.children
-            if c.is_named
-        )
-        if comments_present or _is_inside_csoff_region(
-            source, node
-        ):
-            emitter.write_raw_lines(
-                src_text, strip_trailing_ws=True
-            )
-            return
-        # Nothing follows. Reaching this `if` at all means the
-        # predicate found a comment or a CSOFF region, and the
-        # check just above re-tests exactly those two, so every
-        # path here has already returned.
+        # Unconditional. The predicate returns True for the
+        # comment case and the CSOFF case and nothing else, and
+        # both emit verbatim without column-remap, because their
+        # columns carry meaning.
         #
-        # Roughly 124 lines used to sit below: a column-remap that
-        # re-anchored preserved rows to the current paren column,
-        # with its own overflow advisory. It became unreachable when
-        # 0.7.0 narrowed preservation to the comment and CSOFF cases
-        # — everything it handled now goes to the wrap engine
-        # instead. What it did, and why re-adding anything like it
-        # is a mistake, is recorded in the
-        # `building/source-preservation-history` FAQ.
+        # This used to re-test those two conditions here before
+        # emitting — a second copy of the predicate's own rule,
+        # with a fall-through path behind it that could only be
+        # reached if the two copies disagreed. They could not
+        # disagree: the comment scan was character-identical and
+        # the CSOFF test was the same call. Keeping two copies in
+        # step by inspection is the arrangement that produced this
+        # release's headline defect in the declarator and
+        # assignment emitters, so the copy is gone and the
+        # unreachable path with it.
+        #
+        # Roughly 124 further lines used to follow the emit: a
+        # column-remap that re-anchored preserved rows to the
+        # current paren column, with its own overflow advisory. It
+        # became unreachable when 0.7.0 narrowed preservation to
+        # the comment and CSOFF cases — everything it handled now
+        # goes to the wrap engine instead. What it did, and why
+        # re-adding anything like it is a mistake, is recorded in
+        # the `building/source-preservation-history` FAQ.
+        emitter.write_raw_lines(src_text, strip_trailing_ws=True)
+        return
 
     # 0.5.0 item 10 — spec C6 extension to method/constructor
     # call parens, restricted to single-arg calls whose only
