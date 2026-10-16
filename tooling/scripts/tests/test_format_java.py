@@ -5985,23 +5985,36 @@ class TestBreakProbeIsShared:
     reintroducing a second copy.
     """
 
+    # These two read source text, which is ordinarily the wrong
+    # tool. It is the right one here, and the history says why: the
+    # two probes were OUTPUT-IDENTICAL on every input anyone could
+    # find, so no behavioural test could have caught them drifting
+    # — the twin-agreement tests in this file were green through
+    # the whole period the conditions disagreed. What needs pinning
+    # is the structure, not the output.
+    #
+    # The helper is referenced through `__name__` rather than a
+    # literal, so renaming it keeps these honest instead of
+    # silently passing.
     def test_both_emitters_call_the_shared_helper(self) -> None:
         import inspect
 
+        name = format_java._break_probe_wins.__name__
         for fn in (
             format_java._emit_variable_declarator,
             format_java._emit_assignment_expression,
         ):
-            assert "_break_probe_wins(" in inspect.getsource(fn), (
-                "%s no longer calls the shared probe" % fn.__name__
+            assert name + "(" in inspect.getsource(fn), (
+                "%s no longer calls %s" % (fn.__name__, name)
             )
 
     def test_the_helper_has_one_definition(self) -> None:
         """A second copy is how the two drifted the first time."""
+        name = format_java._break_probe_wins.__name__
         source = Path(format_java.__file__).read_text(
             encoding="utf-8"
         )
-        assert source.count("def _break_probe_wins(") == 1
+        assert source.count("def %s(" % name) == 1
 
     @staticmethod
     def _probe(rows: list[str], column: int, reserve: int,
