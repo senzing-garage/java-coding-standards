@@ -10,13 +10,13 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-08-14
+## [0.7.0] - 2026-10-15
 
 Formatting release. Started as a bug-fix pass over defects
 surfaced by running 0.6.0 across four consumer source bases,
 and grew into a minor release: it adds normative rules to the
 standards document, removes two behaviors that document had
-described, and reformats 338 of the 504 files in the trial
+described, and reformats 362 of the 504 files in the trial
 corpus. Adopters should expect a substantial reformat commit
 when they bump the pin, and should bump it on its own commit
 for that reason.
@@ -1984,15 +1984,15 @@ same commit. `requirements.txt` now says so in a comment.
   one.
 
 - Lines over 80 characters across the four trees moved from
-  1618 to 1571, and all 25 over-long enhanced-`for` headers are
-  now wrapped. The 1,571 that remain are overwhelmingly content
+  1618 to 1562, and all 25 over-long enhanced-`for` headers are
+  now wrapped. The 1,562 that remain are overwhelmingly content
   a formatter must not reflow: half of them (787) carry a
   javadoc `{@snippet}` / `@highlight` / `@replace` directive
   whose region markup breaks if it is wrapped, with the bulk of the
   remainder either a single string literal already longer than the
   limit on its own or javadoc / line-comment prose. (The per-category
   counts were taken at 1,573 and the categories overlap, so they are
-  no longer quoted individually.) 595 sit in one
+  no longer quoted individually.) 588 sit in one
   file, `SzEngineDemo.java`. Only 110 are code carrying no
   string literal, and most of those are unwrappable by nature —
   long `import` statements and `@ValueSource` annotations. The
@@ -2001,12 +2001,12 @@ same commit. `requirements.txt` now says so in a comment.
   fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
-- 338 of 504 trial files are reformatted, a net **+1,562 lines**
+- 362 of 504 trial files are reformatted, a net **+1,626 lines**
   (about +0.7% against 220k). Both figures are measured against
   **0.6.0's output**, not against pristine source — they are what
   an adopter already on 0.6.0 sees when they bump the pin. Starting
-  from unformatted source instead, 407 of 504 files change and the
-  delta is +8,178 lines. The release trades lines for
+  from unformatted source instead, 416 of 504 files change and the
+  delta is +8,242 lines. The release trades lines for
   compliance and predictability: rule 1 breaks each nesting
   level of an embedded call onto its own row, and "if an
   argument breaks, the argument list breaks" turns a packed

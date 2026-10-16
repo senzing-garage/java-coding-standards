@@ -5641,18 +5641,32 @@ class TestDeclarationMatchesAssignmentTwin:
 
     @staticmethod
     def _shape(text: str, lhs: str) -> list[str]:
-        """The emitted rows for the statement starting at `lhs`,
-        with the left-hand side itself replaced by a placeholder
-        so two twins of equal width compare equal when — and only
-        when — they wrapped the same way."""
+        """Every emitted row of the statement that starts with
+        `lhs`, with the left-hand side itself replaced by a
+        placeholder so two twins of equal width compare equal
+        when — and only when — they wrapped the same way.
+
+        The statement ends at the first `;` that is OUTSIDE every
+        bracket opened since it began. Stopping at the first row
+        ending in `;` would truncate a block-anchored value: the
+        `handle(evt);` inside a block lambda ends a row, and the
+        closing `});` row after it would never be compared.
+        """
         lines = text.split("\n")
         start = next(
-            i for i, line in enumerate(lines) if lhs in line
+            i for i, line in enumerate(lines)
+            if line.lstrip().startswith(lhs)
         )
-        rows = []
+        rows: list[str] = []
+        depth = 0
         for line in lines[start:]:
             rows.append(line.replace(lhs, "<LHS>"))
-            if line.rstrip().endswith(";"):
+            for ch in line:
+                if ch in "([{":
+                    depth += 1
+                elif ch in ")]}":
+                    depth -= 1
+            if depth <= 0 and line.rstrip().endswith(";"):
                 break
         return rows
 
@@ -5710,6 +5724,123 @@ class TestDeclarationMatchesAssignmentTwin:
         assert (
             "Object cachedEntity = engine.getNativeApi()" in out
         ), out
+
+
+class TestDeclaratorHandsBackSpeculationFlags:
+    """A declarator must leave both speculation flags as it found
+    them on every exit, including the new Step 1 commit.
+
+    The resets inside the emitter are local measurement devices —
+    they exist so the ladder and escape readings describe THIS
+    value. But a declarator nested inside another one's value (in
+    a lambda block or an anonymous-class body) runs those same
+    resets, and if it returned with them cleared it would erase
+    evidence the enclosing construct had already recorded. The
+    outer construct would then read `False` and commit the very
+    shape the flag exists to prevent.
+
+    The emitter comments claim this at length on three exits. It
+    was claimed and untested until a review asked for the nested
+    case, so it is pinned here directly rather than inferred from
+    an output shape.
+    """
+
+    @staticmethod
+    def _emit(statement: str, **seed: bool) -> tuple[dict, str]:
+        """Emit one declarator with both flags pre-set, and report
+        what they hold afterwards along with the emitted text.
+
+        `_emit_variable_declarator` emits only `NAME = value`, so
+        the harness first writes the indent and the declaration's
+        type the way `_emit_local_variable_declaration` would.
+        Without that the value starts seven columns to the left of
+        where it really would, which is enough to change which
+        branch of the cascade runs — the reason the emitted text
+        is returned and asserted on rather than trusted.
+        """
+        source = (
+            "public class A\n{\n    void m()\n    {\n"
+            + statement
+            + "\n    }\n}\n"
+        ).encode()
+        tree = format_java.parse_source(source)
+        stack = [tree.root_node]
+        node = None
+        while stack:
+            current = stack.pop()
+            if current.type == "variable_declarator":
+                node = current
+                break
+            stack.extend(reversed(current.children))
+        assert node is not None, "no variable_declarator parsed"
+        emitter = format_java.Emitter()
+        emitter.push_indent()
+        emitter.push_indent()
+        emitter.write_indent()
+        emitter.write("Object ")
+        for name, value in seed.items():
+            setattr(emitter, name, value)
+        format_java._emit_variable_declarator(emitter, source, node)
+        text = "\n".join([*emitter._lines, emitter._current])
+        return {name: getattr(emitter, name) for name in seed}, text
+
+    # Commits at the new Step 1: every row fits, nothing laddered.
+    INLINE = (
+        "        Object cachedEntity = engine.getNativeApi()"
+        ".getEntityByRecordId(dataSource, recordId);"
+    )
+    # Rejected by Step 1 (the chain ladders), so it leaves by a
+    # later exit instead.
+    LADDERS = (
+        "        Object entityForThisRecord = engine"
+        ".getNativeApi().getEntityByRecordId(dataSource, recordId);"
+    )
+
+    @pytest.mark.parametrize(
+        "statement,commits_inline",
+        [(INLINE, True), (LADDERS, False)],
+        ids=["step1_commit", "break_at_equals"],
+    )
+    def test_incoming_flags_survive(
+        self, statement: str, commits_inline: bool
+    ) -> None:
+        """An enclosing construct's evidence is not cleared, on
+        the Step 1 commit AND on the exit that rejects it."""
+        flags, text = self._emit(
+            statement,
+            _anchor_escaped=True,
+            _chain_ladder_fired=True,
+        )
+        # Assert the two cases really do take different exits, so
+        # a geometry change cannot quietly collapse them into one.
+        # The test must read the FIRST row: break-at-`=` puts the
+        # same `= engine.getNativeApi()` text on its continuation,
+        # so searching the whole emission matches either shape.
+        kept_inline = " = engine.getNativeApi()" in text.split(
+            "\n"
+        )[0]
+        assert kept_inline is commits_inline, text
+        assert flags == {
+            "_anchor_escaped": True,
+            "_chain_ladder_fired": True,
+        }, text
+
+    def test_step1_commit_does_not_invent_a_ladder(self) -> None:
+        """The converse: a clean value must not report one.
+
+        `_chain_ladder_fired` is per-construct, so a declarator
+        that committed the dot-aligned shape has to come back
+        False rather than leaking its own speculation.
+        """
+        flags, text = self._emit(
+            self.INLINE,
+            _anchor_escaped=False,
+            _chain_ladder_fired=False,
+        )
+        assert flags == {
+            "_anchor_escaped": False,
+            "_chain_ladder_fired": False,
+        }, text
 
 
 class TestInlineValueGuardedAgainstLadder:
