@@ -371,18 +371,34 @@ all; it is here because the generalisation would otherwise have
 shipped a regression waiting for the first consumer to write one.
 
 An **array creation with an initializer**
-(`main(new String[] { … })`) has the same shape and is deliberately
-NOT exempt yet. The node to test is `array_creation_expression`:
-`array_initializer` is its `value` child and never appears in
-argument position at all, so an exemption written against that name
-would be dead code — the very trap the text-block fix above just
-sprang. Exempting the right node improves the sole-argument case
-but regresses multi-argument calls, where the initializer body
-indents from the line start rather than from the construct, landing
-at column 12 beneath an argument that begins at column 28. Five
-corpus files move, in both directions. That column is a separate
-defect in array emission; fixing it is the prerequisite, and until
-then the exemption would trade one bad shape for another.
+(`main(new String[] { … })`) looks like the same shape and is
+deliberately NOT exempt. This is a decision, not a postponement:
+no later work makes the array eligible.
+
+The exemption is for arguments whose multi-row-ness is *inherent*.
+A block lambda, an anonymous class and a text block cannot be put
+on one line. `new String[] { a, b }` can. It spans rows only
+because something wrapped it, which is precisely the case the "if
+an argument breaks, the list breaks" rule exists to catch, so the
+array never qualified in the first place.
+
+All five affected corpus files were reviewed one at a time and the
+current shape was preferred in five cases out of five, including a
+long array whose elements wrap either way.
+
+Two things that are true of the array are worth recording, because
+both read as arguments for exempting it and neither is. The node to
+test would be `array_creation_expression`: `array_initializer` is
+its `value` child and never appears in argument position at all, so
+an exemption written against that name would be dead code — the
+very trap the text-block fix above just sprang. And exempting it
+would improve the sole-argument case while regressing
+multi-argument calls, where the initializer body indents from the
+line start rather than from the construct, landing at column 12
+beneath an argument that begins at column 28. That column is a
+separate defect in array emission, tracked for 0.8. Fixing it would
+remove the second objection; it would not touch the first, which is
+the one that settles the question.
 
 ### Once one argument breaks, every later argument takes its own line
 

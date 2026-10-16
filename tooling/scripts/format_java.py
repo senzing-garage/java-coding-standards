@@ -1765,19 +1765,30 @@ def _emit_field_declaration(
         # on-disk width — but avoidable: with the real suffix charged,
         # the declarator's own cascade breaks at `=` instead.
         #
-        # Charged from the declarator NAMES, which identifiers emit
-        # verbatim, so this is a function of the AST and not of
-        # layout. A later declarator carrying its own initializer is
+        # Charged from the declarator NAMES and any C-style array
+        # dimensions on them, both of which emit verbatim, so this
+        # is a function of the AST and not of layout.
+        #
+        # The dimensions matter: `int a = f(), b[];` writes `, b[]`
+        # but the name field is only `b`, so charging the name alone
+        # left 2 columns unpaid and `int <40 chars> = call(arg),
+        # b[];` committed at 79 and reached disk at 81.
+        #
+        # A later declarator carrying its own INITIALIZER is still
         # under-charged by that initializer's width; that is the
         # remaining gap, and it is strictly less than charging
-        # nothing.
+        # nothing. Unlike the dimensions it is not a fixed function
+        # of the name — the initializer is an expression whose
+        # emitted width is not known until it is emitted.
         suffix = 0
         for later in declarators[index + 1:]:
+            suffix += 2
             later_name = later.child_by_field_name("name")
-            suffix += 2 + (
-                len(_node_source_text(source, later_name))
-                if later_name is not None else 0
-            )
+            if later_name is not None:
+                suffix += len(_node_source_text(source, later_name))
+            for part in later.children:
+                if part.type == "dimensions":
+                    suffix += len(_node_source_text(source, part))
         with _extra_tail_reserve(emitter, suffix):
             _emit_node(emitter, source, declarator)
     emitter.write(";")

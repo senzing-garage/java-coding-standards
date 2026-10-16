@@ -5012,6 +5012,55 @@ class TestTagDescriptionSkipsStabilityCheck:
         assert sorted(" ".join(result).split()) == sorted(self.WORDS)
 
 
+class TestLaterDeclaratorSuffixReserve:
+    """A declarator must pay for everything still to be written.
+
+    A non-last declarator is followed by `, name` for each
+    declarator still to come, and only then the `;`. The reserve
+    charges those names — and their C-style array dimensions, which
+    a `name` field does not include:
+
+        int a = call(arg), b[];
+
+    writes `, b[]` but the name is `b`, so charging the name alone
+    left two columns unpaid and the statement committed at 79 to
+    reach disk at 81. An advisory caught it, which is the emit-and-
+    warn contract working, but the reserve exists to make that
+    unnecessary.
+
+    A later declarator carrying its own INITIALIZER is still
+    under-charged; that gap is documented at the emitter and is not
+    fixable the same way, because an initializer's width is not a
+    function of the AST the way an identifier's is.
+    """
+
+    @staticmethod
+    def _widest(body: str) -> int:
+        out = _format_in_method(body)
+        return max(len(line) for line in out.split("\n"))
+
+    @pytest.mark.parametrize("pad", range(30, 46))
+    def test_array_dimensions_are_charged(self, pad: int) -> None:
+        """No width of the first name may push the line past 80."""
+        body = (
+            "        int %s = someMethodCall(argument), b[];"
+            % ("x" * pad)
+        )
+        assert self._widest(body) <= 80, body
+
+    def test_multi_dimensional_too(self) -> None:
+        body = (
+            "        int %s = someMethodCall(argument), b[][];"
+            % ("x" * 34)
+        )
+        assert self._widest(body) <= 80, body
+
+    def test_plain_later_declarator_still_fits(self) -> None:
+        """The charge must not over-reserve and wrap needlessly."""
+        out = _format_in_method("        int a = f(), b;")
+        assert "int a = f(), b;" in out, out
+
+
 class TestDeclarationSemicolonReserve:
     """A declaration's value must wrap knowing a `;` follows it.
 
