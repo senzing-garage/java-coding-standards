@@ -115,21 +115,11 @@ def test_refusal_leaves_the_file_byte_identical(
     # was not covered: the existing refusal test uses a module
     # declaration and checks only the exit code.
     #
-    # Both 0.7.0 refusals are exercised here, through the real CLI,
-    # with the bytes compared before and after.
+    # Exercised through the real CLI with the bytes compared
+    # before and after. Only the catch header refuses now: the
+    # array-initializer case was changed from a refusal to placing
+    # the comments, which `TestArrayInitializerComments` covers.
     cases = {
-        "ArrayComment.java": (
-            "public class ArrayComment\n"
-            "{\n"
-            "    void m()\n"
-            "    {\n"
-            "        String[] a = new String[] {\n"
-            '            "x",   // why this one\n'
-            '            "y"\n'
-            "        };\n"
-            "    }\n"
-            "}\n"
-        ),
         "CatchComment.java": (
             "public class CatchComment\n"
             "{\n"
@@ -156,6 +146,67 @@ def test_refusal_leaves_the_file_byte_identical(
         assert java.read_bytes() == before, (
             "%s was modified despite being refused" % name
         )
+
+
+def test_commented_array_formats_and_exits_zero(
+    tmp_path: Path,
+) -> None:
+    # The counterpart to the refusal test above, and the reason
+    # the array case was removed from it: a commented array is
+    # FORMATTED now, not refused. Through the real CLI, because
+    # the failure this replaces was a `ValueError` that
+    # `format_file.py` reports as PARSE ERROR and exits 1 on —
+    # which a unit test calling `format_source` would not show.
+    java = tmp_path / "ArrayComment.java"
+    java.write_text(
+        "public class ArrayComment\n"
+        "{\n"
+        "    void m()\n"
+        "    {\n"
+        "        String[] a = new String[] {\n"
+        '            "x",   // why this one\n'
+        '            "y"\n'
+        "        };\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = _run_format_file(str(java))
+
+    assert result.returncode == 0, result.stderr
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert "PARSE ERROR" not in result.stderr, result.stderr
+    text = java.read_text(encoding="utf-8")
+    assert '"x",  // why this one' in text, text
+    assert '"y"' in text, text
+
+
+def test_multi_row_block_comment_in_array_exits_zero(
+    tmp_path: Path,
+) -> None:
+    # The shape that used to raise `ValueError` out of
+    # `Emitter.write`, surface as PARSE ERROR, and exit 1 — on
+    # valid Java, which is worse than the refusal it replaced.
+    java = tmp_path / "MultiRowComment.java"
+    java.write_text(
+        "public class MultiRowComment\n"
+        "{\n"
+        "    void m()\n"
+        "    {\n"
+        "        int[] a = { 1, /* aaa\n"
+        "                       bbb */\n"
+        "            2 };\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = _run_format_file(str(java))
+
+    assert result.returncode == 0, result.stderr
+    assert "PARSE ERROR" not in result.stderr, result.stderr
+    assert "/* aaa" in java.read_text(encoding="utf-8")
 
 
 def test_parse_error_exits_nonzero(tmp_path: Path) -> None:

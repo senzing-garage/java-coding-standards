@@ -1392,7 +1392,7 @@ components have broken every row can sit under the limit; the check
 would pass and commit. It is rejected the same way the argument-list
 cascade rejects an argument that wrapped.
 
-### A comment among array elements is refused, not inlined
+### A comment among array elements is placed, not inlined
 
 Retiring the array-creation source-preserve path (below) took a
 protection with it. tree-sitter makes a comment a NAMED child, so it
@@ -1418,12 +1418,46 @@ The multi-row case is a regression in this release — 0.6.0 replayed
 such an array verbatim and got it right. The single-row case is
 older and corrupts in 0.6.0 too.
 
-A comment among array elements is now REFUSED, matching the catch
-header. Placing one correctly needs a rule per position, and any
-position left unhandled goes on silently corrupting, which is the
-failure worth avoiding. The refusal leaves the file byte-identical,
-reports one line to stderr and exits 0. No array initializer in the
-504-file corpus holds a comment, so nothing in the trial changes.
+A comment among array elements is now PLACED. The array goes one
+element per line and each comment is kept where it was written:
+
+```java
+    String[] names = {
+        "a",  // first
+        "b",  // second
+        "c"  // third
+    };
+```
+
+Side comments are not column-aligned — each gets exactly two
+spaces after the code, per the "End-of-line side comments" rule.
+The last element has no comma, so its comment sits one column
+left of its neighbors'.
+
+One per line is forced rather than preferred — a `//` comment runs
+to end of line, so an element or a closing brace sharing its line
+would be swallowed, which is the original defect.
+
+Which element a comment belongs to is read from the source rows,
+because two shapes that look identical in the node list mean
+opposite things. `{ "a", // first` is a side comment ON `"a"`;
+`{ 1, /* two */ 2 }` is a leading comment FOR `2`. A comment is the
+previous element's side comment when that element ends on the
+comment's row and the next element starts lower down; it is the
+next element's leading comment when that element starts on the
+comment's own row; otherwise it had a row to itself and keeps one.
+
+This release first REFUSED the construct instead, which left a
+whole file unformatted for one commented array and told the
+developer nothing useful. That was the wrong trade and is reverted
+here; the catch header still refuses, because its comment positions
+are genuinely ambiguous in a way an array's are not.
+
+Verified with the compiler rather than by inspection: each shape
+above, and the source it came from, were compiled on JDK 21 and
+run, and printed the same array. No array initializer holds a
+comment anywhere in the five adopting repositories — 533 files —
+so nothing in the trial changes.
 
 ### Escalation exemptions, and array initializers stop preserving
 
@@ -1978,6 +2012,17 @@ same commit. `requirements.txt` now says so in a comment.
   respectively; `git archive HEAD src` from each reproduces it.
   Recorded because every figure below is measured against that
   set and none of them can be checked without it.
+- A fifth repository adopts these standards, `sz-sdk-java-auto`,
+  and is NOT part of that 504. It carries 29 Java files of its
+  own at `ee2b3d0`; the other 636 under it belong to its
+  `sz-sdk-java` submodule, which the corpus already covers. Every
+  figure below says 504 and means these four repositories. The
+  fifth was formatted separately and independently: 29 files, no
+  refusals, no parse errors, 85 lines over 80 and 57 advisories,
+  and it contains no commented array initializer either, so the
+  "nothing in the trial changes" claims hold across all 533
+  files. It is called out because reading "the corpus" as "every
+  repository we apply this to" would be wrong by one repository.
 - **No semantic change.** Comparing named-node sequences with
   comments excluded, 500 of the 504 files are structurally
   identical between the two releases. All four exceptions are

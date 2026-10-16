@@ -5129,19 +5129,23 @@ def _emit_array_initializer(
     # and took this protection with it. Single-row arrays were never
     # protected and corrupt in 0.6.0 too.
     #
-    # Refused rather than reflowed, for the reason the catch header
-    # is: placing a comment correctly among array elements needs a
-    # rule per position, and any position left unhandled goes on
-    # silently corrupting. A refusal leaves the file byte-identical
-    # and exits 0. No array initializer in the 504-file corpus holds
-    # a comment, so the practical cost is nil.
-    for child in node.named_children:
-        if child.type in ("line_comment", "block_comment"):
-            raise NotImplementedError(
-                "a comment inside an array initializer is not yet "
-                "supported — it would be emitted as an element and "
-                "break the array. Move it above the statement."
-            )
+    # 0.7.0 first REFUSED this case, which left the whole file
+    # unformatted for one commented array. That is a bad trade: the
+    # shape is ordinary Java, a developer who writes it gets a file
+    # that silently stops being formatted, and nothing tells them
+    # why. The comments are now placed instead, one element per
+    # line with each comment kept as the side comment of the
+    # element it followed.
+    if any(
+        c.type in ("line_comment", "block_comment")
+        for c in elements
+    ):
+        # `elements` is `node.named_children` and still holds the
+        # comments at this point; the helper separates them.
+        _emit_array_init_with_comments(
+            emitter, source, node, elements
+        )
+        return
 
     if emitter._array_init_inline_only:
         # Caller (variable_declarator / assignment_expression
@@ -5204,6 +5208,162 @@ def _emit_array_init_inline(
             emitter.write(", ")
         _emit_node(emitter, source, e)
     emitter.write(" }")
+
+
+def _emit_array_init_with_comments(
+    emitter: Emitter,
+    source: bytes,
+    node: Node,
+    children: list[Node],
+) -> None:
+    """Emit an array initializer that contains comments.
+
+    One element per line, each comment kept where the developer
+    put it:
+
+        String[] names = {
+            "a",  // first
+            "b",  // second
+            "c"  // third
+        };
+
+    Side comments are not column-aligned: each gets exactly two
+    spaces after the code, per the spec's "End-of-line side
+    comments" rule. The last element carries no comma, so its
+    comment sits one column left of its neighbors'.
+
+    The one-per-line shape is forced, not preferred. A `//`
+    comment runs to end of line, so anything sharing its line
+    after it — the next element, or the closing brace — would be
+    swallowed and the file would not compile. That is what the
+    pre-0.7.0 emitter did, since tree-sitter hands a comment over
+    as a NAMED child and the generic path wrote a separator on
+    each side of it. 0.7.0 then refused the file outright, which
+    silently stopped formatting it.
+
+    Which element a comment belongs to is read from the source
+    rows, because the two cases look identical in the node list
+    and mean opposite things:
+
+        { "a", // first        -> trailing comment ON "a"
+          "b" }
+
+        { 1, /* two */ 2, 3 }  -> leading comment FOR 2
+
+    A comment is the previous element's SIDE comment when that
+    element ends on the comment's row and the next element starts
+    lower down — two spaces after the comma, per the spec's
+    "End-of-line side comments" rule. It is the next element's
+    LEADING comment when that element starts on the comment's own
+    row. Otherwise it had a row to itself and keeps one.
+    """
+    comment_types = ("line_comment", "block_comment")
+    is_comment = [c.type in comment_types for c in children]
+    # `children` is the caller's `node.named_children` list, and
+    # `elements` is derived from it, so the `is not last_element`
+    # identity test below is safe. Recomputing `named_children`
+    # here instead would hand back fresh node objects and silently
+    # put a comma after every element.
+    elements = [
+        c for index, c in enumerate(children) if not is_comment[index]
+    ]
+    last_element = elements[-1] if elements else None
+
+    def _element_before(index: int) -> int | None:
+        for j in range(index - 1, -1, -1):
+            if not is_comment[j]:
+                return j
+        return None
+
+    def _element_after(index: int) -> int | None:
+        for j in range(index + 1, len(children)):
+            if not is_comment[j]:
+                return j
+        return None
+
+    # Classify each comment once. Keys are element positions in
+    # `children`; values are the comment positions attached there.
+    side_comments: dict[int, list[int]] = {}
+    leading_comments: dict[int, list[int]] = {}
+    own_line: set[int] = set()
+
+    # Separator positions. The comma is what distinguishes a
+    # comment that closes one element from one that opens the
+    # next, and rows alone cannot: on a single-row initializer
+    # every comment shares a row with the element before it.
+    comma_offsets = [
+        c.start_byte for c in node.children if c.type == ","
+    ]
+
+    for index, child in enumerate(children):
+        if not is_comment[index]:
+            continue
+        before = _element_before(index)
+        after = _element_after(index)
+        before_the_comma = before is not None and not any(
+            children[before].end_byte <= offset < child.start_byte
+            for offset in comma_offsets
+        )
+        shares_row_with_before = (
+            before is not None
+            and children[before].end_point[0] == child.start_point[0]
+        )
+        after_starts_lower = (
+            after is None
+            or children[after].start_point[0] > child.end_point[0]
+        )
+        if _node_source_text(source, child).count("\n"):
+            # A block comment spanning rows cannot ride on another
+            # line at all: `Emitter.write` rejects embedded
+            # newlines, and the rows it carries are the author's
+            # layout. Give it its own rows, written verbatim.
+            own_line.add(index)
+        elif before_the_comma:
+            # `{ 1 /* one */, 2 }` — closes element 1.
+            side_comments.setdefault(before, []).append(index)
+        elif shares_row_with_before and after_starts_lower:
+            # `{ "a", // first` — past the comma, but nothing
+            # follows on the row, so it still belongs to `"a"`.
+            side_comments.setdefault(before, []).append(index)
+        elif (
+            after is not None
+            and children[after].start_point[0] == child.end_point[0]
+        ):
+            # `{ 1, /* two */ 2 }` — opens element 2.
+            leading_comments.setdefault(after, []).append(index)
+        else:
+            own_line.add(index)
+
+    emitter.write("{")
+    emitter.newline()
+    emitter.push_indent()
+
+    for index, child in enumerate(children):
+        if is_comment[index]:
+            if index in own_line:
+                emitter.write_indent()
+                emitter.write_raw_lines(
+                    _node_source_text(source, child),
+                    strip_trailing_ws=True,
+                )
+                emitter.newline()
+            continue
+
+        emitter.write_indent()
+        for comment in leading_comments.get(index, []):
+            emitter.write(_node_source_text(source, children[comment]))
+            emitter.write(" ")
+        _emit_node(emitter, source, child)
+        if child is not last_element:
+            emitter.write(",")
+        for comment in side_comments.get(index, []):
+            emitter.write("  ")
+            emitter.write(_node_source_text(source, children[comment]))
+        emitter.newline()
+
+    emitter.pop_indent()
+    emitter.write_indent()
+    emitter.write("}")
 
 
 def _emit_array_init_multiline(

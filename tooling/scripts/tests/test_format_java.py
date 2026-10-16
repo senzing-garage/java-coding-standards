@@ -5554,90 +5554,210 @@ class TestAdvisoryWidthPatchGuard:
 
 
 class TestArrayInitializerComments:
-    """A comment among array elements is refused, not inlined.
+    """A comment among array elements is PLACED, not refused.
 
     tree-sitter makes a comment a NAMED child, so it arrives as an
     element and gets a separator on each side. A block comment
-    yields `{ /* a */, "x" }` — a stray comma — and a `//` comment
-    swallows every element after it plus the closing brace. Both
-    fail to compile, verified with the Java compiler.
+    yielded `{ /* a */, "x" }` — a stray comma — and a `//` comment
+    swallowed every element after it plus the closing brace. Both
+    failed to compile, verified with the Java compiler.
 
     0.6.0 escaped the multi-row case by replaying the array from
     source; 0.7.0 retired that path for an alignment defect and
-    removed the protection with it. Single-row arrays corrupt in
-    0.6.0 too.
+    removed the protection with it, then refused the file outright.
+    Refusing is safe but silently stops formatting the whole file
+    for one commented array, so the comments are now placed: one
+    element per line, each comment kept where the developer put it.
+
+    One per line is forced rather than preferred — a `//` comment
+    runs to end of line, so anything after it on that line would be
+    swallowed.
     """
 
-    BODIES = (
-        'String[] a = new String[] { /* a */ "x", "y" };',
-        'String[] a = new String[] { "x" /* t */, "y" };',
-        'String[] a = new String[] { "x", "y" /* tail */ };',
-        'String[] a = new String[] {\n'
-        '            "x",   // why\n'
-        '            "y"\n'
-        '        };',
-        'int[] b = new int[] { 1, /* two */ 2 };',
-    )
+    @staticmethod
+    def _fmt(body: str) -> str:
+        return _format_in_method(body, "void t()", "T")
 
-    @pytest.mark.parametrize("body", BODIES)
-    def test_every_comment_position_is_refused(
+    @staticmethod
+    def _rows_inside_braces(text: str) -> list[str]:
+        """The emitted rows between the initializer's `{` and its
+        closing `};`, stripped.
+
+        Taken positionally rather than by filtering out lines that
+        look like scaffolding: the first attempt did the latter and
+        could not tell `String[] a = new String[] {` from an
+        element row.
+        """
+        lines = text.split("\n")
+        start = next(
+            i for i, line in enumerate(lines)
+            if line.rstrip().endswith("{")
+            and ("=" in line or "[]" in line)
+        )
+        end = next(
+            i for i in range(start + 1, len(lines))
+            if lines[i].strip() == "};"
+        )
+        return [
+            line.strip() for line in lines[start + 1:end]
+            if line.strip()
+        ]
+
+    # Each case pairs a source shape with the rows expected inside
+    # the braces, so a regression that merely keeps the file
+    # compiling while moving a comment onto the wrong element still
+    # fails.
+    CASES = [
+        (
+            "trailing line comments",
+            '        String[] a = { "x", // first\n'
+            '                       "y"  // second\n'
+            "                     };",
+            ['"x",  // first', '"y"  // second'],
+        ),
+        (
+            "leading block comment belongs to the NEXT element",
+            "        int[] b = new int[] { 1, /* two */ 2, 3 };",
+            ["1,", "/* two */ 2,", "3"],
+        ),
+        (
+            "leading block comment on the first element",
+            '        String[] a = new String[] { /* a */ "x", "y" };',
+            ['/* a */ "x",', '"y"'],
+        ),
+        (
+            "trailing block comment on the last element",
+            '        String[] a = { "x", "y" /* last */ };',
+            ['"x",', '"y"  /* last */'],
+        ),
+        (
+            "comment that had a row of its own keeps one",
+            "        String[] a = {\n"
+            "            // the first group\n"
+            '            "x",\n'
+            '            "y"\n'
+            "        };",
+            ["// the first group", '"x",', '"y"'],
+        ),
+        (
+            "empty initializer holding only a comment",
+            "        int[] a = { /* c */ };",
+            ["/* c */"],
+        ),
+        # The position the first version of this test set dropped.
+        # A trailing block comment on a NON-last element is the only
+        # place the row-only rule misattributed: it shifted each
+        # comment forward onto the element after it. The last
+        # element cannot show this, because there is no element
+        # after it to shift onto.
+        (
+            "trailing block comments on non-last elements",
+            "        int[] a = { 1 /* one */, 2 /* two */, 3 };",
+            ["1,  /* one */", "2,  /* two */", "3"],
+        ),
+        # Two comments annotating DIFFERENT elements, which the
+        # row-only rule merged onto one element irrecoverably.
+        (
+            "a trailing and a leading comment between two elements",
+            "        int[] a = { 1 /* t1 */, /* l3 */ 2 };",
+            ["1,  /* t1 */", "/* l3 */ 2"],
+        ),
+        # A block comment spanning rows cannot ride on another
+        # line: `Emitter.write` rejects embedded newlines, and that
+        # `ValueError` surfaced as `PARSE ERROR` with exit 1 — a
+        # worse outcome than the refusal this replaced, on valid
+        # Java. It takes its own rows, verbatim.
+        (
+            "multi-row block comment",
+            "        int[] a = { 1, /* aaa\n"
+            "                       bbb */\n"
+            "            2 };",
+            ["1,", "/* aaa", "bbb */", "2"],
+        ),
+    ]
+
+    @pytest.mark.parametrize(
+        "body,expected",
+        [(body, expected) for _, body, expected in CASES],
+        ids=[name for name, _, _ in CASES],
+    )
+    def test_comment_placement(
+        self, body: str, expected: list[str]
+    ) -> None:
+        out = self._fmt(body)
+        assert self._rows_inside_braces(out) == expected, out
+
+    @pytest.mark.parametrize(
+        "body", [body for _, body, _ in CASES],
+        ids=[name for name, _, _ in CASES],
+    )
+    def test_no_comment_is_lost(self, body: str) -> None:
+        """Every comment in the input survives to the output.
+
+        The original defect did not drop comments, it corrupted the
+        code around them; this pins the other half.
+        """
+        out = self._fmt(body)
+        for token in re.findall(r"//[^\n]*|/\*.*?\*/", body):
+            assert token.strip() in out, (token, out)
+
+    @pytest.mark.parametrize(
+        "body", [body for _, body, _ in CASES],
+        ids=[name for name, _, _ in CASES],
+    )
+    def test_output_parses_without_error_nodes(
         self, body: str
     ) -> None:
-        src = (
-            "public class T\n{\n    void t()\n    {\n        "
-            + body
-            + "\n    }\n}\n"
-        ).encode()
-        with pytest.raises(
-            NotImplementedError, match="array initializer"
-        ):
-            format_java.format_source(src)
+        """A proxy for "it compiles".
+
+        The shapes in `CASES` were also run through javac 21 and
+        executed, and each printed the same array as the source it
+        came from. That cannot run in the unit suite, so the parse
+        check stands in for it here.
+        """
+        tree = format_java.parse_source(self._fmt(body).encode())
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            assert node.type != "ERROR", self._fmt(body)
+            assert not node.is_missing, self._fmt(body)
+            stack.extend(node.children)
+
+    @pytest.mark.parametrize(
+        "body", [body for _, body, _ in CASES],
+        ids=[name for name, _, _ in CASES],
+    )
+    def test_idempotent(self, body: str) -> None:
+        once = self._fmt(body)
+        twice = format_java.format_source(
+            once.encode(), warnings_out=[]
+        )
+        twice = (
+            twice if isinstance(twice, str) else twice.decode()
+        )
+        assert twice == once, once
+
+    def test_nested_initializer_comment_stays_inside(self) -> None:
+        """Only the initializer that owns the comment changes
+        shape; its sibling keeps the ordinary inline form."""
+        out = self._fmt(
+            "        int[][] a = { { 1, // why\n 2 }, { 3 } };"
+        )
+        assert "1,  // why" in out, out
+        assert "{ 3 }" in out, out
 
     def test_comment_outside_the_braces_still_formats(self) -> None:
-        """The refusal is scoped to comments among the elements.
-
-        A comment on the statement above, or inside a nested
-        expression that owns its own emitter, must not trip it.
-        """
-        src = (
-            "public class T\n{\n    void t()\n    {\n"
+        """A comment on the statement above, or inside a nested
+        expression that owns its own emitter, is untouched."""
+        out = _format_in_method(
             "        // leading comment is fine\n"
-            '        String[] a = new String[] { "x", "y" };\n'
-            "    }\n}\n"
-        ).encode()
-        out = format_java.format_source(src)
-        out = out if isinstance(out, str) else out.decode()
+            '        String[] a = new String[] { "x", "y" };',
+            "void t()",
+            "T",
+        )
         assert "// leading comment is fine" in out
         assert '{ "x", "y" }' in out
 
-    # Shapes where the initializer is empty or nested, which reach
-    # the element scan by a different route than the flat case
-    # above. All three refuse today; none was covered, so nothing
-    # would have reported it if one started emitting the
-    # non-compiling output the refusal exists to prevent.
-    NESTED_AND_EMPTY = (
-        "int[] a = { /* c */ };",
-        "int[][] a = { { 1, // why\n 2 }, { 3 } };",
-        "int[][] a = { /* c */ { 1 }, { 2 } };",
-    )
-
-    @pytest.mark.parametrize("body", NESTED_AND_EMPTY)
-    def test_empty_and_nested_forms_are_refused(
-        self, body: str
-    ) -> None:
-        src = (
-            "public class T\n{\n    void t()\n    {\n        "
-            + body
-            + "\n    }\n}\n"
-        ).encode()
-        with pytest.raises(
-            NotImplementedError, match="array initializer"
-        ):
-            format_java.format_source(src)
-
-    # The other half of a refusal: it must not over-trigger. An
-    # empty or nested initializer carrying NO comment is ordinary
-    # Java and has to keep formatting.
     @pytest.mark.parametrize(
         "body",
         (
@@ -5645,16 +5765,11 @@ class TestArrayInitializerComments:
             "int[][] a = { { 1, 2 }, { 3, 4 } };",
         ),
     )
-    def test_uncommented_empty_and_nested_still_format(
+    def test_uncommented_forms_are_untouched(
         self, body: str
     ) -> None:
-        src = (
-            "public class T\n{\n    void t()\n    {\n        "
-            + body
-            + "\n    }\n}\n"
-        ).encode()
-        out = format_java.format_source(src, warnings_out=[])
-        out = out if isinstance(out, str) else out.decode()
+        """The comment path must not capture ordinary arrays."""
+        out = self._fmt("        " + body)
         assert body in out, out
 
 
