@@ -12334,9 +12334,9 @@ def format_source(
 ) -> bytes:
     """Format a Java source byte string per the project standards.
 
-    Handles every Java construct exercised by the 235 fixture
-    pairs and every file in the consumer codebases pre-flight
-    diff exercise — including classes, interfaces, enums,
+    Handles every Java construct exercised by the project's
+    fixture pairs and every file in the consumer codebases
+    pre-flight diff exercise — including classes, interfaces, enums,
     records, methods, constructors, fields, type parameters,
     throws clauses, annotations, generics, wildcards, type-use
     annotations, anonymous classes, sealed/permits, switch
