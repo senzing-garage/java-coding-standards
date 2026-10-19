@@ -207,13 +207,24 @@ diff /tmp/pre-tokens.txt /tmp/post-tokens.txt              # must be empty
 # Gate 5 — convergence. Pass 1 reformats, pass 2 may still settle
 # a file, and the THIRD pass is the one that must report
 # "0 modified". A second pass reporting "0 modified" is not the
-# gate — see section 5, and use the loop there, which fails loudly
-# on a file that never settles rather than running a fixed number
-# of passes and hoping.
-for pass_no in 1 2 3; do
+# gate — see section 5 for why.
+#
+# This is section 5's loop, inlined: it stops as soon as a pass
+# changes nothing and reports when four passes were not enough,
+# instead of running a fixed number and hoping. Note that it
+# COMMITS after each pass that changed something — run it on a
+# scratch branch.
+converged=0
+for pass_no in 1 2 3 4; do
     python3 .java-coding-standards/tooling/scripts/format_file.py \
         src/main/java src/test/java src/demo/java
+    if git diff --quiet; then converged=1; break; fi
+    git commit -aqm "format pass $pass_no"
 done
+if [ "$converged" -eq 0 ]; then
+    echo "NOT CONVERGED after 4 passes — blocking"
+    git show --stat HEAD
+fi
 ```
 
 If any gate fails, file the case as a regression PR against

@@ -4171,10 +4171,11 @@ class TestIsNestedOrChainedCall:
     )
     def test_traversal(self, snippet: str, expected: bool) -> None:
         arg_lists = _arg_lists_of(snippet)
-        # The OUTERMOST argument_list is the one under test for the
-        # False cases (a bare statement call, a cast, etc.); for the
-        # True cases the inner call's list is what qualifies. Assert
-        # that SOME list matches for True and NONE for False.
+        # Every argument_list in the snippet is tested, not just
+        # one: for the True cases it is the inner call's list that
+        # qualifies, and for the False cases no list in the snippet
+        # may qualify. So the assertion is SOME match for True and
+        # NONE for False.
         results = [
             format_java._is_nested_or_chained_call(node)
             for node in arg_lists
@@ -4184,7 +4185,12 @@ class TestIsNestedOrChainedCall:
         )
 
     def test_never_raises_on_detached_node(self) -> None:
-        """A `program`-rooted argument list has no owning call."""
+        """The `program` root has no parent, so the walk must
+        return False rather than raising on the missing parent.
+
+        The node passed is the root itself, not an argument list —
+        this pins the boundary case, not a nesting rule.
+        """
         tree = format_java.parse_source(b"class A { }")
         assert (
             format_java._is_nested_or_chained_call(tree.root_node)
@@ -4291,7 +4297,7 @@ class TestIsTextBlock:
             b"    }\n}\n"
         )
         out = format_java.format_source(src)
-        out = out if isinstance(out, str) else out.decode()
+        out = out.decode()
         assert 'of(SRC, "ABC"), """' in out
 
 
@@ -4382,7 +4388,7 @@ class TestTextBlockShiftPreservesValue:
             "    }\n}\n"
         )
         out = format_java.format_source(src.encode())
-        out = out if isinstance(out, str) else out.decode()
+        out = out.decode()
         assert self._relative_shape(out) == self._relative_shape(src), (
             f"re-indent changed the string's value\n{out}"
         )
@@ -4464,7 +4470,7 @@ class TestUnwrapParens:
             "    }\n}\n"
         ).encode()
         out = format_java.format_source(src)
-        out = out if isinstance(out, str) else out.decode()
+        out = out.decode()
         call_line = next(
             line for line in out.split("\n")
             if "theCollection" in line
@@ -4494,7 +4500,7 @@ class TestUnwrapParens:
             "    }\n}\n"
         ).encode()
         out = format_java.format_source(src)
-        out = out if isinstance(out, str) else out.decode()
+        out = out.decode()
         assert "relatedSources.forEach(((" in out, out
 
 
@@ -5475,10 +5481,13 @@ class TestAdvisoryWidthPatchGuard:
     advisory by substituting the phrase it originally wrote.
 
     That substitution is guarded: it is applied only if it actually
-    changed the message. On real input the guard never fires — a
-    corpus run takes all 618 patches — so it is exercised here
-    rather than left as an untested branch, because an untested
-    safety net is one nobody can tell is still wired up.
+    changed the message. On real input the guard never fires —
+    every patch a corpus run makes is a real change — so it is
+    exercised here rather than left as an untested branch,
+    because an untested safety net is one nobody can tell is
+    still wired up. The count is deliberately not quoted: it
+    drifts with the corpus, and the CHANGELOG is where measured
+    figures belong.
     """
 
     @staticmethod
@@ -6340,9 +6349,17 @@ class TestAnnotationArgumentWrap:
             "    {\n    }\n}\n" % annotation
         ).encode()
         out = format_java.format_source(src, warnings_out=[])
-        out = out if isinstance(out, str) else out.decode()
+        out = out.decode()
+        # Collect the annotation rows: everything between the
+        # class's opening brace and the method that follows.
+        # Keyed off the brace rather than a fixed `[2:]` slice,
+        # which silently assumed a two-line class header.
         rows = []
-        for line in out.split("\n")[2:]:
+        started = False
+        for line in out.split("\n"):
+            if not started:
+                started = line.strip() == "{"
+                continue
             if line.strip().startswith("public void"):
                 break
             if line.strip():
