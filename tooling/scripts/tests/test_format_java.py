@@ -6493,8 +6493,10 @@ class TestCStyleArrayDimensionsSurvive:
     formatted file failed with "for-each not applicable to
     expression type" and "int[] cannot be converted to int".
 
-    Zero files in the 533-file corpus use this form, which is
-    why the AST round-trip gate never caught it.
+    No file in the trial corpus uses this form, which is why the
+    AST round-trip gate never caught it: the gate can only compare
+    shapes the corpus contains. The measured counts are in the
+    CHANGELOG, not quoted here, because they drift.
     """
 
     @staticmethod
@@ -6615,3 +6617,154 @@ class TestMultiRowReceiverParameterDoesNotCrash:
     def test_single_row_receiver_is_unchanged(self) -> None:
         out = self._fmt("    void m(A this)\n    {\n    }")
         assert "void m(A this)" in out, out
+
+
+class TestUncommonShapesNeverCorrupt:
+    """A grammar-shape sweep over constructs the trial corpus does
+    not contain.
+
+    Rounds 24 and 25 of this release both found defects in shapes
+    absent from the corpus — C-style array dimensions on a
+    parameter, and a receiver parameter broken across rows. The
+    AST round-trip gate could not have caught either, because it
+    compares the formatter against itself on corpus files, and
+    these shapes are not in any of them.
+
+    The invariant is deliberately weak, so it stays true as
+    support grows: for every shape, the formatter either
+
+      - formats it, and the output parses and is idempotent, or
+      - declines it with `NotImplementedError`, which the CLI
+        reports as REFUSED, exits 0 on and leaves the file
+        byte-identical.
+
+    What it must never do is raise some other exception, emit
+    output that does not parse, or fail to converge. A shape that
+    gains support simply moves from the second branch to the
+    first without editing this test.
+    """
+
+    SHAPES = {
+        "static_init": "class A { static { f(); } }",
+        "instance_init": "class A { { f(); } }",
+        "labeled_break":
+            "class A { void m() { outer: for (int i = 0; i < 2; i++)"
+            " { break outer; } } }",
+        "synchronized": "class A { void m() { synchronized (this) { f(); } } }",
+        "do_while": "class A { void m() { do { f(); } while (x > 0); } }",
+        "nested_ternary": "class A { int m() { return a ? b : c ? d : e; } }",
+        "array_of_arrays":
+            "class A { int[][] m() { return new int[2][3]; } }",
+        "generic_varargs":
+            "class A { @SafeVarargs final <T> void m(T... t) { } }",
+        "wildcard_super":
+            "class A { void m(java.util.List<? super Number> l) { } }",
+        "intersection_cast":
+            "class A { void m() { Object o ="
+            " (Runnable & java.io.Serializable) null; } }",
+        "anonymous_class":
+            "class A { Runnable r = new Runnable()"
+            " { public void run() { } }; }",
+        "enum_with_body":
+            "enum E { A { int f() { return 1; } }, B;"
+            " int f() { return 0; } }",
+        "interface_default":
+            "interface I { default int f() { return 1; }"
+            " static int g() { return 2; } }",
+        "record_compact_ctor":
+            "record R(int a) { R { if (a < 0) throw"
+            " new IllegalArgumentException(); } }",
+        "sealed_permits":
+            "sealed class A permits B { } final class B extends A { }",
+        "switch_arrow_yield":
+            "class A { int m(int x) { return switch (x)"
+            " { case 1 -> 1; default -> { yield 2; } }; } }",
+        "instanceof_pattern":
+            "class A { void m(Object o)"
+            " { if (o instanceof String s) { f(s); } } }",
+        "try_with_resources":
+            "class A { void m() throws Exception"
+            " { try (AutoCloseable c = null) { f(); } } }",
+        "multi_catch":
+            "class A { void m() { try { f(); }"
+            " catch (RuntimeException | Error e) { } } }",
+        "annotation_decl":
+            '@interface Ann { String value() default "x"; }',
+        "explicit_type_args":
+            "class A { void m()"
+            " { java.util.Collections.<String>emptyList(); } }",
+        "nested_generics":
+            "class A { java.util.Map<String,"
+            " java.util.List<Integer>> m() { return null; } }",
+        "assert_statement":
+            'class A { void m() { assert 1 > 0 : "msg"; } }',
+        "typed_lambda_params":
+            "class A { void m() { java.util.function.BiFunction<"
+            "Integer, Integer, Integer> f ="
+            " (Integer a, Integer b) -> a + b; } }",
+        "method_reference":
+            "class A { void m() { Runnable r = System.out::println; } }",
+        "nested_array_init": "class A { int[][] a = { { 1, 2 }, { 3 } }; }",
+        "numeric_literals":
+            "class A { int a = 0xFF_FF; int b = 0b1010; long c = 1_000L; }",
+        "c_style_field_dims": "class A { int a[] = null, b[][] = null; }",
+        "c_style_ctor_param": "class A { A(int x[]) { } }",
+    }
+
+    @staticmethod
+    def _signature(text: str) -> tuple[str, ...]:
+        """Pre-order sequence of named node types, skipping the
+        nodes the formatter is allowed to reshape. Mirrors
+        `test_fuzz_corpus._named_node_signature`; kept local so
+        this class does not import across test modules.
+        """
+        skip = (
+            "block_comment", "line_comment",
+            "enum_body_declarations", "block",
+        )
+        out: list[str] = []
+        stack = [format_java.parse_source(text.encode()).root_node]
+        while stack:
+            node = stack.pop()
+            if node.is_named and node.type not in skip:
+                out.append(node.type)
+            stack.extend(reversed(node.children))
+        return tuple(out)
+
+    @staticmethod
+    def _has_error(text: str) -> bool:
+        tree = format_java.parse_source(text.encode())
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "ERROR" or node.is_missing:
+                return True
+            stack.extend(node.children)
+        return False
+
+    @pytest.mark.parametrize(
+        "source", list(SHAPES.values()), ids=list(SHAPES)
+    )
+    def test_formats_cleanly_or_refuses(self, source: str) -> None:
+        if self._has_error(source):
+            pytest.skip("grammar does not parse this input")
+        try:
+            out = format_java.format_source(
+                source.encode(), warnings_out=[]
+            ).decode()
+        except NotImplementedError:
+            return  # The documented refusal path.
+        assert not self._has_error(out), out
+        twice = format_java.format_source(
+            out.encode(), warnings_out=[]
+        ).decode()
+        assert twice == out, (out, twice)
+        # Parse-and-converge alone is too weak to catch the kind of
+        # defect this class exists for: dropping `[]` from
+        # `int x[]` yields `int x`, which parses and converges
+        # perfectly well while declaring a different type. The
+        # named-node signature is what notices the missing
+        # `dimensions` node.
+        assert (
+            self._signature(out) == self._signature(source)
+        ), (source, out)

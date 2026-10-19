@@ -134,6 +134,12 @@ To find non-converging files mechanically, format to a fixed
 point with a bounded loop and flag anything still changing when
 the bound is hit:
 
+This loop COMMITS after every pass that changed something, so
+run it on a scratch branch. Note also that the first pass over
+pristine source always changes files, so only passes 2-4 can
+demonstrate convergence — the bound of 4 is tighter than it
+looks.
+
 ```bash
 converged=0
 for pass in 1 2 3 4; do

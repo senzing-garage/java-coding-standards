@@ -1455,6 +1455,42 @@ annotation lines are resolved, taking lines over 80 from **1562 to
 (one second pass, none third) are unchanged; the named-node
 sequence of every file is identical before and after.
 
+### A grammar-shape sweep for constructs the corpus lacks
+
+Two defects in this release were in shapes no corpus file
+contains -- a C-style array dimension on a parameter, and a
+receiver parameter broken across rows. The AST round-trip gate
+could not have found either: it compares the formatter against
+itself on corpus files, so it only sees shapes the corpus has.
+
+A new sweep covers 29 constructs the corpus does not exercise --
+static and instance initializers, labelled break, `do`/`while`,
+intersection casts, sealed/`permits`, `instanceof` patterns,
+compact record constructors, `switch` arrow with `yield`,
+explicit type arguments, `assert`, method references, C-style
+dimensions on fields and constructor parameters, and others.
+
+The invariant is deliberately weak so it survives new support:
+for each shape the formatter either formats it -- output parses,
+converges, and keeps the same named-node signature -- or declines
+it with `NotImplementedError`, which the CLI reports as REFUSED,
+exits 0 on, and leaves the file byte-identical. What it may never
+do is raise anything else, emit output that does not parse, lose
+a node, or fail to converge. A shape that gains support moves
+between the two branches with no edit to the test.
+
+The signature check is the part that earns its keep. Parsing and
+converging are too weak on their own: dropping `[]` from
+`int x[]` gives `int x`, which parses and converges perfectly
+while declaring a different type. Confirmed by neutering the
+dimensions fix and watching the sweep go red.
+
+Five shapes currently take the refusal branch -- intersection
+casts, sealed/`permits`, `instanceof` pattern binding, explicit
+type arguments on a call, and `assert` -- all pre-existing,
+documented refusals rather than new limitations. No shape
+corrupts, crashes or fails to converge.
+
 ### C-style array dimensions were dropped from signatures
 
 Java allows the brackets on either side of the name. `int[] a`
@@ -2083,9 +2119,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 970/970 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 999/999 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 760 and the 210 missing
+  found, so a standalone clone collects 789 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures
@@ -2124,9 +2160,12 @@ same commit. `requirements.txt` now says so in a comment.
   five-shape check that re-indenting never changes a text
   block's value, each run with and without an interior blank
   line, so ten collected. Each of the three
-  convergence guards, ten of the eleven new fixtures and every
-  new behavioral unit test was verified by reverting the
-  corresponding fix and confirming the suite goes red. The
+  convergence guards, every new behavioral unit test and all
+  but one of the release's 67 new fixtures were verified by
+  reverting the corresponding fix and confirming the suite goes
+  red. (An earlier draft of this paragraph said "ten of the
+  eleven new fixtures", a count from early in the release that
+  the fixture set long outgrew.) The
   exception is stated rather than glossed: the parenthesized
   block-lambda fixture is a shape lock, not a discriminator —
   the carve-out it is named for only bites when a body line
