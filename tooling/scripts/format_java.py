@@ -9969,7 +9969,27 @@ def _emit_argument_list(
         # goes to the wrap engine instead. What it did, and why
         # re-adding anything like it is a mistake, is recorded in
         # the `building/source-preservation-history` FAQ.
+        since = emitter.line_count
         emitter.write_raw_lines(src_text, strip_trailing_ws=True)
+        # The rows above are the developer's own, replayed
+        # verbatim, so no break point here is the formatter's to
+        # choose. If one of them is over the limit, checkstyle
+        # will reject it and nothing else in the cascade will
+        # say so — this path returns before every other advisory
+        # site. Warn, with a remedy that points at the source
+        # layout rather than at an operand split the engine
+        # never made.
+        _fire_wrap_overflow_advisory(
+            emitter,
+            node,
+            since,
+            "argument list",
+            remedy=(
+                "its rows are preserved verbatim because the list "
+                "carries a comment or a CSOFF region; shorten the "
+                "comment or re-break the list in the source"
+            ),
+        )
         return
 
     # 0.5.0 item 10 — spec C6 extension to method/constructor

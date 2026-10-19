@@ -1773,8 +1773,9 @@ identical header wrap or not purely by context.
 
 ### Source preservation
 
-Three changes, all narrowing when the formatter defers to the
-author's layout.
+Four changes. Three narrow when the formatter defers to the
+author's layout; the fourth stops the remaining deferral from
+being silent.
 
 **The width-based fallback is retired.** Preservation now fires only
 for its two correctness reasons — interleaved `//` or `/* */`
@@ -1841,6 +1842,21 @@ cascade's Q-CHAIN-4 backoff. Constructs that legitimately span rows
 preservation path, which is what keeps
 `execute(new Runnable() { … })` and `performTest(() -> { … })`
 idiomatic.
+
+**A preserved row that is over 80 columns now warns.** The verbatim
+path returns before every other advisory site in the cascade, so a
+comment-bearing argument list that replayed wider than the limit
+produced no warning at all — checkstyle rejected the line and the
+formatter that emitted it said nothing. That gap arrived with the
+narrowing above: before it, this shape did not take the verbatim
+path (0.6.0 emitted `f(/* c */, a)`, with a spurious comma, which
+does not parse). Preserving the rows is the fix; the advisory is
+what keeps the fix from trading a loud defect for a quiet one. The
+remedy text points at the source layout rather than at an operand
+split, because no break point on this path was the formatter's to
+choose. Output is unchanged on all 504 trial files — this adds
+advisories (289 to 302) and nothing else, and every one of the 14 it
+fires on is a line checkstyle already rejects.
 
 ### Method chains: the back-off test no longer reads source rows
 
@@ -2114,21 +2130,20 @@ same commit. `requirements.txt` now says so in a comment.
   one.
 
 - Lines over 80 characters across the four trees moved from
-  1618 to 1562, and all 25 over-long enhanced-`for` headers are
-  now wrapped. The 1,562 that remain are overwhelmingly content
-  a formatter must not reflow: half of them (787) carry a
-  javadoc `{@snippet}` / `@highlight` / `@replace` directive
-  whose region markup breaks if it is wrapped, with the bulk of the
-  remainder either a single string literal already longer than the
-  limit on its own or javadoc / line-comment prose. (The per-category
-  counts were taken at 1,573 and the categories overlap, so they are
-  no longer quoted individually.) 588 sit in one
-  file, `SzEngineDemo.java`. Only 110 are code carrying no
-  string literal, and most of those are unwrappable by nature —
-  long `import` statements and `@ValueSource` annotations. The
+  1618 to 1557, and all 25 over-long enhanced-`for` headers are
+  now wrapped. The 1,557 that remain are overwhelmingly content
+  a formatter must not reflow. Measured against this release's
+  output, in disjoint categories: 689 carry a javadoc
+  `{@snippet}` / `@highlight` / `@replace` directive whose region
+  markup breaks if it is wrapped, 338 are javadoc or line-comment
+  prose, and 432 carry a string literal — commonly one already
+  longer than the limit on its own. 588 of the 1,557 sit in a
+  single file, `SzEngineDemo.java`. Only 98 are code carrying no
+  string literal, and 26 of those are `import` statements, which
+  the checkstyle `LineLength` pattern exempts in any case. The
   remaining residue is unwrappable in an AST-preserving
-  formatter; the record headers that used to be in this list are
-  fixed above.
+  formatter; the record headers and the over-long annotations
+  that used to be in this list are fixed above.
 - Deep orphaned continuations — a construct's contents emitted
   left of the `(` they belong to — fell from 37 to 3.
 - 362 of 504 trial files are reformatted, a net **+1,626 lines**

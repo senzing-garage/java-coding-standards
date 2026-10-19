@@ -38,9 +38,10 @@ def _format_in_method(
 
     Several test classes each grew their own copy of this, which
     drifted: some passed `warnings_out=[]` and some did not, and
-    one decoded unconditionally while its neighbors guarded with
-    `isinstance`. Shared here so the wrapper and the return-type
-    normalization have one definition.
+    some guarded the return with `isinstance` though
+    `format_source` is declared `-> bytes` and returns bytes on
+    every path. Shared here so the wrapper and the decode have
+    one definition.
 
     `warnings_out=[]` is always passed, so a test that does not
     care about advisories does not have them written to the
@@ -50,8 +51,9 @@ def _format_in_method(
         "public class %s\n{\n    %s\n    {\n%s\n    }\n}\n"
         % (class_name, signature, body)
     ).encode()
-    out = format_java.format_source(source, warnings_out=[])
-    return out if isinstance(out, str) else out.decode()
+    return format_java.format_source(
+        source, warnings_out=[]
+    ).decode()
 
 
 # Two declarations used by both the flag-hand-back tests and the
@@ -5731,10 +5733,7 @@ class TestArrayInitializerComments:
         once = self._fmt(body)
         twice = format_java.format_source(
             once.encode(), warnings_out=[]
-        )
-        twice = (
-            twice if isinstance(twice, str) else twice.decode()
-        )
+        ).decode()
         assert twice == once, once
 
     def test_nested_initializer_comment_stays_inside(self) -> None:
@@ -6408,3 +6407,44 @@ class TestAnnotationArgumentWrap:
         be reached by any of this."""
         rows = self._fmt("@Override")
         assert rows == ["    @Override"], rows
+
+
+class TestPreservedArgListWarnsOnOverflow:
+    """An argument list that carries a comment is replayed from
+    source verbatim, and that replay can land over 80 columns.
+
+    The verbatim path returns before every other advisory site in
+    the cascade, so without its own call nothing warns — the build
+    fails checkstyle and the formatter that produced the line says
+    nothing. 0.6.0 did not have this gap because it did not take
+    the verbatim path here; it emitted `f(/* c */, a)`, with a
+    spurious comma, which does not parse. Preserving the rows is
+    the fix, and this is the advisory that keeps the fix from
+    being silent.
+    """
+
+    @staticmethod
+    def _warn(body: str) -> list:
+        collector: list = []
+        source = (
+            "public class A\n{\n    void m()\n    {\n"
+            + body
+            + "\n    }\n}\n"
+        ).encode()
+        format_java.format_source(source, warnings_out=collector)
+        return collector
+
+    def test_an_over_long_preserved_row_fires(self) -> None:
+        warnings = self._warn(
+            "        doSomething(/* a very long leading "
+            "explanation here */ alphaBetaGamma, "
+            "deltaEpsilonZeta, etaThetaIotaKappa);"
+        )
+        assert len(warnings) == 1, warnings
+        assert warnings[0].width > 80, warnings[0]
+        assert "preserved verbatim" in warnings[0].message
+
+    def test_a_preserved_row_that_fits_stays_quiet(self) -> None:
+        """The advisory early-returns when nothing is over the
+        limit, so preserving a short commented list is silent."""
+        assert self._warn("        f(/* c */ a, b);") == []

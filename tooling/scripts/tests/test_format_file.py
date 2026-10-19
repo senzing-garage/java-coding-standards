@@ -119,33 +119,30 @@ def test_refusal_leaves_the_file_byte_identical(
     # before and after. Only the catch header refuses now: the
     # array-initializer case was changed from a refusal to placing
     # the comments, which `TestArrayInitializerComments` covers.
-    cases = {
-        "CatchComment.java": (
-            "public class CatchComment\n"
-            "{\n"
-            "    void m()\n"
-            "    {\n"
-            "        try {\n"
-            "            go();\n"
-            "        } catch (java.io.IOException /* why */ e) {\n"
-            "            handle(e);\n"
-            "        }\n"
-            "    }\n"
-            "}\n"
-        ),
-    }
-    for name, text in cases.items():
-        java = tmp_path / name
-        java.write_text(text, encoding="utf-8")
-        before = java.read_bytes()
+    java = tmp_path / "CatchComment.java"
+    java.write_text(
+        "public class CatchComment\n"
+        "{\n"
+        "    void m()\n"
+        "    {\n"
+        "        try {\n"
+        "            go();\n"
+        "        } catch (java.io.IOException /* why */ e) {\n"
+        "            handle(e);\n"
+        "        }\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    before = java.read_bytes()
 
-        result = _run_format_file(str(java))
+    result = _run_format_file(str(java))
 
-        assert result.returncode == 0, (name, result.stderr)
-        assert "REFUSED" in result.stderr, (name, result.stderr)
-        assert java.read_bytes() == before, (
-            "%s was modified despite being refused" % name
-        )
+    assert result.returncode == 0, result.stderr
+    assert "REFUSED" in result.stderr, result.stderr
+    assert java.read_bytes() == before, (
+        "the file was modified despite being refused"
+    )
 
 
 def test_commented_array_formats_and_exits_zero(
