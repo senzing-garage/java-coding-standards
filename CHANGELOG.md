@@ -2128,9 +2128,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 999/999 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 1000/1000 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 789 and the 210 missing
+  found, so a standalone clone collects 790 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures

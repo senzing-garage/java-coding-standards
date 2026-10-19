@@ -6742,6 +6742,36 @@ class TestUncommonShapesNeverCorrupt:
             stack.extend(node.children)
         return False
 
+    def test_most_shapes_actually_format(self) -> None:
+        """Guard the sweep against passing vacuously.
+
+        `test_formats_cleanly_or_refuses` accepts a refusal, so if
+        a regression made the formatter decline everything, every
+        case would still pass while checking nothing. This pins
+        that the large majority genuinely format, so mass refusal
+        shows up as a failure here rather than as silence there.
+
+        The bound is loose on purpose: a shape moving from the
+        refusal branch to the formatting branch is progress and
+        must not fail the suite.
+        """
+        formatted = refused = 0
+        for source in self.SHAPES.values():
+            if self._has_error(source):
+                continue
+            try:
+                format_java.format_source(
+                    source.encode(), warnings_out=[]
+                )
+            except NotImplementedError:
+                refused += 1
+            else:
+                formatted += 1
+        assert formatted + refused == len(self.SHAPES), (
+            formatted, refused
+        )
+        assert formatted >= 20, (formatted, refused)
+
     @pytest.mark.parametrize(
         "source", list(SHAPES.values()), ids=list(SHAPES)
     )
