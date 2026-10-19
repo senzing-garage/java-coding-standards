@@ -4780,25 +4780,111 @@ def _emit_annotation(
     _emit_node(emitter, source, arguments)
 
 
+def _annotation_arg_holds_array(arg: Node) -> bool:
+    """True when an annotation argument's value is an array
+    literal — either the argument itself, as in
+    `@CsvSource({ … })`, or the value half of a named pair, as in
+    `@ValueSource(ints = { … })`.
+
+    Both spell the same thing for wrapping purposes: the argument
+    IS the array, so there is no second argument that breaking the
+    list could help to place.
+    """
+    if arg.type == "element_value_array_initializer":
+        return True
+    if arg.type == "element_value_pair":
+        value = arg.child_by_field_name("value")
+        return (
+            value is not None
+            and value.type == "element_value_array_initializer"
+        )
+    return False
+
+
 def _emit_annotation_argument_list(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
-    """Emit `(arg1, arg2, ...)` for an annotation.
+    """Emit `(arg1, arg2, ...)` for an annotation, with wrapping.
 
-    Same shape as `_emit_argument_list` — comma-space
-    separator. Each argument can be either a plain
-    expression (single-value form like
-    `@SuppressWarnings("unchecked")`) or an
-    `element_value_pair` (named form like
-    `@Schedule(hour = "12")`).
+    Per spec "Annotations with arguments" (A3): "Annotation
+    arguments wrap per the method-call argument rule … Treat
+    `@Annotation(...)` as a call site for wrapping purposes." So
+    the ordinary call cascade does the work, and an annotation
+    gets priorities 1-4 exactly as a call does.
+
+    Until 0.7.0 this emitted a single line and nothing else: the
+    priority cascade the spec describes had never been written.
+    An annotation that did not fit simply ran past 80 columns, and
+    because advisories fire from a cascade's terminal commit and
+    there was no cascade, it did so silently. Five such lines sit
+    in the trial corpus; all five are checkstyle LineLength
+    failures the formatter neither fixed nor reported.
+
+    ONE case does not delegate: a sole argument whose value is an
+    array. Breaking after `(` is worth a line only if what follows
+    then fits on one row. When the array must span rows anyway,
+    breaking strands its `{` on a row of its own and pushes every
+    element four columns further right — which on a long element
+    makes an over-80 line worse, not better:
+
+        @CsvSource({                    @CsvSource(
+            "…",                            {
+            "… 112 columns …"                   "…",
+        })                                      "… 116 columns …"
+                                            })
+
+    So the array keeps the list inline and owns its own rows. This
+    is the same reasoning as the method-call rule "if an argument
+    breaks, the list breaks" read in reverse: there, breaking the
+    list separates arguments that would otherwise run together;
+    here the array is the only argument, so breaking around it
+    separates nothing and costs a line.
     """
     args = list(node.named_children)
-    emitter.write("(")
-    for index, arg in enumerate(args):
-        if index > 0:
-            emitter.write(", ")
-        _emit_node(emitter, source, arg)
-    emitter.write(")")
+    if len(args) == 1 and _annotation_arg_holds_array(args[0]):
+        # Priority 1: the whole annotation on one line.
+        p1_saved = emitter.snapshot()
+        emitter.write("(")
+        _emit_node(emitter, source, args[0])
+        emitter.write(")")
+        effective_max = _MAX_LINE - emitter.tail_reserve
+        if (
+            emitter.line_count == p1_saved[0]
+            and emitter.last_lines_max_width(p1_saved[0])
+            <= effective_max
+        ):
+            return
+        emitter.restore(p1_saved)
+
+        # Priority 2: break after `(`, but only if the array then
+        # fits on the one continuation row. Without this guard the
+        # cascade reflows annotations that already fit, which is
+        # churn for nothing — measured at 19 corpus files instead
+        # of 5 before the priority-1 check above was added.
+        p2_saved = emitter.snapshot()
+        emitter.write("(")
+        emitter.newline()
+        emitter.push_indent()
+        emitter.write_indent()
+        _emit_node(emitter, source, args[0])
+        emitter.write(")")
+        fits_one_row = (
+            emitter.line_count == p2_saved[0] + 1
+            and emitter.last_lines_max_width(p2_saved[0])
+            <= effective_max
+        )
+        emitter.pop_indent()
+        if fits_one_row:
+            return
+        emitter.restore(p2_saved)
+
+        # Terminal: inline, with the array spanning its own rows.
+        emitter.write("(")
+        _emit_node(emitter, source, args[0])
+        emitter.write(")")
+        return
+
+    _emit_argument_list(emitter, source, node)
 
 
 def _emit_element_value_pair(

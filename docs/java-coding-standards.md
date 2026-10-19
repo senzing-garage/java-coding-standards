@@ -342,6 +342,30 @@ public void register(...)
 }
 ```
 
+One case does not break after the `(`: a **sole argument whose
+value is an array**. Breaking is worth a line only when what
+follows then fits on one row. When the array has to span rows
+anyway, breaking strands its `{` on a row of its own and pushes
+every element four columns further right — which on a long
+element makes an over-long line worse rather than better. So the
+array keeps the list inline and owns its own rows:
+
+```java
+    @CsvSource({
+        "sqlite3:///path/file.db, /path/file.db,",
+        "sqlite3://na:na@/Users/test/App/test.db, /Users/…, na"
+    })
+```
+
+When the array does fit on the continuation row, the break is
+taken as normal, because there it saves a line:
+
+```java
+    @DisabledIf(
+        value = "checkBootstrapBuild",
+        disabledReason = "This test only runs on a bootstrap build")
+```
+
 ### Repeated annotations
 
 Java 8+ `@Repeatable` annotations stack the same way as

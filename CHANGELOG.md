@@ -1392,6 +1392,60 @@ components have broken every row can sit under the limit; the check
 would pass and commit. It is rejected the same way the argument-list
 cascade rejects an argument that wrapped.
 
+### Annotation arguments wrap (spec A3)
+
+`_emit_annotation_argument_list` emitted a single line and nothing
+else. The priority cascade the standards document describes for
+annotations — "Annotation arguments wrap per the method-call
+argument rule … Treat `@Annotation(...)` as a call site for
+wrapping purposes" — had never been written, in any release.
+
+An annotation that did not fit simply ran past 80 characters, and
+did so SILENTLY: advisories fire from a cascade's terminal commit,
+and with no cascade there was no commit to fire from. The trial
+corpus carries five such lines across three files, every one a real
+checkstyle `LineLength` failure that the formatter neither fixed
+nor reported. `LineLength`'s `ignorePattern` does not cover them
+and the suppressions file does not list the check.
+
+```java
+    @DisabledIf(value = "checkBootstrapBuild", disabledReason = "This test only runs against a bootstrap build")
+
+    @DisabledIf(
+        value = "checkBootstrapBuild",
+        disabledReason = "This test only runs against a bootstrap build")
+```
+
+The first line is 112 characters as the formatter emits it today;
+the three below it are 16, 38 and 73. Both are real: the shape is
+`InstallUtilitiesTest.java` in the trial corpus.
+
+The annotation argument list now delegates to the call cascade, as
+the spec says to. **One case does not delegate**: a sole argument
+whose value is an array, either as the argument itself
+(`@CsvSource({ … })`) or as the value half of a pair
+(`@ValueSource(strings = { … })`).
+
+Breaking after `(` is worth a line only if what follows then fits
+on one row. When the array must span rows anyway, the break
+strands its `{` on a row of its own and pushes every element four
+columns further right — measured on the corpus shape, a 112-column
+line becomes 116. So the array keeps the list inline and owns its
+rows. Delegating unconditionally was tried first and rejected on
+that evidence: it changes 8 files instead of 5, adds 15 lines
+instead of 4, and introduces an over-80 line while removing five.
+
+This is the method-call rule "if an argument breaks, the list
+breaks" read in reverse. There, breaking separates arguments that
+would otherwise run together; here the array is the only argument,
+so breaking around it separates nothing and costs a line.
+
+**5 of the 504 corpus files change.** All five over-long
+annotation lines are resolved, taking lines over 80 from **1562 to
+1557**; total lines rise by 4; advisories (289) and convergence
+(one second pass, none third) are unchanged; the named-node
+sequence of every file is identical before and after.
+
 ### A comment among array elements is placed, not inlined
 
 Retiring the array-creation source-preserve path (below) took a

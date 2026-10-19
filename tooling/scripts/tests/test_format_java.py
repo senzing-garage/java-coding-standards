@@ -6319,3 +6319,92 @@ class TestBreakProbeIsShared:
         the claim that the declarator already made it — it did not.
         """
         assert self._probe(["a" * 40], 10, 0, escaped=True) is True
+
+
+class TestAnnotationArgumentWrap:
+    """Spec A3: annotation arguments wrap like call arguments.
+
+    "Treat `@Annotation(...)` as a call site for wrapping
+    purposes." Until this landed, `_emit_annotation_argument_list`
+    emitted one line and nothing else — the cascade the spec
+    describes had never been written. An annotation that did not
+    fit ran past 80 columns, and silently, because advisories fire
+    from a cascade's terminal commit and there was no cascade.
+    Five such lines sit in the trial corpus, all of them real
+    checkstyle LineLength failures.
+    """
+
+    @staticmethod
+    def _fmt(annotation: str) -> list[str]:
+        src = (
+            "public class A\n{\n    %s\n    public void m()\n"
+            "    {\n    }\n}\n" % annotation
+        ).encode()
+        out = format_java.format_source(src, warnings_out=[])
+        out = out if isinstance(out, str) else out.decode()
+        rows = []
+        for line in out.split("\n")[2:]:
+            if line.strip().startswith("public void"):
+                break
+            if line.strip():
+                rows.append(line)
+        return rows
+
+    def test_fitting_annotation_is_left_alone(self) -> None:
+        rows = self._fmt("@ValueSource(ints = { 1, 2, 3 })")
+        assert rows == ["    @ValueSource(ints = { 1, 2, 3 })"], rows
+
+    def test_overflowing_annotation_breaks_after_paren(
+        self,
+    ) -> None:
+        rows = self._fmt(
+            "@ValueSource(ints = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, "
+            "10, 11, 12, 13, 14, 15 })"
+        )
+        assert rows[0].rstrip() == "    @ValueSource(", rows
+        assert all(len(r) <= 80 for r in rows), rows
+
+    def test_named_pairs_take_a_row_each(self) -> None:
+        rows = self._fmt(
+            '@DisabledIf(value = "checkBootstrapBuild", '
+            'disabledReason = "This test only runs against a '
+            'bootstrap build")'
+        )
+        assert rows[0].rstrip() == "    @DisabledIf(", rows
+        assert len(rows) == 3, rows
+        assert all(len(r) <= 80 for r in rows), rows
+
+    def test_sole_array_keeps_the_list_inline(self) -> None:
+        """The one case that does NOT delegate.
+
+        Breaking after `(` is worth a line only if what follows
+        then fits on one row. When the array must span rows
+        anyway, breaking strands its `{` on a row of its own and
+        pushes every element four columns right — which on a long
+        element makes an over-80 line worse. Measured on the real
+        corpus shape: 112 columns becomes 116.
+        """
+        long_row = '"' + "s" * 100 + '"'
+        rows = self._fmt(
+            "@CsvSource({ %s, %s })" % (long_row, long_row)
+        )
+        # The `{` stays with the `(`, not stranded on its own row.
+        assert rows[0].rstrip().endswith("({"), rows
+        assert not any(r.strip() == "{" for r in rows), rows
+
+    def test_sole_array_still_breaks_when_that_helps(self) -> None:
+        """The converse: when the array DOES fit on the
+        continuation row, the break is taken and saves a line."""
+        rows = self._fmt(
+            "@ValueSource(longs = { 0L, 1L, 2L, 20L, 40L, 80L, "
+            "160L, 3200L, 64000L, 128345789L })"
+        )
+        assert rows[0].rstrip() == "    @ValueSource(", rows
+        assert len(rows) == 2, rows
+        assert all(len(r) <= 80 for r in rows), rows
+
+    def test_marker_annotations_are_untouched(self) -> None:
+        """`@Override` has no argument list at all and must not
+        be reached by any of this."""
+        rows = self._fmt("@Override")
+        assert rows == ["    @Override"], rows
