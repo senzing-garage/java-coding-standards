@@ -6465,3 +6465,94 @@ class TestPreservedArgListWarnsOnOverflow:
         """The advisory early-returns when nothing is over the
         limit, so preserving a short commented list is silent."""
         assert self._warn("        f(/* c */ a, b);") == []
+
+
+class TestCStyleArrayDimensionsSurvive:
+    """Java allows the brackets on either side of the name:
+    `int[] a` puts them in the type, `int a[]` puts them in a
+    `dimensions` child of the declaration. Both declare `int[]`.
+
+    The second form was emitted without the brackets, so
+    `main(String args[])` became `main(String args)` — a
+    different method, and in general code that no longer
+    compiles. Verified with the JDK 21 compiler: before the fix the
+    formatted file failed with "for-each not applicable to
+    expression type" and "int[] cannot be converted to int".
+
+    Zero files in the 533-file corpus use this form, which is
+    why the AST round-trip gate never caught it.
+    """
+
+    @staticmethod
+    def _fmt(body: str) -> str:
+        source = ("public class A\n{\n" + body + "\n}\n").encode()
+        return format_java.format_source(
+            source, warnings_out=[]
+        ).decode()
+
+    def test_parameter_keeps_its_brackets(self) -> None:
+        out = self._fmt("    void m(int a[], String b)\n    {\n    }")
+        assert "int a[]" in out, out
+
+    def test_main_signature_is_not_rewritten(self) -> None:
+        """The idiom most likely to meet this defect."""
+        out = self._fmt(
+            "    public static void main(String args[])\n"
+            "    {\n    }"
+        )
+        assert "String args[]" in out, out
+
+    def test_brackets_survive_a_wrapped_parameter_list(self) -> None:
+        """The aligned P2/P3 path pads names into a column and
+        emitted the name alone; the dimensions trail the name, so
+        they must follow the padding."""
+        out = self._fmt(
+            "    void methodWithAVeryLongNameIndeed(int alphaBeta[],"
+            " String gammaDelta, String epsilonZeta)\n    {\n    }"
+        )
+        assert "int" in out and "alphaBeta[]" in out, out
+        assert len(out.split("\n")) > 5, out
+
+    def test_c_style_return_dimension_survives(self) -> None:
+        """`int m()[]` puts the dimensions between the parameter
+        list and `throws`."""
+        out = self._fmt("    int m()[]\n    {\n        return null;\n    }")
+        assert "m()[]" in out, out
+
+    def test_bracketed_type_form_is_unaffected(self) -> None:
+        out = self._fmt("    void m(int[] a)\n    {\n    }")
+        assert "int[] a" in out, out
+
+
+class TestMultiRowReceiverParameterDoesNotCrash:
+    """`Emitter.write` rejects newlines, and a receiver parameter
+    was written with its source text unchanged. An author who
+    broke the line between the type and `this` produced a
+    `ValueError`, which `format_file.py` reports as PARSE ERROR
+    and exits 1 on — a crash on valid Java.
+
+    0.6.0 did not crash here; it DELETED the receiver parameter
+    from the signature instead. Neither is acceptable, so the
+    rows are joined.
+    """
+
+    @staticmethod
+    def _fmt(body: str) -> str:
+        source = ("public class A\n{\n" + body + "\n}\n").encode()
+        return format_java.format_source(
+            source, warnings_out=[]
+        ).decode()
+
+    def test_multi_row_receiver_is_joined_not_raised(self) -> None:
+        out = self._fmt(
+            "    void methodWithAVeryLongName(A\n"
+            "            this, int alphaBetaGammaDelta,"
+            " int epsilonZetaEtaTheta, int iotaKappaLambdaMu)\n"
+            "    {\n    }"
+        )
+        assert "A this," in out, out
+        assert "\n" not in "A this", out
+
+    def test_single_row_receiver_is_unchanged(self) -> None:
+        out = self._fmt("    void m(A this)\n    {\n    }")
+        assert "void m(A this)" in out, out

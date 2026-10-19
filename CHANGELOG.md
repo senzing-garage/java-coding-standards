@@ -1455,6 +1455,59 @@ annotation lines are resolved, taking lines over 80 from **1562 to
 (one second pass, none third) are unchanged; the named-node
 sequence of every file is identical before and after.
 
+### C-style array dimensions were dropped from signatures
+
+Java allows the brackets on either side of the name. `int[] a`
+puts them in the type; `int a[]` puts them in a `dimensions`
+child of the declaration. Both declare `a` as `int[]`.
+
+The second form was emitted without the brackets, on both the
+inline and the column-aligned parameter paths, and on a C-style
+return dimension (`int m()[]`). That is not a layout change --
+it rewrites the signature:
+
+```java
+    static int sum(int values[], String label)   // before
+    static int sum(int values, String label)     // after
+    public static void main(String args[])       // before
+    public static void main(String args)         // after
+```
+
+Verified with the JDK 21 compiler: the formatted file stops compiling,
+with "for-each not applicable to expression type" and
+"incompatible types: int[] cannot be converted to int". The
+`main` case silently stops being `main`.
+
+This is PRE-EXISTING -- 0.6.0 emits exactly the same loss -- and
+is fixed here rather than deferred because the failure is silent
+and the output does not compile.
+
+**No corpus file changes.** Zero of the 533 files across the five
+repositories use the C-style form, which is also why the AST
+round-trip gate never caught it: the shape is not in the corpus.
+Local variables and fields were already correct; only parameters
+and return dimensions were affected.
+
+### A receiver parameter broken across rows crashed the formatter
+
+`Emitter.write` rejects newlines, and a receiver parameter
+(`void m(A this)`) was written with its source text unchanged.
+An author who broke the line between the type and `this` produced
+a `ValueError`, which `format_file.py` reports as PARSE ERROR and
+exits 1 on -- a crash on valid Java, and an exit code that stops
+an adopter's build or format-on-save hook.
+
+The rows are now joined into one. Stripping each row's own
+indentation cannot corrupt a literal, because a Java string
+literal cannot contain a raw newline, so nothing collapsed here
+is ever inside one.
+
+Unlike the dimensions defect above this one is NEW in 0.7.0, and
+it replaced something worse: 0.6.0 did not crash because it
+DELETED the receiver parameter from the signature entirely, which
+discards any annotation attached to it. Receiver parameters
+became emittable in this release; this completes that work.
+
 ### A comment among array elements is placed, not inlined
 
 Retiring the array-creation source-preserve path (below) took a
@@ -2024,9 +2077,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 872/872 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 968/968 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 662 and the 210 missing
+  found, so a standalone clone collects 758 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures

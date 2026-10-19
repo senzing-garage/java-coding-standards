@@ -3122,6 +3122,13 @@ def _emit_method_declaration(
         finally:
             emitter.set_tail_reserve(prev_reserve)
 
+    # A C-style return dimension (`int m()[]`) is a `dimensions`
+    # child sitting between the parameter list and `throws`. It is
+    # part of the return TYPE, so dropping it changed the method's
+    # signature. Emitted here because every parameter-emitting
+    # branch above converges on this point.
+    _emit_trailing_dimensions(emitter, source, node)
+
     # Per "Method and Constructor Declarations / Throws
     # Clause", `throws` goes on its own line single-indented
     # (4 spaces from the method declaration). Single-line
@@ -8724,6 +8731,28 @@ def _emit_throws(
             emitter.write(",")
 
 
+def _emit_trailing_dimensions(
+    emitter: Emitter, source: bytes, node: Node
+) -> None:
+    """Emit a C-style `dimensions` child that trails the NAME.
+
+    Java allows the brackets on either side of the name:
+    `int[] a` puts them in the type (an `array_type` node, which
+    `_emit_array_type` handles), while `int a[]` puts them in a
+    `dimensions` child of the declaration itself. Both declare
+    `a` as `int[]`.
+
+    The second form has no effect on name alignment, because it
+    trails the name rather than the type — but it is part of the
+    parameter's TYPE, so dropping it silently rewrites the
+    signature. `public static void main(String args[])` became
+    `main(String args)`, which is a different method.
+    """
+    for child in node.children:
+        if child.type == "dimensions":
+            emitter.write(_node_source_text(source, child))
+
+
 def _emit_formal_parameter_prefix(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -8808,6 +8837,7 @@ def _emit_formal_parameter_aligned(
     pad = name_col - emitter.column
     emitter.write(" " * pad if pad > 0 else " ")
     _emit_node(emitter, source, node.child_by_field_name("name"))
+    _emit_trailing_dimensions(emitter, source, node)
 
 
 def _emit_formal_parameters(
@@ -9083,8 +9113,22 @@ def _emit_receiver_parameter(
     `void m(String s)`. Dropping a bare `T this` is semantically
     inert, but dropping an annotated one discards the annotation,
     which is not.
+
+    The source rows are joined into one, because `Emitter.write`
+    rejects newlines and an author may break between the type and
+    `this`. Joining on the line break and stripping each row's own
+    indentation cannot corrupt a literal: a Java string literal
+    cannot contain a raw newline, so no character being collapsed
+    here is ever inside one. Before this the break raised
+    `ValueError`, which `format_file.py` reports as PARSE ERROR
+    and exits 1 on -- a crash on valid Java.
     """
-    emitter.write(_node_source_text(source, node))
+    text = _node_source_text(source, node)
+    if "\n" in text:
+        text = " ".join(
+            row.strip() for row in text.split("\n") if row.strip()
+        )
+    emitter.write(text)
 
 
 def _emit_spread_parameter(
@@ -9165,6 +9209,7 @@ def _emit_formal_parameter(
     _emit_node(emitter, source, type_node)
     emitter.write(" ")
     _emit_node(emitter, source, name_node)
+    _emit_trailing_dimensions(emitter, source, node)
 
 
 def _emit_array_type(
