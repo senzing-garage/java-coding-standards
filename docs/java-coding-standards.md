@@ -1356,8 +1356,9 @@ wraps by its own cascade:
 ```
 
 **Rule 3 — uniform chain tail.** Chain segments following an
-embedded call always go one per line, anchored at the chain's own
-start column plus 4. The anchor is deliberately relative to the
+embedded call go one per line, anchored at the chain's own start
+column plus 4. This governs only a chain that is the **sole**
+argument of its enclosing call, per the scope set out above. The anchor is deliberately relative to the
 chain rather than to the enclosing statement; anchoring to the
 statement pulls the tail far to the left of the chain it belongs
 to, orphaning it.

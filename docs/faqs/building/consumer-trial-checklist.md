@@ -100,7 +100,8 @@ introducing tokens — file a regression before tagging.
 # Second pass over an already-formatted tree.
 python3 .java-coding-standards/tooling/scripts/format_file.py \
     src/main/java src/test/java src/demo/java
-# Third pass — this is the one that must report `0 modified`.
+# Third pass — in practice the quiet one. The gate is the fixed
+# point below, not this pass specifically.
 python3 .java-coding-standards/tooling/scripts/format_file.py \
     src/main/java src/test/java src/demo/java
 ```
@@ -204,10 +205,11 @@ grep -cE '(@highlight|@end|@start|@link|@replace)' \
     $(find src -name '*.java') > /tmp/post-tokens.txt
 diff /tmp/pre-tokens.txt /tmp/post-tokens.txt              # must be empty
 
-# Gate 5 — convergence. Pass 1 reformats, pass 2 may still settle
-# a file, and the THIRD pass is the one that must report
-# "0 modified". A second pass reporting "0 modified" is not the
-# gate — see section 5 for why.
+# Gate 5 — convergence. The gate is that formatting reaches a
+# FIXED POINT, not that any particular pass reports "0 modified":
+# pass 1 reformats, and a handful of files may still settle on a
+# later pass. Typically the third pass is quiet, but that is an
+# observation, not the rule — see section 5.
 #
 # This is section 5's loop, inlined: it stops as soon as a pass
 # changes nothing and reports when four passes were not enough,

@@ -15,8 +15,9 @@ This document holds two lists.
    under "Still deferred to 0.8".
 
 The two lists are separate. Counts from one do not describe the
-other. A third short section at the end records items that belong
-to neither, having surfaced while doing the work.
+other. One further short section, after those three, records
+items that belong to neither list, having surfaced while doing
+the work.
 
 ## 1. Deep orphan — a construct emitted left of the `(` it belongs to
 

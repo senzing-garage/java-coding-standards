@@ -67,10 +67,15 @@ of the standards for the full statement):
   the priority 2 two-line comma-packed tier is skipped; the
   cascade goes P1 → P3 → P4. Applies regardless of the
   enclosing call's argument count.
-- **Rule 3** — chain segments following an embedded call
-  always emit one per line, anchored at the chain's own start
-  column + 4 rather than at the enclosing statement's indent
-  (which orphaned the tail far to the left of its chain).
+- **Rule 3** — chain segments following an embedded call emit
+  one per line, anchored at the chain's own start column + 4
+  rather than at the enclosing statement's indent (which
+  orphaned the tail far to the left of its chain). Unlike rule
+  2, this one is NARROW: it governs the tail only when the
+  chain is the **sole** argument of its enclosing call — the
+  position rule 1 has already broken onto its own line. A chain
+  that is one of several arguments keeps its ordinary
+  dot-aligned tail.
 
 Before:
 
@@ -405,7 +410,7 @@ the one that settles the question.
 Priority 1 broke before an argument only when the argument
 _immediately_ before it had gone multi-row. So a block-bodied lambda
 followed by two short arguments put the first on its own line and
-then packed the second onto it — the shape 0.7.0 emits today:
+then packed the second onto it — the shape 0.7.0 emits:
 
 ```java
         register(() -> {
@@ -439,7 +444,7 @@ charge of what follows it. No corpus file changes.
 
 The most serious defect found in this release's review rounds. It is
 **not** new in this release — `_emit_text_block` is byte-identical
-to 0.6.0's, and 0.6.0 ships it today — but the argument-column work
+to 0.6.0's, and 0.6.0 ships it — but the argument-column work
 here widened the set of code that reaches it, until the fix below.
 
 `_emit_text_block` shifts a text block so its closing `"""` reaches
@@ -457,7 +462,7 @@ AAAA
     BBBB
                 """);
 
-        // this branch before the fix — prints "AAAA\nBBBB\n"
+        // 0.7.0 before the fix — prints "AAAA\nBBBB\n"
         String s = go("""
 AAAA
 BBBB
@@ -475,7 +480,8 @@ positions and **216 of 216** for assignment, because in argument
 position 0.6.0 emits the list through source preservation instead.
 So the escape is about which positions reach the emitter, not about
 which direction it shifts. Put the same text block on the right of
-an assignment and 0.6.0 corrupts it exactly as this branch did,
+an assignment and 0.6.0 corrupts it exactly as 0.7.0 did before
+the fix,
 both printing `AAAA\nBBBB\n` — and 0.6.0 still does, which is what
 this fix ends.
 
@@ -493,7 +499,7 @@ content lines and the closing delimiter at each of columns
 0/4/8/16/24/32, in four syntactic positions, 864 blocks per
 formatter:
 
-| text block in… | 0.6.0 (released) | this branch, before | after |
+| text block in… | 0.6.0 (released) | 0.7.0, before fix | after |
 | -------------- | ---------------- | ------------------- | ----- |
 | assignment     | 62/216           | 62/216              | 0/216 |
 | sole argument  | 0/216            | 62/216              | 0/216 |
@@ -503,10 +509,11 @@ formatter:
 
 Only the first column has ever been released: `0.6.0` is the current
 tag and `main`'s formatter is byte-identical to it. The middle column
-is this branch immediately before the fix, so the rise from 62 to 248
+is 0.7.0 immediately before the fix, so the rise from 62 to 248
 was never in anyone's hands — it appeared and was removed inside this
 release. What reaches adopters is the first column against the third:
-**62 failing shapes in the version they run today, none after they
+**62 failing shapes in 0.6.0, the version they run before this
+release, none after they
 bump.**
 
 A second sweep — 4,000 randomly generated blocks per formatter, one
@@ -514,7 +521,7 @@ to four content lines at irregular columns up to 48, adding `return`
 as a fifth position, repeated over three seeds — agrees on the
 shape of the result. 0.6.0 fails in assignment and `return` position
 and in no argument position (513-529 hits, none outside those two);
-this branch before the fix failed in all five (1,362); the fix fails
+0.7.0 before the fix failed in all five (1,362); the fix fails
 in none, on every seed.
 
 So 0.7.0 does not create this bug and does not ship it. 0.6.0
@@ -992,8 +999,10 @@ cause. Anyone picking this up should start by finding the read whose
 result actually reaches a layout decision, and should not assume the
 chain cascade is at fault.
 
-Files needing a second pass: **6 to 1**. Nothing in the corpus fails
-to converge.
+Files needing a second pass: **6 to 1** _as of this change_ — 6 is
+the mid-release count, not the 0.6.0 baseline, which was 26; see
+"Verification" for the release's final figures. Nothing in the
+corpus fails to converge.
 
 ### Advisories now honour checkstyle's LineLength exemptions
 
@@ -1416,7 +1425,7 @@ and the suppressions file does not list the check.
         disabledReason = "This test only runs against a bootstrap build")
 ```
 
-The first line is 112 characters as the formatter emits it today;
+The first line is 112 characters as 0.6.0 emits it;
 the three below it are 16, 38 and 73. Both are real: the shape is
 `InstallUtilitiesTest.java` in the trial corpus.
 
