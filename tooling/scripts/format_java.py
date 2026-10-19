@@ -9151,6 +9151,13 @@ def _emit_receiver_parameter(
         # terminates the comment.
         emitter.write_raw_lines(text, strip_trailing_ws=True)
         return
+    # A multi-row `/* */` comment has its own rows joined here too,
+    # so `/* line one\n line two */` becomes
+    # `/* line one line two */`. Accepted: no text is lost, the
+    # output parses and converges, and the formatter normalizes
+    # comment whitespace elsewhere by design. Only a `//` comment
+    # changes MEANING when its newline goes, which is why that is
+    # the case singled out above.
     emitter.write(
         " ".join(row.strip() for row in text.split("\n") if row.strip())
     )

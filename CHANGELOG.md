@@ -1211,6 +1211,15 @@ The refusal is narrow. An ordinary union still formats, and a
 comment among the catch BODY's statements is untouched — that is an
 ordinary statement comment.
 
+It does reach the SINGLE-TYPE header too, which is an
+adopter-visible change: `catch (Exception /* why */ e)` was
+formatted by 0.6.0 and is refused now, so a file containing one is
+skipped entirely. That is deliberate. 0.6.0 did not handle the
+comment, it DELETED it — verified — and the whole point of the
+refusal is that losing the developer's text silently is worse than
+declining to format the file loudly. The file is left
+byte-identical and the CLI prints REFUSED and exits 0.
+
 Seven tests cover it: the three positions, both comment syntaxes,
 the narrowness in both directions. Five fail if the refusal is
 removed. No corpus file has a comment in a catch header, which is
