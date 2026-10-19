@@ -10056,17 +10056,30 @@ def _emit_argument_list(
         # site. Warn, with a remedy that points at the source
         # layout rather than at an operand split the engine
         # never made.
-        _fire_wrap_overflow_advisory(
-            emitter,
-            node,
-            since,
-            "argument list",
-            remedy=(
-                "Its rows are preserved verbatim because the list "
-                "carries a comment or a CSOFF region. Shorten the "
-                "comment or re-break the list in the source."
-            ),
-        )
+        #
+        # NOT inside a CSOFF region, though. This path is taken
+        # for two different reasons — interleaved comments, and
+        # a CSOFF region — and only the first wants an advisory.
+        # A CSOFF region is the developer having already told
+        # checkstyle to ignore these lines, so there is no build
+        # failure coming and the advisory is pure noise. The
+        # per-line `_line_length_exempt` filter cannot catch this:
+        # it models the `ignorePattern`, while CSOFF is a separate
+        # `SuppressWithPlainTextCommentFilter` mechanism that needs
+        # the file, not the line. Measured on a real adopter: every
+        # one of the 14 this fired on corpus-wide was CSOFF'd.
+        if not _is_inside_csoff_region(source, node):
+            _fire_wrap_overflow_advisory(
+                emitter,
+                node,
+                since,
+                "argument list",
+                remedy=(
+                    "Its rows are preserved verbatim because the "
+                    "list carries a comment. Shorten the comment or "
+                    "re-break the list in the source."
+                ),
+            )
         return
 
     # 0.5.0 item 10 — spec C6 extension to method/constructor

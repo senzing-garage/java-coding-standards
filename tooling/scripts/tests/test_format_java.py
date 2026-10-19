@@ -6480,6 +6480,32 @@ class TestPreservedArgListWarnsOnOverflow:
         limit, so preserving a short commented list is silent."""
         assert self._warn("        f(/* c */ a, b);") == []
 
+    def test_a_csoff_region_is_not_advised_about(self) -> None:
+        """A CSOFF region is the developer having already told
+        checkstyle to ignore these lines, so no build failure is
+        coming and an advisory would be pure noise.
+
+        This path is taken for two different reasons — interleaved
+        comments and a CSOFF region — and only the first wants a
+        warning. Found by running the consumer trial: all 14
+        advisories this fired on corpus-wide were inside CSOFF
+        regions, i.e. it was firing exclusively where checkstyle
+        would not complain.
+
+        The per-line exemption filter cannot catch this. It models
+        the `ignorePattern`; CSOFF is a separate
+        `SuppressWithPlainTextCommentFilter` mechanism that needs
+        the file, not the line.
+        """
+        warnings = self._warn(
+            "        // CSOFF\n"
+            "        doSomething(/* a very long leading "
+            "explanation here */ alphaBetaGamma, "
+            "deltaEpsilonZeta, etaThetaIotaKappa);\n"
+            "        // CSON"
+        )
+        assert warnings == [], warnings
+
 
 class TestCStyleArrayDimensionsSurvive:
     """Java allows the brackets on either side of the name:

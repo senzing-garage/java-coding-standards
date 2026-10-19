@@ -1967,9 +1967,27 @@ does not parse). Preserving the rows is the fix; the advisory is
 what keeps the fix from trading a loud defect for a quiet one. The
 remedy text points at the source layout rather than at an operand
 split, because no break point on this path was the formatter's to
-choose. Output is unchanged on all 504 trial files — this adds
-advisories (289 to 302) and nothing else, and every one of the 14 it
-fires on is a line checkstyle already rejects.
+choose.
+
+It does NOT fire inside a `// CSOFF` region. This path is taken for
+two different reasons — interleaved comments, and a CSOFF region —
+and only the first wants an advisory. A CSOFF region is the
+developer having already told checkstyle to ignore those lines, so
+no build failure is coming and a warning there is pure noise. The
+per-line exemption filter cannot catch this: it models the
+`ignorePattern`, while CSOFF is a separate
+`SuppressWithPlainTextCommentFilter` mechanism that needs the file,
+not the line.
+
+That distinction came out of the consumer trial, which is the only
+place it could have. The first version of this advisory fired on 14
+sites corpus-wide and **every one of them was inside a CSOFF
+region** — it warned exclusively where checkstyle would not
+complain. Corpus advisories are therefore unchanged at 289, and
+output is unchanged on all 504 trial files. The gap it closes is
+real but unrepresented in the corpus: a comment-bearing list that
+overflows OUTSIDE a CSOFF region, pinned by unit test rather than
+by a corpus file.
 
 ### Method chains: the back-off test no longer reads source rows
 
