@@ -1497,10 +1497,16 @@ a `ValueError`, which `format_file.py` reports as PARSE ERROR and
 exits 1 on -- a crash on valid Java, and an exit code that stops
 an adopter's build or format-on-save hook.
 
-The rows are now joined into one. Stripping each row's own
-indentation cannot corrupt a literal, because a Java string
-literal cannot contain a raw newline, so nothing collapsed here
-is ever inside one.
+The rows are now joined into one, EXCEPT when the parameter
+carries a `//` comment. Stripping each row's own indentation
+cannot corrupt a literal, because a Java string literal cannot
+contain a raw newline, so nothing collapsed is ever inside one —
+but a `//` comment is terminated by its newline and nothing else,
+so joining `A // why` with `this` yields `A // why this,`, which
+comments out both the parameter and the comma and does not parse.
+Those rows are preserved instead, which keeps the newline that
+terminates the comment. A `/* */` comment has an explicit
+terminator and still joins.
 
 Unlike the dimensions defect above this one is NEW in 0.7.0, and
 it replaced something worse: 0.6.0 did not crash because it
@@ -2077,9 +2083,9 @@ same commit. `requirements.txt` now says so in a comment.
 
 ### Verification
 
-- 968/968 pytest on the pinned tree-sitter 0.26.0. That figure needs a
+- 970/970 pytest on the pinned tree-sitter 0.26.0. That figure needs a
   consumer checkout: `test_fuzz_corpus.py` skip-marks when no corpus is
-  found, so a standalone clone collects 758 and the 210 missing
+  found, so a standalone clone collects 760 and the 210 missing
   parametrisations are exactly the AST-equivalence and idempotency
   checks — the properties this release most needs verified. The new
   `corpus-gate` CI job exists to supply that corpus. New fixtures

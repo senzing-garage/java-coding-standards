@@ -5707,10 +5707,24 @@ class TestArrayInitializerComments:
 
         The original defect did not drop comments, it corrupted the
         code around them; this pins the other half.
+
+        `re.DOTALL` matters: without it `.` does not match a
+        newline, so a multi-row block comment matched NOTHING and
+        this test passed over that case without checking it —
+        the one case most likely to lose text. Comparison is on
+        whitespace-normalized text because the formatter
+        re-indents a block comment's continuation rows.
         """
-        out = self._fmt(body)
-        for token in re.findall(r"//[^\n]*|/\*.*?\*/", body):
-            assert token.strip() in out, (token, out)
+        def _flat(text: str) -> str:
+            return " ".join(text.split())
+
+        out = _flat(self._fmt(body))
+        tokens = re.findall(
+            r"//[^\n]*|/\*.*?\*/", body, re.DOTALL
+        )
+        assert tokens, body
+        for token in tokens:
+            assert _flat(token) in out, (token, out)
 
     @pytest.mark.parametrize(
         "body", [body for _, body, _ in CASES],
@@ -6543,6 +6557,17 @@ class TestMultiRowReceiverParameterDoesNotCrash:
             source, warnings_out=[]
         ).decode()
 
+    @staticmethod
+    def _parses(text: str) -> bool:
+        tree = format_java.parse_source(text.encode())
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "ERROR" or node.is_missing:
+                return False
+            stack.extend(node.children)
+        return True
+
     def test_multi_row_receiver_is_joined_not_raised(self) -> None:
         out = self._fmt(
             "    void methodWithAVeryLongName(A\n"
@@ -6550,8 +6575,42 @@ class TestMultiRowReceiverParameterDoesNotCrash:
             " int epsilonZetaEtaTheta, int iotaKappaLambdaMu)\n"
             "    {\n    }"
         )
-        assert "A this," in out, out
-        assert "\n" not in "A this", out
+        # The receiver lands on ONE row: find the row carrying it
+        # and check `this` is on it. The first draft of this test
+        # asserted `"\n" not in "A this"` — a string literal, which
+        # can never fail and checked nothing.
+        rows = [r for r in out.split("\n") if "A this" in r]
+        assert len(rows) == 1, out
+        assert rows[0].rstrip().endswith("A this,"), out
+        assert self._parses(out), out
+
+    def test_line_comment_keeps_its_own_row(self) -> None:
+        """A `//` comment is terminated by its newline and nothing
+        else. Joining the rows would pull `this` and the comma
+        after it inside the comment — `A // why this,` — which
+        does not parse. The rows are kept instead.
+        """
+        out = self._fmt(
+            "    void methodWithAVeryLongName(A // why\n"
+            "            this, int alphaBetaGammaDelta,"
+            " int epsilonZetaEtaTheta, int iotaKappaLambdaMu)\n"
+            "    {\n    }"
+        )
+        assert "// why" in out, out
+        assert "// why this" not in out, out
+        assert self._parses(out), out
+
+    def test_block_comment_still_joins(self) -> None:
+        """A `/* */` comment has an explicit terminator, so the
+        rows can be joined without swallowing anything."""
+        out = self._fmt(
+            "    void methodWithAVeryLongName(A /* why */\n"
+            "            this, int alphaBetaGammaDelta,"
+            " int epsilonZetaEtaTheta, int iotaKappaLambdaMu)\n"
+            "    {\n    }"
+        )
+        assert "A /* why */ this," in out, out
+        assert self._parses(out), out
 
     def test_single_row_receiver_is_unchanged(self) -> None:
         out = self._fmt("    void m(A this)\n    {\n    }")

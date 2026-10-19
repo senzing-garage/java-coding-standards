@@ -8731,6 +8731,22 @@ def _emit_throws(
             emitter.write(",")
 
 
+def _contains_line_comment(source: bytes, node: Node) -> bool:
+    """True when `node` contains a `//` comment anywhere inside it.
+
+    A `//` comment is terminated by its newline and nothing else,
+    so any transform that removes that newline changes what the
+    comment swallows.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.type == "line_comment":
+            return True
+        stack.extend(current.children)
+    return False
+
+
 def _emit_trailing_dimensions(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -9124,11 +9140,20 @@ def _emit_receiver_parameter(
     and exits 1 on -- a crash on valid Java.
     """
     text = _node_source_text(source, node)
-    if "\n" in text:
-        text = " ".join(
-            row.strip() for row in text.split("\n") if row.strip()
-        )
-    emitter.write(text)
+    if "\n" not in text:
+        emitter.write(text)
+        return
+    if _contains_line_comment(source, node):
+        # A `//` comment runs to the end of its line, so joining
+        # the rows would pull `this` (and the comma after it)
+        # inside the comment: `A // why this,`. That does not
+        # parse. Keep the rows, which keeps the newline that
+        # terminates the comment.
+        emitter.write_raw_lines(text, strip_trailing_ws=True)
+        return
+    emitter.write(
+        " ".join(row.strip() for row in text.split("\n") if row.strip())
+    )
 
 
 def _emit_spread_parameter(
@@ -10030,9 +10055,9 @@ def _emit_argument_list(
             since,
             "argument list",
             remedy=(
-                "its rows are preserved verbatim because the list "
-                "carries a comment or a CSOFF region; shorten the "
-                "comment or re-break the list in the source"
+                "Its rows are preserved verbatim because the list "
+                "carries a comment or a CSOFF region. Shorten the "
+                "comment or re-break the list in the source."
             ),
         )
         return
