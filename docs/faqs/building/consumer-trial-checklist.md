@@ -199,16 +199,25 @@ mvn test                                                   # gate 2
 mvn javadoc:javadoc -P <profile-with-snippets-enabled>     # gate 3
 
 # Pre-format snapshot
-grep -cE '(@highlight|@end|@start|@link|@replace)' \
-    $(find src -name '*.java') > /tmp/pre-tokens.txt
+# Count token OCCURRENCES, not matching lines. `grep -c` counts
+# LINES containing a match, so a javadoc reflow that pulls two
+# `{@link}` tags onto one line reads as a loss when nothing was
+# lost. Measured: two sz-sdk-java-grpc files tripped exactly that
+# false positive during the 0.7.0 trial.
+for f in $(find src -name '*.java' | sort); do
+    echo "$f:$(grep -oE '(@highlight|@end|@start|@link|@replace)' \
+        "$f" | wc -l | tr -d ' ')"
+done > /tmp/pre-tokens.txt
 
 # Format
 python3 .java-coding-standards/tooling/scripts/format_file.py \
     src/main/java src/test/java src/demo/java
 
 # Gate 4 — token round-trip
-grep -cE '(@highlight|@end|@start|@link|@replace)' \
-    $(find src -name '*.java') > /tmp/post-tokens.txt
+for f in $(find src -name '*.java' | sort); do
+    echo "$f:$(grep -oE '(@highlight|@end|@start|@link|@replace)' \
+        "$f" | wc -l | tr -d ' ')"
+done > /tmp/post-tokens.txt
 diff /tmp/pre-tokens.txt /tmp/post-tokens.txt              # must be empty
 
 # Gate 5 — convergence. The gate is that formatting reaches a
