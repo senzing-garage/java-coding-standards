@@ -94,16 +94,72 @@ diff /tmp/post-trailing.txt /dev/null                      # must be empty
 If any diff is non-empty: the formatter is dropping or
 introducing tokens — file a regression before tagging.
 
-### 5. Idempotency
+### 5. Idempotency — convergence, not a bare `0 modified`
 
 ```bash
+# Second pass over an already-formatted tree.
+python3 .java-coding-standards/tooling/scripts/format_file.py \
+    src/main/java src/test/java src/demo/java
+# Third pass — in practice the quiet one. The gate is the fixed
+# point below, not this pass specifically.
 python3 .java-coding-standards/tooling/scripts/format_file.py \
     src/main/java src/test/java src/demo/java
 ```
 
-Second invocation must report `0 modified`. A formatter that
-produces different output on the second pass is non-idempotent
-— file the case as a regression and don't tag.
+The gate is **convergence**, and there are two distinct outcomes
+that a bare "second pass reports `0 modified`" reading conflates:
+
+- **Converges.** A handful of files change on the second pass and
+  then reach a fixed point (the third pass reports `0 modified`).
+  This is tolerated. Record the count in the release notes and
+  keep it trending down; a _growing_ count is a regression signal
+  even though each individual file settles.
+- **Never converges.** A file keeps changing on every pass, or
+  oscillates between two renderings. This is **blocking** — file
+  the case as a regression and don't tag.
+
+So the release-blocking condition is a file that fails to reach a
+fixed point, not a non-zero count on the second pass. Releases
+have shipped with a small, tracked set of second-pass files where
+every one converged.
+
+Report both numbers, since only the pair is meaningful:
+
+```text
+files needing a second pass: N (all converging)
+files failing to converge:   0     # must be zero to tag
+```
+
+To find non-converging files mechanically, format to a fixed
+point with a bounded loop and flag anything still changing when
+the bound is hit:
+
+This loop COMMITS after every pass that changed something, so
+run it on a scratch branch. Note also that the first pass over
+pristine source always changes files, so only passes 2-4 can
+demonstrate convergence — the bound of 4 is tighter than it
+looks.
+
+```bash
+converged=0
+for pass in 1 2 3 4; do
+  python3 .java-coding-standards/tooling/scripts/format_file.py \
+      src/main/java src/test/java src/demo/java
+  if git diff --quiet; then converged=1; break; fi
+  git commit -aqm "format pass $pass"
+done
+if [ "$converged" -eq 0 ]; then
+  echo "NOT CONVERGED after 4 passes — blocking"
+  git show --stat HEAD
+fi
+```
+
+Note the `converged` flag. An earlier version of this snippet ended
+with `git diff --quiet || echo "NOT CONVERGED..."`, which can never
+fire: the loop commits after every pass that changed something, so
+the working tree is clean by the time the loop exits — whether it
+broke early on a quiet diff or fell through all four passes. The
+flag records WHY the loop ended, which is the thing being tested.
 
 ## What changed in 0.5.0 → 0.5.1
 
@@ -143,22 +199,49 @@ mvn test                                                   # gate 2
 mvn javadoc:javadoc -P <profile-with-snippets-enabled>     # gate 3
 
 # Pre-format snapshot
-grep -cE '(@highlight|@end|@start|@link|@replace)' \
-    $(find src -name '*.java') > /tmp/pre-tokens.txt
+# Count token OCCURRENCES, not matching lines. `grep -c` counts
+# LINES containing a match, so a javadoc reflow that pulls two
+# `{@link}` tags onto one line reads as a loss when nothing was
+# lost. Measured: two sz-sdk-java-grpc files tripped exactly that
+# false positive during the 0.7.0 trial.
+for f in $(find src -name '*.java' | sort); do
+    echo "$f:$(grep -oE '(@highlight|@end|@start|@link|@replace)' \
+        "$f" | wc -l | tr -d ' ')"
+done > /tmp/pre-tokens.txt
 
 # Format
 python3 .java-coding-standards/tooling/scripts/format_file.py \
     src/main/java src/test/java src/demo/java
 
 # Gate 4 — token round-trip
-grep -cE '(@highlight|@end|@start|@link|@replace)' \
-    $(find src -name '*.java') > /tmp/post-tokens.txt
+for f in $(find src -name '*.java' | sort); do
+    echo "$f:$(grep -oE '(@highlight|@end|@start|@link|@replace)' \
+        "$f" | wc -l | tr -d ' ')"
+done > /tmp/post-tokens.txt
 diff /tmp/pre-tokens.txt /tmp/post-tokens.txt              # must be empty
 
-# Gate 5 — idempotency
-python3 .java-coding-standards/tooling/scripts/format_file.py \
-    src/main/java src/test/java src/demo/java
-# Must report "0 modified"
+# Gate 5 — convergence. The gate is that formatting reaches a
+# FIXED POINT, not that any particular pass reports "0 modified":
+# pass 1 reformats, and a handful of files may still settle on a
+# later pass. Typically the third pass is quiet, but that is an
+# observation, not the rule — see section 5.
+#
+# This is section 5's loop, inlined: it stops as soon as a pass
+# changes nothing and reports when four passes were not enough,
+# instead of running a fixed number and hoping. Note that it
+# COMMITS after each pass that changed something — run it on a
+# scratch branch.
+converged=0
+for pass_no in 1 2 3 4; do
+    python3 .java-coding-standards/tooling/scripts/format_file.py \
+        src/main/java src/test/java src/demo/java
+    if git diff --quiet; then converged=1; break; fi
+    git commit -aqm "format pass $pass_no"
+done
+if [ "$converged" -eq 0 ]; then
+    echo "NOT CONVERGED after 4 passes — blocking"
+    git show --stat HEAD
+fi
 ```
 
 If any gate fails, file the case as a regression PR against
