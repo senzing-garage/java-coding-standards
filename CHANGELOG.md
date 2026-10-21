@@ -89,8 +89,8 @@ directly, because a green spellcheck does not mean US spelling.
   shape because the engine now picks its tier on correct
   information. Both become more compact and neither overflows.
   Expect that diff when adopting.
-- One fixture and five unit tests. Four of the six go red when
-  the fix is reverted — including a sweep across constant-name
+- One fixture and five unit tests. Five of the six go red when
+  the fix is reverted — the sweep among them — including a sweep across constant-name
   widths, so the invariant is pinned rather than one example. A
   single case would pass against a formatter that merely happened
   to break differently.

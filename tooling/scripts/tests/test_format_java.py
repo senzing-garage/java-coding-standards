@@ -6849,15 +6849,21 @@ class TestEnumConstantReservesItsSeparator:
             body.encode(), warnings_out=[]
         ).decode()
 
+    @classmethod
+    def _over_limit(cls, body: str) -> list[str]:
+        """Format `body` and return the rows past 80 columns."""
+        return [
+            row for row in cls._fmt(body).split("\n") if len(row) > 80
+        ]
+
     def test_packed_arguments_do_not_overflow(self) -> None:
-        out = self._fmt(
+        over = self._over_limit(
             "public enum SzFlag\n{\n"
             "    SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(\n"
             "        SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS,\n"
             "        SZ_RECORD_PREVIEW_SET),\n\n"
             "    SZ_OTHER(1L, SZ_RECORD_PREVIEW_SET);\n}\n"
         )
-        over = [l for l in out.split("\n") if len(l) > 80]
         assert over == [], over
 
     def test_last_constant_reserves_its_semicolon(self) -> None:
@@ -6870,29 +6876,32 @@ class TestEnumConstantReservesItsSeparator:
         same packed constant to the end of the enum: unfixed it
         emits 81 columns there too.
         """
-        out = self._fmt(
+        body = (
             "public enum E\n{\n"
             "    SHORT_ONE(1L),\n\n"
             "    SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(\n"
             "        SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS,\n"
             "        SZ_RECORD_PREVIEW_SET);\n}\n"
         )
-        over = [l for l in out.split("\n") if len(l) > 80]
-        assert over == [], over
-        assert out.rstrip().endswith(";\n}") or ";" in out, out
+        assert self._over_limit(body) == [], self._fmt(body)
+        # The constant really is last, so it really is the `;` arm
+        # that ran. An earlier version of this line was
+        # `endswith(...) or ";" in out`, whose second branch is
+        # true for any input containing a semicolon -- which this
+        # one does. It asserted nothing.
+        assert self._fmt(body).rstrip().endswith(";\n}"), self._fmt(body)
 
     def test_constant_with_a_class_body_is_unaffected(self) -> None:
         """A constant carrying a body ends at its closing brace,
         and the separator follows that. The reserve wraps the whole
         constant, so this shape stays correct rather than gaining
         a stray column."""
-        out = self._fmt(
+        over = self._over_limit(
             "public enum E\n{\n"
             "    PLUS(\"plus\", 1)\n    {\n"
             "        int f() { return 1; }\n    },\n\n"
             "    MINUS(2L);\n}\n"
         )
-        over = [l for l in out.split("\n") if len(l) > 80]
         assert over == [], over
 
     def test_no_enum_constant_row_exceeds_the_limit(self) -> None:
@@ -6906,12 +6915,11 @@ class TestEnumConstantReservesItsSeparator:
         """
         for pad in range(0, 24):
             name = "A" * (10 + pad)
-            out = self._fmt(
+            over = self._over_limit(
                 "public enum E\n{\n"
                 f"    {name}(SomeClass.A_CONSTANT_VALUE, ANOTHER_VALUE),\n\n"
                 "    TRAILING(1L);\n}\n"
             )
-            over = [l for l in out.split("\n") if len(l) > 80]
             # Only a token that cannot be split may exceed the
             # limit, and these inputs all have a break point.
             assert over == [], (pad, over)
@@ -6931,7 +6939,7 @@ class TestEnumConstantReservesItsSeparator:
         out = format_java.format_source(
             src.encode(), warnings_out=warnings
         ).decode()
-        widest = max(len(l) for l in out.split("\n"))
+        widest = max(len(row) for row in out.split("\n"))
         assert widest > 80, out
         assert warnings, "a row that cannot fit must warn"
         assert warnings[0].width == widest, (warnings[0].width, widest)
