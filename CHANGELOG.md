@@ -10,6 +10,68 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-21
+
+Bug-fix release. One defect, found while adopting 0.7.0 in
+`sz-sdk-java`. Adopters on 0.7.0 should take this before
+formatting; adopters on 0.6.0 or earlier can go straight to it.
+
+### Fixed
+
+**An enum constant was measured one column short, and could emit
+an 81-column row without warning.**
+
+A constant's trailing `,` or `;` is written by
+`_emit_enum_body_members` AFTER the constant itself returns, so
+the constant's own wrap engine only avoids an overflow if it is
+told the separator is coming. It was not. An argument list could
+pack to exactly 80, believe it fit, and then take the row to 81:
+
+```java
+// 0.7.0 — 81 columns
+SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(
+    SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS, SZ_RECORD_PREVIEW_SET),
+
+// 0.7.1 — the shape 0.6.0 produced, widest row 57
+SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(
+    SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS,
+    SZ_RECORD_PREVIEW_SET),
+```
+
+**Silently.** No advisory fired, because from the engine's side
+nothing failed — no cascade reached a warning exit. It had simply
+been given the wrong limit. This is the one case where an
+over-long row carries no advisory, which is why it reached a
+consumer rather than being caught by the advisory channel.
+
+This is a **0.7.0 regression**: 0.6.0 emits the correct shape for
+the same input. A declarator already reserves one column for its
+`;` the same way; this site was missed when that reserve was
+added.
+
+The same missing column under-reported advisory widths by one for
+enum constants — an identifier that cannot be split produced a
+92-column row and the advisory called it 91. Confirming that was how the
+cause was pinned down.
+
+### Verification
+
+- **Three of the 504 trial files change.** Lines over 80 fall from
+  1557 to **1556**; the corpus is 7 lines shorter; advisories stay
+  at 289; convergence is unchanged (the same single file needs a
+  second pass and settles on its third); no parse errors, no
+  refusals.
+- Only one of the three is an overflow fix. The other two —
+  `SzReplicatorOption.java` and `SzGrpcServerOption.java` — change
+  shape because the engine now picks its tier on correct
+  information. Both become more compact and neither overflows.
+  Expect that diff when adopting.
+- One fixture and three unit tests. All four go red when the fix
+  is reverted — including a sweep across constant-name widths, so
+  the invariant is pinned rather than one example. A single case
+  would pass against a formatter that merely happened to break
+  differently.
+
 ## [0.7.0] - 2026-10-19
 
 Formatting release. Started as a bug-fix pass over defects

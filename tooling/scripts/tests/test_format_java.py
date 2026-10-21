@@ -6824,3 +6824,79 @@ class TestUncommonShapesNeverCorrupt:
         assert (
             self._signature(out) == self._signature(source)
         ), (source, out)
+
+
+class TestEnumConstantReservesItsSeparator:
+    """An enum constant's trailing `,` or `;` is written by the
+    PARENT after the constant returns, so the constant's own wrap
+    engine only avoids overflow if it is told the separator is
+    coming.
+
+    It was not. Every enum constant was measured one column short.
+    Usually harmless; once it packed an argument list to exactly 80
+    and the separator took the row to 81 -- silently, because from
+    the engine's side nothing failed and no cascade reached a
+    warning exit. 0.6.0 emitted the same input correctly, so this
+    was a 0.7.0 regression, found adopting 0.7.0 in `sz-sdk-java`.
+
+    The declarator reserves one column for its `;` the same way.
+    This site was simply missed.
+    """
+
+    @staticmethod
+    def _fmt(body: str) -> str:
+        return format_java.format_source(
+            body.encode(), warnings_out=[]
+        ).decode()
+
+    def test_packed_arguments_do_not_overflow(self) -> None:
+        out = self._fmt(
+            "public enum SzFlag\n{\n"
+            "    SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(\n"
+            "        SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS,\n"
+            "        SZ_RECORD_PREVIEW_SET),\n\n"
+            "    SZ_OTHER(1L, SZ_RECORD_PREVIEW_SET);\n}\n"
+        )
+        over = [l for l in out.split("\n") if len(l) > 80]
+        assert over == [], over
+
+    def test_no_enum_constant_row_exceeds_the_limit(self) -> None:
+        """The invariant, not one shape: sweep constant-name widths
+        across the boundary so a row that lands at exactly 80
+        before its separator is caught wherever it occurs.
+
+        A single example would pass against a formatter that merely
+        happened to break differently; only the sweep pins that no
+        width packs to 80-plus-separator.
+        """
+        for pad in range(0, 24):
+            name = "A" * (10 + pad)
+            out = self._fmt(
+                "public enum E\n{\n"
+                f"    {name}(SomeClass.A_CONSTANT_VALUE, ANOTHER_VALUE),\n\n"
+                "    TRAILING(1L);\n}\n"
+            )
+            over = [l for l in out.split("\n") if len(l) > 80]
+            # Only a token that cannot be split may exceed the
+            # limit, and these inputs all have a break point.
+            assert over == [], (pad, over)
+
+    def test_advisory_width_matches_the_emitted_row(self) -> None:
+        """The same missing reserve under-reported advisory widths
+        by one, which is how the cause was confirmed: an
+        identifier that cannot be split produced a 92-column row
+        and the advisory called it 91."""
+        warnings: list = []
+        src = (
+            "public enum E\n{\n"
+            "    A_CONSTANT(SomeClass."
+            "AN_EXTREMELY_LONG_STATIC_CONSTANT_NAME_THAT_CANNOT"
+            "_POSSIBLY_FIT_ANYWHERE);\n}\n"
+        )
+        out = format_java.format_source(
+            src.encode(), warnings_out=warnings
+        ).decode()
+        widest = max(len(l) for l in out.split("\n"))
+        assert widest > 80, out
+        assert warnings, "a row that cannot fit must warn"
+        assert warnings[0].width == widest, (warnings[0].width, widest)
