@@ -10,6 +10,98 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-21
+
+Bug-fix release. One defect, found while adopting 0.7.0 in
+`sz-sdk-java`. Adopters on 0.7.0 should take this before
+formatting; adopters on 0.6.0 or earlier can go straight to it.
+
+### Fixed
+
+**An enum constant was measured one column short, and could emit
+an 81-column row without warning.**
+
+A constant's trailing `,` or `;` is written by
+`_emit_enum_body_members` AFTER the constant itself returns, so
+the constant's own wrap engine only avoids an overflow if it is
+told the separator is coming. It was not. An argument list could
+pack to exactly 80, believe it fit, and then take the row to 81:
+
+```java
+// 0.7.0 — 81 columns
+SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(
+    SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS, SZ_RECORD_PREVIEW_SET),
+
+// 0.7.1 — the shape 0.6.0 produced, widest row 57
+SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(
+    SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS,
+    SZ_RECORD_PREVIEW_SET),
+```
+
+**Silently.** No advisory fired, because from the engine's side
+nothing failed — no cascade reached a warning exit. It had simply
+been given the wrong limit. This is the one case where an
+over-long row carries no advisory, which is why it reached a
+consumer rather than being caught by the advisory channel.
+
+This is a **0.7.0 regression**: 0.6.0 emits the correct shape for
+the same input. A declarator already reserves one column for its
+`;` the same way; this site was missed when that reserve was
+added.
+
+The same missing column under-reported advisory widths by one for
+enum constants — an identifier that cannot be split produced a
+92-column row and the advisory called it 91. Confirming that was how the
+cause was pinned down.
+
+### Changed
+
+**US spelling throughout.** Seven British spellings introduced in
+0.7.0 — `modelling`, `behaviour`, `recognise`, `judgement`,
+`favour` — are corrected across the CHANGELOG, the standards
+document, the formatter and its tests. No formatter change.
+
+They reached a release through two separate gaps, both worth
+knowing before trusting spellcheck to catch this class of thing:
+
+- **`CHANGELOG.md` is in this repository's cspell `ignorePaths`**,
+  so it is never checked at all. Three of the seven were there and
+  were invisible to CI.
+- **cspell's dictionary accepts `modelling`, `judgement` and
+  `favour`** as ordinary words. The remaining four sat in files
+  that ARE checked, and passed anyway.
+
+Only `behaviour`, `recognise` and `behavioural` are rejected by
+the dictionary, which is why `behavioural` alone failed
+spellcheck repeatedly during 0.7.0 while the others passed
+unnoticed. The practical rule: grep the British/US pairs
+directly, because a green spellcheck does not mean US spelling.
+
+### Verification
+
+- **Three of the 504 trial files change.** Lines over 80 fall from
+  1557 to **1556**; the corpus is 7 lines shorter; advisories stay
+  at 289; convergence is unchanged (the same single file needs a
+  second pass and settles on its third); no parse errors, no
+  refusals.
+- Only one of the three is an overflow fix. The other two —
+  `SzReplicatorOption.java` and `SzGrpcServerOption.java` — change
+  shape because the engine now picks its tier on correct
+  information. Both become more compact and neither overflows.
+  Expect that diff when adopting.
+- One fixture and five unit tests. Five of the six go red when
+  the fix is reverted — the sweep among them — including a sweep across constant-name
+  widths, so the invariant is pinned rather than one example. A
+  single case would pass against a formatter that merely happened
+  to break differently.
+- Both arms are covered. `,` and `;` are written from two arms of
+  the same `if`, and the reserve has to serve both, so the packed
+  constant is tested in the middle of an enum and again as its
+  last member. The sixth test is a control: a constant carrying a
+  class body passes with or without the fix, which is the point —
+  it shows the reserve does not disturb a shape that was already
+  correct.
+
 ## [0.7.0] - 2026-10-19
 
 Formatting release. Started as a bug-fix pass over defects
@@ -1317,7 +1409,7 @@ so the formatter's output becomes a function of its own previous
 output: the failure family this release exists to remove. A
 candidate is therefore replayed through one simulated following
 pass and adopted only if it reproduces itself. Without the check,
-seven corpus files stopped converging; with the check modelling
+seven corpus files stopped converging; with the check modeling
 only `{@`/`<` and not the `@` block tag, ordinary prose containing
 a word like `@Override` fails to converge on the second pass — see
 `javadoc_reflow/25_block_tag_word_is_a_boundary`. That construct
@@ -1940,7 +2032,7 @@ That shift no longer runs. The width-triggered preservation it
 served is gone (see "a dead preservation path" below), and the two
 cases that survive — interleaved comments, and `CSOFF` regions —
 emit verbatim on purpose, because their columns carry meaning. So
-the shipped behaviour is: preserved rows keep the author's columns
+the shipped behavior is: preserved rows keep the author's columns
 and do not follow a re-indented statement. The standards document
 said the opposite until this was checked against the formatter.
 
@@ -2499,7 +2591,7 @@ overflowing).
 
 - **`<pre>` block interior preserved verbatim.** Javadoc
   reflow (which fills paragraph lines to near 80 chars)
-  now recognises both the raw `<pre>` and the HTML-escaped
+  now recognizes both the raw `<pre>` and the HTML-escaped
   `&lt;pre&gt;` forms (used when `<pre>` sits inside
   another HTML element and must be escaped). Content
   between `<pre>` and `</pre>` — including ASCII class

@@ -4951,7 +4951,7 @@ class TestJavadocReflowIsBoundary:
     """A candidate line that would end a prose run on the next pass.
 
     Mirrors both boundary mechanisms in `_emit_javadoc_block`. The
-    `@`-block-tag case is the one that matters: modelling only the
+    `@`-block-tag case is the one that matters: modeling only the
     `{@`/`<` starters let reflow move a word like `@Override` to the
     head of a line, which the next pass read as structural and
     repacked around — output becoming a function of previous output.
@@ -6824,3 +6824,122 @@ class TestUncommonShapesNeverCorrupt:
         assert (
             self._signature(out) == self._signature(source)
         ), (source, out)
+
+
+class TestEnumConstantReservesItsSeparator:
+    """An enum constant's trailing `,` or `;` is written by the
+    PARENT after the constant returns, so the constant's own wrap
+    engine only avoids overflow if it is told the separator is
+    coming.
+
+    It was not. Every enum constant was measured one column short.
+    Usually harmless; once it packed an argument list to exactly 80
+    and the separator took the row to 81 -- silently, because from
+    the engine's side nothing failed and no cascade reached a
+    warning exit. 0.6.0 emitted the same input correctly, so this
+    was a 0.7.0 regression, found adopting 0.7.0 in `sz-sdk-java`.
+
+    The declarator reserves one column for its `;` the same way.
+    This site was simply missed.
+    """
+
+    @staticmethod
+    def _fmt(body: str) -> str:
+        return format_java.format_source(
+            body.encode(), warnings_out=[]
+        ).decode()
+
+    @classmethod
+    def _over_limit(cls, body: str) -> list[str]:
+        """Format `body` and return the rows past 80 columns."""
+        return [
+            row for row in cls._fmt(body).split("\n") if len(row) > 80
+        ]
+
+    def test_packed_arguments_do_not_overflow(self) -> None:
+        over = self._over_limit(
+            "public enum SzFlag\n{\n"
+            "    SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(\n"
+            "        SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS,\n"
+            "        SZ_RECORD_PREVIEW_SET),\n\n"
+            "    SZ_OTHER(1L, SZ_RECORD_PREVIEW_SET);\n}\n"
+        )
+        assert over == [], over
+
+    def test_last_constant_reserves_its_semicolon(self) -> None:
+        """The `;` branch, not just the `,` branch.
+
+        `_emit_enum_body_members` writes `;` after the LAST
+        constant and `,` after every other, from two arms of the
+        same `if`. The reserve has to cover both. The overflow
+        case above only exercises the comma arm, so this moves the
+        same packed constant to the end of the enum: unfixed it
+        emits 81 columns there too.
+        """
+        body = (
+            "public enum E\n{\n"
+            "    SHORT_ONE(1L),\n\n"
+            "    SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(\n"
+            "        SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS,\n"
+            "        SZ_RECORD_PREVIEW_SET);\n}\n"
+        )
+        assert self._over_limit(body) == [], self._fmt(body)
+        # The constant really is last, so it really is the `;` arm
+        # that ran. An earlier version of this line was
+        # `endswith(...) or ";" in out`, whose second branch is
+        # true for any input containing a semicolon -- which this
+        # one does. It asserted nothing.
+        assert self._fmt(body).rstrip().endswith(";\n}"), self._fmt(body)
+
+    def test_constant_with_a_class_body_is_unaffected(self) -> None:
+        """A constant carrying a body ends at its closing brace,
+        and the separator follows that. The reserve wraps the whole
+        constant, so this shape stays correct rather than gaining
+        a stray column."""
+        over = self._over_limit(
+            "public enum E\n{\n"
+            "    PLUS(\"plus\", 1)\n    {\n"
+            "        int f() { return 1; }\n    },\n\n"
+            "    MINUS(2L);\n}\n"
+        )
+        assert over == [], over
+
+    def test_no_enum_constant_row_exceeds_the_limit(self) -> None:
+        """The invariant, not one shape: sweep constant-name widths
+        across the boundary so a row that lands at exactly 80
+        before its separator is caught wherever it occurs.
+
+        A single example would pass against a formatter that merely
+        happened to break differently; only the sweep pins that no
+        width packs to 80-plus-separator.
+        """
+        for pad in range(0, 24):
+            name = "A" * (10 + pad)
+            over = self._over_limit(
+                "public enum E\n{\n"
+                f"    {name}(SomeClass.A_CONSTANT_VALUE, ANOTHER_VALUE),\n\n"
+                "    TRAILING(1L);\n}\n"
+            )
+            # Only a token that cannot be split may exceed the
+            # limit, and these inputs all have a break point.
+            assert over == [], (pad, over)
+
+    def test_advisory_width_matches_the_emitted_row(self) -> None:
+        """The same missing reserve under-reported advisory widths
+        by one, which is how the cause was confirmed: an
+        identifier that cannot be split produced a 92-column row
+        and the advisory called it 91."""
+        warnings: list = []
+        src = (
+            "public enum E\n{\n"
+            "    A_CONSTANT(SomeClass."
+            "AN_EXTREMELY_LONG_STATIC_CONSTANT_NAME_THAT_CANNOT"
+            "_POSSIBLY_FIT_ANYWHERE);\n}\n"
+        )
+        out = format_java.format_source(
+            src.encode(), warnings_out=warnings
+        ).decode()
+        widest = max(len(row) for row in out.split("\n"))
+        assert widest > 80, out
+        assert warnings, "a row that cannot fit must warn"
+        assert warnings[0].width == widest, (warnings[0].width, widest)

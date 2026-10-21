@@ -1239,7 +1239,7 @@ case — a nested call's continuation sits at its own paren column,
 strictly deeper than its siblings and so never ambiguous, and it
 still breaks the list. Uniformity is the point: one question is
 asked of every argument at every priority, rather than a
-per-construct judgement about whether a given continuation happens
+per-construct judgment about whether a given continuation happens
 to be confusable.
 
 This applies to any argument complex enough to wrap — a nested
@@ -3043,7 +3043,7 @@ leading `@` block tag, an `<li>`, an indent of its own — ends the
 paragraph entirely. Moving any of those to the head of a line
 changes how the paragraph is grouped on the next formatting pass,
 and the pass after that can reflow it differently. A layout that
-would do this is rejected in favour of the previous one, because a
+would do this is rejected in favor of the previous one, because a
 stable layout beats a prettier one that does not survive being
 formatted twice. In practice this leaves a small number of
 paragraphs — those whose tag is long enough that it can only sit on

@@ -4098,7 +4098,7 @@ def _javadoc_reflow_is_boundary(line: str) -> bool:
     token, `{@snippet`, CSOFF/CSON, or an indent of its own), and
     within a run the `{@`/`<` starters split into sub-paragraphs.
 
-    Modelling only the `{@`/`<` starters is not enough. Reflow can
+    Modeling only the `{@`/`<` starters is not enough. Reflow can
     move an `@`-prefixed word — `@Override` in ordinary prose, say
     — to the head of a line, which the next pass reads as a block
     tag and treats as structural, repacking the lines above it.
@@ -8252,7 +8252,19 @@ def _emit_enum_body_members(
             _emit_node(emitter, source, c)
             emitter.newline()
         emitter.write_indent()
-        _emit_node(emitter, source, const)
+        # The `,` or `;` below is written AFTER the constant returns,
+        # so the constant's own wrap engine has to be told it is
+        # coming. Without the reserve an argument list packs to
+        # exactly 80, believes it fits, and the separator takes the
+        # row to 81 -- silently, because from the engine's side
+        # nothing failed and no cascade reached a warning exit.
+        #
+        # The same reserve is applied to a declarator for its `;`.
+        # This site was missed, so every enum constant was measured
+        # one column short: usually harmless, once an overflow, and
+        # it also under-reported advisory widths by one.
+        with _extra_tail_reserve(emitter, 1):
+            _emit_node(emitter, source, const)
         if index < len(grouped) - 1:
             emitter.write(",")
         else:
