@@ -6860,6 +6860,41 @@ class TestEnumConstantReservesItsSeparator:
         over = [l for l in out.split("\n") if len(l) > 80]
         assert over == [], over
 
+    def test_last_constant_reserves_its_semicolon(self) -> None:
+        """The `;` branch, not just the `,` branch.
+
+        `_emit_enum_body_members` writes `;` after the LAST
+        constant and `,` after every other, from two arms of the
+        same `if`. The reserve has to cover both. The overflow
+        case above only exercises the comma arm, so this moves the
+        same packed constant to the end of the enum: unfixed it
+        emits 81 columns there too.
+        """
+        out = self._fmt(
+            "public enum E\n{\n"
+            "    SHORT_ONE(1L),\n\n"
+            "    SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS(\n"
+            "        SzFlags.SZ_ENTITY_INCLUDE_RECORD_FEATURE_DETAILS,\n"
+            "        SZ_RECORD_PREVIEW_SET);\n}\n"
+        )
+        over = [l for l in out.split("\n") if len(l) > 80]
+        assert over == [], over
+        assert out.rstrip().endswith(";\n}") or ";" in out, out
+
+    def test_constant_with_a_class_body_is_unaffected(self) -> None:
+        """A constant carrying a body ends at its closing brace,
+        and the separator follows that. The reserve wraps the whole
+        constant, so this shape stays correct rather than gaining
+        a stray column."""
+        out = self._fmt(
+            "public enum E\n{\n"
+            "    PLUS(\"plus\", 1)\n    {\n"
+            "        int f() { return 1; }\n    },\n\n"
+            "    MINUS(2L);\n}\n"
+        )
+        over = [l for l in out.split("\n") if len(l) > 80]
+        assert over == [], over
+
     def test_no_enum_constant_row_exceeds_the_limit(self) -> None:
         """The invariant, not one shape: sweep constant-name widths
         across the boundary so a row that lands at exactly 80

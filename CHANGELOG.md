@@ -54,6 +54,29 @@ enum constants — an identifier that cannot be split produced a
 92-column row and the advisory called it 91. Confirming that was how the
 cause was pinned down.
 
+### Changed
+
+**US spelling throughout.** Seven British spellings introduced in
+0.7.0 — `modelling`, `behaviour`, `recognise`, `judgement`,
+`favour` — are corrected across the CHANGELOG, the standards
+document, the formatter and its tests. No formatter change.
+
+They reached a release through two separate gaps, both worth
+knowing before trusting spellcheck to catch this class of thing:
+
+- **`CHANGELOG.md` is in this repository's cspell `ignorePaths`**,
+  so it is never checked at all. Three of the seven were there and
+  were invisible to CI.
+- **cspell's dictionary accepts `modelling`, `judgement` and
+  `favour`** as ordinary words. The remaining four sat in files
+  that ARE checked, and passed anyway.
+
+Only `behaviour`, `recognise` and `behavioural` are rejected by
+the dictionary, which is why `behavioural` alone failed
+spellcheck repeatedly during 0.7.0 while the others passed
+unnoticed. The practical rule: grep the British/US pairs
+directly, because a green spellcheck does not mean US spelling.
+
 ### Verification
 
 - **Three of the 504 trial files change.** Lines over 80 fall from
@@ -66,11 +89,18 @@ cause was pinned down.
   shape because the engine now picks its tier on correct
   information. Both become more compact and neither overflows.
   Expect that diff when adopting.
-- One fixture and three unit tests. All four go red when the fix
-  is reverted — including a sweep across constant-name widths, so
-  the invariant is pinned rather than one example. A single case
-  would pass against a formatter that merely happened to break
-  differently.
+- One fixture and five unit tests. Four of the six go red when
+  the fix is reverted — including a sweep across constant-name
+  widths, so the invariant is pinned rather than one example. A
+  single case would pass against a formatter that merely happened
+  to break differently.
+- Both arms are covered. `,` and `;` are written from two arms of
+  the same `if`, and the reserve has to serve both, so the packed
+  constant is tested in the middle of an enum and again as its
+  last member. The sixth test is a control: a constant carrying a
+  class body passes with or without the fix, which is the point —
+  it shows the reserve does not disturb a shape that was already
+  correct.
 
 ## [0.7.0] - 2026-10-19
 
