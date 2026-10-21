@@ -1379,7 +1379,7 @@ so the formatter's output becomes a function of its own previous
 output: the failure family this release exists to remove. A
 candidate is therefore replayed through one simulated following
 pass and adopted only if it reproduces itself. Without the check,
-seven corpus files stopped converging; with the check modelling
+seven corpus files stopped converging; with the check modeling
 only `{@`/`<` and not the `@` block tag, ordinary prose containing
 a word like `@Override` fails to converge on the second pass — see
 `javadoc_reflow/25_block_tag_word_is_a_boundary`. That construct
@@ -2002,7 +2002,7 @@ That shift no longer runs. The width-triggered preservation it
 served is gone (see "a dead preservation path" below), and the two
 cases that survive — interleaved comments, and `CSOFF` regions —
 emit verbatim on purpose, because their columns carry meaning. So
-the shipped behaviour is: preserved rows keep the author's columns
+the shipped behavior is: preserved rows keep the author's columns
 and do not follow a re-indented statement. The standards document
 said the opposite until this was checked against the formatter.
 
@@ -2561,7 +2561,7 @@ overflowing).
 
 - **`<pre>` block interior preserved verbatim.** Javadoc
   reflow (which fills paragraph lines to near 80 chars)
-  now recognises both the raw `<pre>` and the HTML-escaped
+  now recognizes both the raw `<pre>` and the HTML-escaped
   `&lt;pre&gt;` forms (used when `<pre>` sits inside
   another HTML element and must be escaped). Content
   between `<pre>` and `</pre>` — including ASCII class

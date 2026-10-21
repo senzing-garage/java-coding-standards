@@ -4098,7 +4098,7 @@ def _javadoc_reflow_is_boundary(line: str) -> bool:
     token, `{@snippet`, CSOFF/CSON, or an indent of its own), and
     within a run the `{@`/`<` starters split into sub-paragraphs.
 
-    Modelling only the `{@`/`<` starters is not enough. Reflow can
+    Modeling only the `{@`/`<` starters is not enough. Reflow can
     move an `@`-prefixed word — `@Override` in ordinary prose, say
     — to the head of a line, which the next pass reads as a block
     tag and treats as structural, repacking the lines above it.

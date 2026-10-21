@@ -4951,7 +4951,7 @@ class TestJavadocReflowIsBoundary:
     """A candidate line that would end a prose run on the next pass.
 
     Mirrors both boundary mechanisms in `_emit_javadoc_block`. The
-    `@`-block-tag case is the one that matters: modelling only the
+    `@`-block-tag case is the one that matters: modeling only the
     `{@`/`<` starters let reflow move a word like `@Override` to the
     head of a line, which the next pass read as structural and
     repacked around — output becoming a function of previous output.
