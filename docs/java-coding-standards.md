@@ -1242,6 +1242,30 @@ asked of every argument at every priority, rather than a
 per-construct judgment about whether a given continuation happens
 to be confusable.
 
+When the argument still has to wrap at priority 4, its
+continuation takes the ordinary +4 indent relative to the
+argument, never the argument column itself — a multi-argument
+call's `(` is not a governing paren (see "What does NOT count as
+a governing `(`"), and a flush continuation reintroduces the
+same ambiguity:
+
+```java
+                    // WRONG — `+ "file: " + initFile` reads as an
+                    // argument.
+                    multilineFormat(
+                        "Failed to read JSON initialization "
+                        + "file: " + initFile,
+                        "",
+                        "Cause: " + e.getMessage());
+
+                    // Right — the continuation is subordinate.
+                    multilineFormat(
+                        "Failed to read JSON initialization "
+                            + "file: " + initFile,
+                        "",
+                        "Cause: " + e.getMessage());
+```
+
 This applies to any argument complex enough to wrap — a nested
 call, a lambda, an object creation, or a compound expression such
 as a long string concatenation. It does not affect simple

@@ -5,6 +5,6 @@ public class Demo
         assertTrue(
             available < bytes,
             "More bytes available than should be (" + bytes
-            + "): " + available);
+                + "): " + available);
     }
 }

@@ -10,6 +10,50 @@ and this project adheres to
 
 ## [Unreleased]
 
+Bug-fix release in progress (0.7.2). Defects found while adopting
+0.7.1 in `data-mart-replicator`.
+
+### Fixed
+
+**A wrapped concatenation among several arguments lost its
+continuation indent
+([#53](https://github.com/senzing-garage/java-coding-standards/issues/53)).**
+
+When a binary-expression argument of a multi-argument call had to
+wrap, its operator rows were aligned with the argument's first
+operand, which is the column the sibling arguments occupy. The
+continuation then read as another argument, the shape the
+standards' arg-list anti-pattern section marks WRONG. A
+multi-argument call paren is not a governing `(` for spec C6, so
+the continuation now takes the ordinary +4 relative to the
+argument:
+
+```java
+// 0.7.1 — `+` row in the sibling arguments' column
+multilineFormat(
+    "Failed to read JSON initialization "
+    + "file: " + initFile,
+    "",
+    "Cause: " + e.getMessage());
+
+// 0.7.2
+multilineFormat(
+    "Failed to read JSON initialization "
+        + "file: " + initFile,
+    "",
+    "Cause: " + e.getMessage());
+```
+
+Because format-on-save reverted any hand correction, adopters
+could not work around it. **This is a 0.6.0 regression;** 0.5.x
+emitted the +4 shape. Boolean chains as arguments are affected the
+same way (`||` / `&&` rows now sit +4 under the first operand).
+Fixtures `arg_list_wrap/05`, `arg_list_wrap/07` and `binary_wrap/06`
+(renamed `06_boolean_chain_arg_continuation_under_p4`) had locked
+in the flush shape and are updated; `arg_list_wrap/24` is the
+regression case. The arg-list anti-pattern section of the standards
+now shows the priority-4 case explicitly.
+
 ## [0.7.1] - 2026-10-21
 
 Bug-fix release. One defect, found while adopting 0.7.0 in

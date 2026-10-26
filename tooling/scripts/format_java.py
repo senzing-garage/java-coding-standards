@@ -10123,12 +10123,12 @@ def _emit_argument_list(
     )
 
     def _emit_arg_with_optional_paren_align(arg: Node) -> None:
-        # Binary positional arg paren-align: when a positional
+        # Binary positional arg continuation: when a positional
         # arg is a binary expression, set `paren_align_col` to
-        # the arg's start column so the binary's continuation
-        # operators paren-align under the arg's first operand
-        # instead of falling back to the `block + 4`
-        # cumulative indent. This produces:
+        # the arg's start column + 4 so the binary's
+        # continuation operators sit one indent deeper than the
+        # arg's first operand instead of falling back to the
+        # `block + 4` cumulative indent. This produces:
         #
         #     assertTrue(cond,
         #                "msg "
@@ -10141,13 +10141,20 @@ def _emit_argument_list(
         #                "msg "
         #         + var + " more");      // `+` at col 8
         #
+        # and never the flush shape, where the `+` row sits in
+        # the sibling arguments' column and reads as another
+        # argument (the standards' "is it an argument or a
+        # continuation?" anti-pattern). A multi-arg call paren
+        # is not a governing `(` for spec C6, so the +4
+        # continuation rule applies relative to the arg.
+        #
         # Narrow to direct binary_expression (no paren unwrap)
         # to avoid the idempotency drift that originally
         # narrowed the single-arg call-paren extension to
         # binary args only.
         if arg.type == "binary_expression":
             arg_col = emitter.column
-            prev_align = emitter.set_paren_align_col(arg_col)
+            prev_align = emitter.set_paren_align_col(arg_col + 4)
             try:
                 _emit_node(emitter, source, arg)
             finally:
