@@ -327,7 +327,7 @@ combo" for "type" in the existing alignment text.
 
 Annotation arguments wrap per the method-call argument rule
 (priority 1 single-line, priority 2 two-line paren-aligned
-comma-packed, priority 3 paren-aligned one-per-line, priority 4
+balanced, priority 3 paren-aligned one-per-line, priority 4
 next-line single-indented one-per-line). Treat `@Annotation(...)`
 as a call site for wrapping purposes:
 
@@ -859,13 +859,13 @@ INACTIVE("inactive", 0);
 ### Constructor arguments overflow
 
 Arguments follow the method-call argument rule (priority 1
-single-line, priority 2 two-line paren-aligned comma-packed,
+single-line, priority 2 two-line paren-aligned balanced,
 priority 3 paren-aligned one-per-line, priority 4 next-line
 single-indented). Treat the enum constant + its parens like a
 method call for wrapping purposes:
 
 ```java
-// Priority 2 — paren-aligned, comma-packed:
+// Priority 2 — two-line, paren-aligned:
 ACTIVE("longer-active-label", 1, 100,
        List.of("primary", "fallback")),
 
@@ -1080,7 +1080,7 @@ Comparator<String> byLengthDesc = new Comparator<String>() {
 
 Method calls follow their own priority-by-line-length pattern for
 wrapping the argument list. The rules differ from declaration-side
-wrapping in two ways: a compact two-line "comma-packed" form is
+wrapping in two ways: a compact two-line paren-aligned form is
 allowed when the entire argument list fits on two lines, and the
 next-line fallback uses single indentation (4 spaces) rather than
 the double indentation used by method/record declarations.
@@ -1094,16 +1094,64 @@ receiver chain) fits within 80 characters, keep it on one line:
     someVar.someMethod(parameterA, parameterB, parameterC);
 ```
 
-**Priority 2: Two-line, paren-aligned, comma-packed** — if priority 1
+**Priority 2: Two-line, paren-aligned, balanced** — if priority 1
 overflows but the entire argument list fits on **exactly two lines**,
-break on a comma as late as possible (pack as many arguments as fit
-on the call line) and continue the rest on a single continuation
-line aligned to the first column after the opening parenthesis:
+break on the comma that **balances the two lines best** and continue
+the rest on a single continuation line aligned to the first column
+after the opening parenthesis:
 
 ```java
-    someVar.someMethod(parameterA, parameterB1 + parameterB2,
-                       parameterC, parameterD);
+    SzRecord record = new SzRecord("CUSTOMERS", "REC-001",
+                                   "NAME+DOB", null);
 ```
+
+Balance is measured on the text **after the opening parenthesis** on
+each line — the call line's arguments through its trailing comma,
+and the continuation line's arguments through the closing `)` and
+whatever follows it on that line, such as the statement's `;`. The
+indent and the call's prefix do not count: the continuation is
+paren-aligned, so the question is whether the *call* looks balanced,
+not the line. Of the splits that fit, choose the one whose two lines
+are closest in length; on a tie, the call line takes the longer
+half.
+
+Breaking as late as possible (the rule before 0.8.0) is wrong when an
+earlier break balances better:
+
+```java
+    // WRONG — the latest break leaves a stub on the continuation line
+    SzRecord record = new SzRecord("CUSTOMERS", "REC-001", "NAME+DOB",
+                                   null);
+```
+
+**A lopsided priority 2 falls to priority 3.** If even the best
+split leaves the continuation line shorter than **60%** of the call
+line, the argument list is placed one argument per line instead
+(priority 3, below):
+
+```java
+    // WRONG — `false);` is a stub, and no split does better
+    Boolean result = ServiceUtilities.getConfigBoolean(config, "enabled",
+                                                       false);
+
+    // CORRECT
+    Boolean result = ServiceUtilities.getConfigBoolean(config,
+                                                       "enabled",
+                                                       false);
+```
+
+Only a short continuation line is lopsided. A continuation line that
+is *longer* than the call line — typically a long last argument such
+as an assertion message or a ternary after short leading arguments —
+stays priority 2:
+
+```java
+    assertEquals(original, parsed,
+                 "Round-trip should work with negative values");
+```
+
+Two-argument calls are exempt from the 60% test, because their
+only priority 2 split is already the priority 3 shape.
 
 Priority 2 is skipped when the call is embedded in another
 expression — as a positional argument of another call, or as the
@@ -1122,21 +1170,21 @@ from the start of the call's line:
         COMMAND_LINE, CONFIG, "--config", List.of());
 ```
 
-This is the zero-arguments-on-the-call-line member of the same greedy
-family as priority 2, which is why it is numbered with it and tried
+This is the zero-arguments-on-the-call-line member of the same
+two-line family as priority 2, which is why it is numbered with it and tried
 immediately after it. The rule for the family is **two lines
 maximum**: zero or more arguments on the call line, and all remaining
 arguments on one continuation line. Priority 2 covers the "one or
 more on the call line" case; priority 2b covers "none on the call
 line". If the arguments will not fit on a single continuation line
-either, the greedy family is exhausted and the cascade falls through
+either, the two-line family is exhausted and the cascade falls through
 to priority 3.
 
 Like priority 2, this priority is skipped when the call is embedded
 in another expression — see [Nested-call wrap](#nested-call-wrap).
 
 **Priority 3: Paren-aligned, one argument per line** — if the
-argument list fits neither two-line greedy shape (priority 2 or 2b),
+argument list fits neither two-line shape (priority 2 or 2b),
 place each argument on its own line, with all arguments left-aligned
 to the first column after the opening parenthesis:
 
@@ -1316,7 +1364,7 @@ which a lambda is not, and rule 3 requires the chain's parent to
 be an argument list, which a lambda displaces.
 
 A **block-bodied lambda is opaque**. Its statements stand at their
-own indent and share their line with nothing, so the greedy tiers
+own indent and share their line with nothing, so the two-line tiers
 read perfectly well there:
 
 ```java
@@ -1333,7 +1381,7 @@ narrower: it governs the chain tail only when the chain is the
 already broken out onto its own line. A chain that is one of
 several arguments keeps its ordinary tail layout.
 
-In those positions the priority 2 comma-packed form reads badly,
+In those positions the priority 2 two-line form reads badly,
 because the reader must track a half-packed argument list and the
 enclosing construct at the same time. Three rules apply.
 
@@ -1349,8 +1397,8 @@ at single indentation from the start of the enclosing call's line:
             .build());
 ```
 
-**Rule 2 — skip the greedy tiers (priority 2 and 2b).** Within an
-embedded call's own argument list, neither two-line greedy tier is
+**Rule 2 — skip the two-line tiers (priority 2 and 2b).** Within an
+embedded call's own argument list, neither two-line tier is
 used; the cascade goes priority 1 → priority 3 → priority 4. This
 keeps the argument list a single readable column:
 
@@ -2503,16 +2551,21 @@ mechanical rule, not a partial wrap.
 
 ### Method-call priority 2 — "exactly two lines" definition
 
-The two-line, paren-aligned, comma-packed form applies when the
+The two-line, paren-aligned form applies when the
 entire argument list — from after the call's opening `(` through
 and including the closing `)` — spans **exactly two source lines**.
 The call's `methodName(` ends the first line; the closing `)`
 ends the second line.
 
-The break point is the **latest comma** at which both resulting
+The break point is the comma, among those at which both resulting
 lines fit ≤80 characters (paren-aligned continuation column on
-the second line). If no such comma exists, priority 2 does not
-apply and the formatter promotes to priority 3 (one arg per line).
+the second line), that **balances the two lines best**, measured
+on the text after the opening `(` — see
+[Method Call Arguments](#method-call-arguments). If no such comma
+exists, priority 2 does not apply and the formatter promotes to
+priority 2b, then priority 3 (one arg per line). If the best comma
+leaves the continuation line under 60% of the call line, priority
+2 is lopsided and the formatter goes straight to priority 3.
 
 **Edge-case clarifications:**
 
@@ -2520,12 +2573,13 @@ apply and the formatter promotes to priority 3 (one arg per line).
   context requires) counts as part of the second line.
 - A call with exactly two arguments where neither fits with the
   other on the first line is still priority 2 (mechanically, the
-  comma-packed form with the break landing on the only comma).
+  two-line form with the break landing on the only comma). The 60%
+  lopsidedness test does not apply to it.
 - When BOTH priority 2's two-line shape AND priority 3's
   one-per-line shape would fit, the formatter chooses priority 2
-  (higher priority). Priority 3 only applies when two-line
-  doesn't fit.
-- When the comma-packed second line lands exactly at 80
+  (higher priority) unless priority 2 is lopsided. Otherwise
+  priority 3 only applies when two-line doesn't fit.
+- When the second line lands exactly at 80
   characters (including the closing `);`), it counts as fitting
   — priority 2 applies.
 

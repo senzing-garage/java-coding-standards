@@ -15,7 +15,69 @@ adopting 0.7.1 in `data-mart-replicator`. This is a minor release
 because it changes normative rules in the standards, not just the
 formatter's conformance to them.
 
+### Changed
+
+**Method-call priority 2 splits for balance, not as late as
+possible.** Of the two-line, paren-aligned splits that fit, the one
+whose two lines carry the closest amount of text *after the `(`*
+wins, ties going to the call line. The indent and the call's prefix
+are not counted, so it is the call that is balanced, not the line.
+
+```java
+// 0.7.1 — latest comma that fits
+SzRecord record = new SzRecord("CUSTOMERS", "REC-001", "NAME+DOB",
+                               null);
+
+// 0.8.0 — best balanced comma
+SzRecord record = new SzRecord("CUSTOMERS", "REC-001",
+                               "NAME+DOB", null);
+```
+
+If even the best split leaves the continuation line under 60% of
+the call line, priority 2 is lopsided and the list goes to priority
+3, one argument per line (skipping priority 2b). A continuation
+line that is *longer* than the call line is never lopsided — a long
+last argument such as an assertion message stays priority 2 — and
+two-argument calls are exempt.
+
+```java
+// 0.7.1
+Boolean result = ServiceUtilities.getConfigBoolean(config, "enabled",
+                                                   false);
+
+// 0.8.0
+Boolean result = ServiceUtilities.getConfigBoolean(config,
+                                                   "enabled",
+                                                   false);
+```
+
+Across the four-repo, 504-file corpus this re-splits about 355
+calls, moves 55 to priority 3 and shortens 23 (below); lines over
+80 and advisories are unchanged and a second pass changes nothing.
+Fixtures `arg_list_wrap/25` and `/26` cover the two rules;
+`explicit_constructor_invocation/01` and one unit test had locked in
+the latest-comma split and are updated.
+
 ### Fixed
+
+**A priority 2 call line ending in column 80 dropped the whole list
+to priority 3.** The statement's `;` was reserved on the call line
+as well as on the continuation line, so a call line whose trailing
+comma landed in column 80 was rejected and the list fell to one
+argument per line (or to priority 2b), although the `;` never lands
+there. The reserve now applies to the continuation line only:
+
+```java
+// 0.7.1
+this.ids = Set.of(entityId1,
+                  entityId2,
+                  … one per line …
+                  entityId7);
+
+// 0.8.0
+this.ids = Set.of(entityId1, entityId2, entityId3, entityId4,
+                  entityId5, entityId6, entityId7);
+```
 
 **A wrapped concatenation among several arguments lost its
 continuation indent
