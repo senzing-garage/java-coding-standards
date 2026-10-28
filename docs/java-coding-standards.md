@@ -1130,14 +1130,14 @@ line, the argument list is placed one argument per line instead
 (priority 3, below):
 
 ```java
-    // WRONG — `false);` is a stub, and no split does better
-    Boolean result = ServiceUtilities.getConfigBoolean(config, "enabled",
-                                                       false);
+    // WRONG — `true);` is a stub, and no split does better
+    this.saveDemoResult("findInterestingEntitiesByEntityIdDefault", demoResult,
+                        true);
 
     // CORRECT
-    Boolean result = ServiceUtilities.getConfigBoolean(config,
-                                                       "enabled",
-                                                       false);
+    this.saveDemoResult("findInterestingEntitiesByEntityIdDefault",
+                        demoResult,
+                        true);
 ```
 
 Only a short continuation line is lopsided. A continuation line that
@@ -2044,41 +2044,128 @@ rather than spending a line to reach the same shape.
 ### Breaking at `=` in a declaration or assignment
 
 A declaration and its bare-assignment twin differ only in whether
-the left-hand side carries a type, and they wrap the same way. The
-value stays on the `=` line whenever every row it emits fits within
-80 characters and the value kept its clean shape:
+the left-hand side carries a type, and they wrap the same way. When
+the statement does not fit on one line there are two shapes to
+choose from: keep the value on the `=` line and let it wrap, or
+break before `=` and give the value its own continuation line. Which
+one wins depends on whether the value fits on ONE row after the
+break.
+
+**1. The value fits on one row after `=`: break at `=`.** A value on
+one row reads better than the same value wrapped, so the `=` break
+wins over any inline wrap of an operator, a ternary, a split string,
+a priority 2b or priority 3 argument list, or a two-argument call:
 
 ```java
-    Object cachedEntity = engine.getNativeApi()
-                                .getEntityByRecordId(dataSource, recordId);
+    long elapsedDiff
+        = this.getLastBeginTime() - that.getLastBeginTime() - adjustmentNanos;
 
-    this.cachedEntityAB = engine.getNativeApi()
+    String recordSource
+        = JsonUtilities.getString(recordObject, "DATA_SOURCE_CODE");
+
+    TemporaryDataCache tdc
+        = new TemporaryDataCache(new ByteArrayInputStream(data));
+
+    // WRONG — the value wraps although it fits on one row after `=`
+    String recordSource = JsonUtilities.getString(recordObject,
+                                                  "DATA_SOURCE_CODE");
+```
+
+There are two exceptions, both for a **short left-hand side**. The
+left-hand-side line and the `= value;` line are measured without
+their indent, and when the first is much shorter than the second
+the `=` break is lopsided, so the value stays on the `=` line in a
+balanced wrap instead:
+
+- **A balanced priority 2 call of three or more arguments** stays
+  on the `=` line when the left-hand side is under **40%** of the
+  `= value;` line:
+
+  ```java
+      // 9 / 72 = 12% — keep the balanced priority 2 wrap
+      Task task = new Task("ACTION", new TreeMap<>(),
+                           new TreeSet<>(), groupName, true);
+
+      // 23 / 56 = 41% — break at `=`
+      CrossMatchKey keyDouble
+          = new CrossMatchKey("TEST", "TEST", "NAME_DOB", "JOHN");
+  ```
+
+  The call must be the whole value: a cast or any other operator in
+  front of it does not count, so `(Instant) method.invoke(null,
+  sourceText, locatorValue, null)` breaks at `=`.
+
+- **A method chain** stays on the `=` line, dot-aligned, when the
+  left-hand side is under **50%** of the `= value;` line; otherwise
+  the whole chain goes on one row after `=`:
+
+  ```java
+      // 14 / 65 = 22% — keep the dot-aligned chain
+      long leaseTime = pooledConnection.getCurrentLeaseHandler()
+                                       .getLeaseTimeMillis();
+
+      // 19 / 58 = 33% — a builder reads best one step per line
+      JsonObject settings = Json.createObjectBuilder()
+                                .add("TEST", "value")
+                                .build();
+
+      // 32 / 48 = 67% — break at `=`
+      SzRelatedEntity oldRelatedEntity
+          = this.getOldRelatedEntities().get(myRelatedId);
+  ```
+
+**2. The value does not fit on one row after `=`: keep it on the `=`
+line.** The value wraps in place whenever every row it emits fits
+within 80 characters and the value kept its clean shape. An argument
+list that wraps to its own `+4` block indent is clean:
+
+```java
+    boolean r = Boolean.FALSE.equals(
+        resultMap.get(someLongerKeyName).getProcessedValue());
+
+    Object cachedEntity = engine.getNativeApi()
                                 .getEntityByRecordId(dataSource, recordId);
 ```
 
-Breaking at `=` is what recovers horizontal space when that fails.
 Give the left-hand side its own line when the value's first row or
 any of its continuation rows would pass 80 characters, or when a
 chain value could only fit by falling back to continuation
 indentation — the dangling-receiver shape the chain section above
-rejects:
+rejects. The value then wraps beneath the `=`:
 
 ```java
     Object entityForThisRecord
         = engine.getNativeApi().getEntityByRecordId(dataSource, recordId);
 
-    this.entityForThisRecord
-        = engine.getNativeApi().getEntityByRecordId(dataSource, recordId);
+    DeleteMessageRequest deleteMessageRequest
+        = DeleteMessageRequest.builder()
+                              .queueUrl(this.getSqsUrl())
+                              .receiptHandle(receiptHandle)
+                              .build();
 ```
 
-This is about the chain shape specifically. An argument list that
-wraps to its own `+4` block indent is NOT a reason to break at `=`
-— the value still begins on the `=` line, and its arguments take
-the indent beneath:
+**3. Never break at `=` to make things worse.** When the value
+overflows 80 characters either way (an unsplittable string literal,
+say), the `=` break is taken only if it makes the widest row
+narrower. Otherwise it costs a line and an indent level for nothing,
+and the value stays on the `=` line:
 
 ```java
-    boolean ready = Boolean.FALSE.equals(
-        resultMap.get(key).getProcessedValue());
+    IllegalStateException exception = assertThrows(
+        IllegalStateException.class,
+        () -> {
+            options.setSQSInfoUri(sqsUri);
+        },
+        "Should throw IllegalStateException when SQS conflicts with RabbitMQ URI");
+```
+
+The same holds for a block lambda: its body is anchored to the
+statement, so breaking at `=` only pushes the body right.
+
+```java
+    Task<TaskResult> execTask = () -> {
+        return new TaskResult(currentTask, timers);
+    };
 ```
 
 Each statement is judged on its own. Two neighboring declarations

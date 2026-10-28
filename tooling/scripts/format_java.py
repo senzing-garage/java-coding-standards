@@ -161,6 +161,21 @@ _MAX_LINE: Final[int] = 80
 # to P3. A heavier continuation row is never lopsided.
 _P2_BALANCE_MIN_RATIO: Final[float] = 0.6
 
+# Break-at-`=` balance thresholds. They apply when breaking before
+# `=` would put the whole value on one continuation row, and compare
+# the left-hand-side row with that value row (both without indent).
+#
+# A value that would otherwise wrap as a balanced priority 2 call of
+# three or more arguments keeps that wrap when the left-hand-side row
+# is under `_EQ_BREAK_P2_MIN_RATIO` of the value row. Every other
+# inline wrap (operators, ternaries, P2b, P3, two-argument calls)
+# gives way to the `=` break at any ratio.
+_EQ_BREAK_P2_MIN_RATIO: Final[float] = 0.4
+# A method chain keeps its dot-aligned inline wrap when the
+# left-hand-side row is under `_EQ_BREAK_CHAIN_MIN_RATIO` of the
+# value row; otherwise the whole chain goes on one row after `=`.
+_EQ_BREAK_CHAIN_MIN_RATIO: Final[float] = 0.5
+
 
 def parse_source(source: bytes | bytearray) -> Tree:
     """Parse a Java source byte string and return the tree-sitter Tree.
@@ -271,6 +286,7 @@ class Emitter:
         "_array_init_inline_only",
         "_anchor_escaped",
         "_chain_ladder_fired",
+        "_balanced_p2_span",
         "_raw_rows_emitted",
         "warnings",
     )
@@ -369,6 +385,13 @@ class Emitter:
         # clears it before measuring and restores it after, unlike
         # `_anchor_escaped`, whose evidence is meant to propagate.
         self._chain_ladder_fired: bool = False
+        # Byte span of the last argument list committed as a
+        # balanced priority 2 wrap. The `=` balance rule reads it
+        # right after emitting a value inline, to tell a balanced
+        # P2 (which may keep the value on the `=` line) from every
+        # other wrap shape (which never does). Not snapshotted: a
+        # reader compares it against one specific argument list.
+        self._balanced_p2_span: tuple[int, int] | None = None
         # Set whenever an emit replays source rows verbatim through
         # `write_raw_lines`. Readers save-reset-check-restore, like
         # `_arg_list_p4_fired`. Distinguishes "this construct wrapped"
@@ -7229,6 +7252,134 @@ def _break_probe_wins(
     )
 
 
+def _inline_is_balanced_p2(
+    emitter: "Emitter", since: int, value: Node
+) -> bool:
+    """Return True when the value just emitted inline (from snapshot
+    `since`) came out as a balanced priority 2 wrap of a single call
+    with three or more arguments — the one inline wrap shape the `=`
+    balance rule may prefer to a break at `=`."""
+    call = _unwrap_parens(value)
+    if call.type not in ("method_invocation", "object_creation_expression"):
+        return False
+    _, segments = _collect_method_chain(call)
+    if len(segments) >= 2:
+        return False
+    args = call.child_by_field_name("arguments")
+    if args is None:
+        return False
+    if len([c for c in args.named_children if "comment" not in c.type]) < 3:
+        return False
+    return (
+        emitter.line_count == since + 1
+        and emitter._balanced_p2_span == (args.start_byte, args.end_byte)
+    )
+
+
+def _eq_break_is_lopsided(
+    emitter: "Emitter",
+    since: int,
+    value: Node,
+    extra_tail: int = 0,
+    inline_is_p2: bool = False,
+) -> bool:
+    """Return True when a just-emitted break-at-`=` shape whose value
+    sits on ONE continuation row should yield to the inline shape.
+
+    `since` is the `lines_count` of the snapshot taken before the
+    break, so `emitter._lines[since]` is the left-hand-side row and
+    the in-progress row is `= VALUE`. Both are measured without
+    their indent; the value row is charged for what follows it (the
+    statement's `;`), through `tail_reserve` plus `extra_tail`, with
+    the same meaning `_break_probe_wins` gives that argument.
+
+    A method chain of two or more calls is lopsided when the
+    left-hand side is short against the value row; its inline,
+    dot-aligned wrap then reads better:
+
+        long leaseTime = pooledConn.getCurrentLeaseHandler()
+                                   .getLeaseTime();
+
+    Any other value is lopsided only when its inline shape was a
+    balanced priority 2 call (`inline_is_p2`, see
+    `_inline_is_balanced_p2`) and the left-hand side is short:
+
+        Task task = new Task("ACTION", new TreeMap<>(),
+                             new TreeSet<>(), group, true);
+    """
+    lhs_row = len(emitter._lines[since].strip())
+    value_row = (
+        len(emitter._current.strip()) + emitter.tail_reserve + extra_tail
+    )
+    _, segments = _collect_method_chain(_unwrap_parens(value))
+    if len(segments) >= 2:
+        return lhs_row < _EQ_BREAK_CHAIN_MIN_RATIO * value_row
+    return inline_is_p2 and lhs_row < _EQ_BREAK_P2_MIN_RATIO * value_row
+
+
+def _widest_row(
+    emitter: "Emitter", since: int, extra_tail: int = 0
+) -> int:
+    """Widest row emitted since the snapshot `since`, counting what
+    the parent appends to the last row: `tail_reserve` plus
+    `extra_tail` (see `_break_probe_wins`). Used to compare the
+    inline and break-at-`=` shapes of an overflowing value."""
+    return max(
+        max((len(row) for row in emitter._lines[since:]), default=0),
+        emitter.column + extra_tail + emitter.tail_reserve,
+    )
+
+
+def _try_balanced_eq_break(
+    emitter: "Emitter",
+    source: bytes,
+    value: Node,
+    op_text: str,
+    extra_tail: int = 0,
+    inline_is_p2: bool = False,
+) -> bool:
+    """Probe the break-at-`=` shape in place of a clean inline shape
+    that had to WRAP its value. Keep it and return True when the
+    value fits on ONE continuation row and the two rows are balanced
+    (`_eq_break_is_lopsided` is False); otherwise restore the emitter
+    and return False, leaving the caller's inline shape to stand.
+
+    This is the 0.8.0 balance rule, shared by the declarator and the
+    assignment emitter so the two cannot drift:
+
+        // 0.7.x — inline, arguments wrapped
+        AsyncResult<TaskResult> result = this.workerPool.execute(
+            execTask);
+        // 0.8.0 — balanced `=` break
+        AsyncResult<TaskResult> result
+            = this.workerPool.execute(execTask);
+
+    `extra_tail` has the meaning `_break_probe_wins` gives it;
+    `inline_is_p2` is `_inline_is_balanced_p2` of the displaced
+    inline shape.
+    """
+    saved = emitter.snapshot()
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
+    emitter.write(op_text)
+    emitter.write(" ")
+    with _extra_tail_reserve(emitter, extra_tail):
+        _emit_node(emitter, source, value)
+    emitter.pop_indent()
+    keep = (
+        emitter.line_count == saved[0] + 1
+        and emitter.column + extra_tail + emitter.tail_reserve
+        <= _MAX_LINE
+        and not _eq_break_is_lopsided(
+            emitter, saved[0], value, extra_tail, inline_is_p2
+        )
+    )
+    if not keep:
+        emitter.restore(saved)
+    return keep
+
+
 def _emit_assignment_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -7439,6 +7590,24 @@ def _emit_assignment_expression(
         emitter._chain_ladder_fired = False
         emit_inline_rhs()
     if inline_fits and not inline_orphan:
+        # 0.8.0 balance rule, as in `_emit_variable_declarator`'s
+        # Step 1. A laddered inline shape has already had its break
+        # probe above and is a chain, which the rule exempts.
+        if (
+            emitter.line_count > saved[0]
+            and not emitter._chain_ladder_fired
+        ):
+            inline_is_p2 = _inline_is_balanced_p2(
+                emitter, saved[0], right_node
+            )
+            emitter.restore(saved)
+            if not _try_balanced_eq_break(
+                emitter, source, right_node, op_text,
+                inline_is_p2=inline_is_p2,
+            ):
+                emitter._anchor_escaped = False
+                emitter._chain_ladder_fired = False
+                emit_inline_rhs()
         emitter._chain_ladder_fired = prev_laddered
         emitter._anchor_escaped = prev_escaped
         return
@@ -7509,6 +7678,7 @@ def _emit_assignment_expression(
     # Step 3 does: an argument anchored block-relatively is unmoored
     # from the `(` that owns it, and no width test can see that.
     inline_orphan = emitter._anchor_escaped
+    inline_widest = _widest_row(emitter, saved[0])
     if not inline_overflow and not inline_orphan:
         # Hand the flag back as found. An escape recorded by a
         # declarator nested in this RHS (inside a lambda block or
@@ -7528,6 +7698,17 @@ def _emit_assignment_expression(
     emitter.write(" ")
     _emit_node(emitter, source, right_node)
     emitter.pop_indent()
+    # 0.8.0 (#52), as in `_emit_variable_declarator`'s Step 3: when
+    # the inline shape merely overflowed, keep the break only if it
+    # narrows the widest row; otherwise it is wider and a line
+    # longer for nothing. An orphaned inline shape still takes the
+    # break.
+    if (
+        not inline_orphan
+        and _widest_row(emitter, saved[0]) >= inline_widest
+    ):
+        emitter.restore(saved)
+        emit_inline_rhs()
     emitter._anchor_escaped = prev_escaped
     # Spec C1 emit-and-warn: the break-at-`=` shape may itself
     # overflow when the RHS cannot be broken further (long
@@ -10996,6 +11177,9 @@ def _emit_argument_list(
                 )
                 if balanced:
                     emit_p2_split(split)
+                    emitter._balanced_p2_span = (
+                        node.start_byte, node.end_byte
+                    )
                     _fire_wrap_overflow_advisory(
                         emitter, node, cascade_start, "argument list"
                     )
@@ -12267,6 +12451,21 @@ def _emit_variable_declarator(
         and not emitter._chain_ladder_fired
     )
     if inline_fits:
+        # 0.8.0 balance rule: a clean inline shape that had to WRAP
+        # the value gives way to a break at `=` that puts the whole
+        # value on one balanced row. See `_try_balanced_eq_break`.
+        if emitter.line_count > saved[0]:
+            inline_is_p2 = _inline_is_balanced_p2(
+                emitter, saved[0], value
+            )
+            emitter.restore(saved)
+            if not _try_balanced_eq_break(
+                emitter, source, value, "=", extra_tail=1,
+                inline_is_p2=inline_is_p2,
+            ):
+                emitter.write(" = ")
+                with _extra_tail_reserve(emitter, 1):
+                    _emit_node(emitter, source, value)
         # Hand both flags back as found, for the reason the Step 3
         # commit states at length below: the resets above are
         # local measurement devices, and a declarator nested
@@ -12480,6 +12679,19 @@ def _emit_variable_declarator(
         return
     # Backtrack and emit break-at-`=` even though the value
     # itself will wrap on the continuation line.
+    #
+    # 0.8.0 (#52): when the inline shape merely OVERFLOWS, the break
+    # is kept only if it narrows the widest row. The break adds an
+    # indent level to every wrapped row of the value, so for a value
+    # whose overflow comes from a wrapped row — an unsplittable
+    # literal among concatenated operands, an over-long statement
+    # in a block lambda's body — breaking makes the overflow worse
+    # and costs a line. (A value that overflows on the `=` row
+    # itself, such as one long atomic identifier, does narrow, and
+    # keeps the break.) An ORPHANED inline shape still takes the
+    # break unconditionally: there the break is a repair, not a
+    # width bet.
+    inline_widest = _widest_row(emitter, saved[0], 1)
     emitter.restore(saved)
     emitter.newline()
     emitter.push_indent()
@@ -12488,6 +12700,18 @@ def _emit_variable_declarator(
     with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
     emitter.pop_indent()
+    if (
+        not inline_orphan
+        and _widest_row(emitter, saved[0], 1) >= inline_widest
+    ):
+        # Re-emit the inline shape. It neither orphaned (tested
+        # above) nor needs its ladder evidence: the flag is handed
+        # back as found just below, as on every exit.
+        emitter.restore(saved)
+        emitter.write(" = ")
+        with _extra_tail_reserve(emitter, 1):
+            _emit_node(emitter, source, value)
+        emitter._anchor_escaped = prev_escaped
     # Unlike `_anchor_escaped`, which deliberately accumulates across
     # this backtrack (an escape anywhere under the value is evidence
     # the enclosing construct needs), the ladder flag is a PER-

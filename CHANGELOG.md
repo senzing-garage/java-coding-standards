@@ -42,13 +42,13 @@ two-argument calls are exempt.
 
 ```java
 // 0.7.1
-Boolean result = ServiceUtilities.getConfigBoolean(config, "enabled",
-                                                   false);
+this.saveDemoResult("findInterestingEntitiesByEntityIdDefault", demoResult,
+                    true);
 
 // 0.8.0
-Boolean result = ServiceUtilities.getConfigBoolean(config,
-                                                   "enabled",
-                                                   false);
+this.saveDemoResult("findInterestingEntitiesByEntityIdDefault",
+                    demoResult,
+                    true);
 ```
 
 Across the four-repo, 504-file corpus this re-splits about 355
@@ -57,6 +57,90 @@ calls, moves 55 to priority 3 and shortens 23 (below); lines over
 Fixtures `arg_list_wrap/25` and `/26` cover the two rules;
 `explicit_constructor_invocation/01` and one unit test had locked in
 the latest-comma split and are updated.
+
+**Breaking at `=` is chosen for balance
+([#52](https://github.com/senzing-garage/java-coding-standards/issues/52)).**
+0.7.x kept a value on the `=` line whenever its wrapped rows fit,
+however lopsided, and broke at `=` whenever they did not, even when
+the break made the statement wider. 0.8.0 compares the two shapes:
+
+- **If the value fits on one row after `=`, break at `=`.** This
+  replaces any inline wrap of an operator, a ternary, a split
+  string, a priority 2b or 3 argument list, or a two-argument call.
+  There are two exceptions, both for a short left-hand side
+  (measured without indent against the `= value;` line). A balanced
+  priority 2 call of three or more arguments stays inline under
+  40%, and a dot-aligned method chain stays inline under 50%.
+- **Otherwise the value stays on the `=` line** if it wraps cleanly
+  there, as before.
+- **Breaking at `=` never makes things wider.** When the value
+  overflows either way, the break is kept only if it narrows the
+  widest row.
+
+```java
+// 0.7.1
+String recordSource = JsonUtilities.getString(recordObject,
+                                              "DATA_SOURCE_CODE");
+AsyncResult<TaskResult> result = this.workerPool.execute(
+    execTask);
+
+// 0.8.0
+String recordSource
+    = JsonUtilities.getString(recordObject, "DATA_SOURCE_CODE");
+AsyncResult<TaskResult> result
+    = this.workerPool.execute(execTask);
+
+// 0.8.0 — unchanged: balanced call or chain under a short left side
+Task task = new Task("ACTION", new TreeMap<>(),
+                     new TreeSet<>(), groupName, true);
+long leaseTime = pooledConnection.getCurrentLeaseHandler()
+                                 .getLeaseTimeMillis();
+
+// 0.7.1 — the break buys nothing; the literal overflows either way
+IllegalStateException exception
+    = assertThrows(
+        IllegalStateException.class,
+        () -> {
+            options.setSQSInfoUri(sqsUri);
+        },
+        "Should throw IllegalStateException when SQS conflicts with RabbitMQ URI");
+
+// 0.8.0
+IllegalStateException exception = assertThrows(
+    IllegalStateException.class,
+    () -> {
+        options.setSQSInfoUri(sqsUri);
+    },
+    "Should throw IllegalStateException when SQS conflicts with RabbitMQ URI");
+```
+
+A block lambda no longer breaks at `=` either (`Task<TaskResult>
+execTask = () -> {` stays on one line): the break only pushed its
+body right.
+
+Across the corpus, measured on top of the priority 2 change above:
+
+- 784 inline wraps become an `=` break;
+- 13 two-call chains move from dot-aligned to one row after `=`;
+- 28 statements lose a useless `=` break.
+
+A second pass changes nothing. Checkstyle-visible lines over 80 go
+from 1120 to 1128; all eight are trailing `// @highlight` snippet
+markers in `sz-sdk-java` demos. The formatter does not count a
+trailing comment's width, so those lines were only under 80 before
+by accident.
+
+Fixtures `assignment_wrap/09_eq_break_balance`,
+`assignment_wrap/10_eq_break_never_widens` and
+`method_chain_wrap/30_eq_break_chain_balance` cover the rule.
+`assignment_wrap/05` (renamed
+`05_declaration_wraps_value_like_assignment`) and
+`condition_wrap/09` are updated. `arg_list_wrap/26` and
+`method_chain_wrap/25` get inputs the `=` break cannot reach, so
+they still test what they were written for. The standards'
+"Breaking at `=`" section is rewritten; its old example of a value
+kept on the `=` line, `boolean ready = Boolean.FALSE.equals(…)`,
+now breaks at `=` and is replaced.
 
 ### Fixed
 
