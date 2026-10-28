@@ -13,9 +13,9 @@ public class Demo
                                     .getEntityByRecordId(dataSource, recordId);
         this.cachedEntity = engine.getNativeApi()
                                   .getEntityByRecordId(dataSource, recordId);
-        long elapsedTimeNanos = (System.nanoTime() - startTime)
-            / ONE_MILLION_CONST;
-        this.elapsedTimeNanos = (System.nanoTime() - startTime)
-            / ONE_MILLION_CONST;
+        long elapsedTimeNanos
+            = (System.nanoTime() - startTime) / ONE_MILLION_CONST;
+        this.elapsedTimeNanos
+            = (System.nanoTime() - startTime) / ONE_MILLION_CONST;
     }
 }

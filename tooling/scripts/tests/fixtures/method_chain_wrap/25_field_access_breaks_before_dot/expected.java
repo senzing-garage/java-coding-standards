@@ -9,6 +9,6 @@ public class T
         boolean q = java.util.Objects.requireNonNull(someValueHere)
                                      .equals(other);
         boolean r = Boolean.FALSE.equals(
-            resultMap.get(key).getProcessedValue());
+            resultMap.get(someLongerKeyName).getProcessedValue());
     }
 }

@@ -10,6 +10,198 @@ and this project adheres to
 
 ## [Unreleased]
 
+Release in progress (0.8.0). Defects and spec gaps found while
+adopting 0.7.1 in `data-mart-replicator`. This is a minor release
+because it changes normative rules in the standards, not just the
+formatter's conformance to them.
+
+### Changed
+
+**Method-call priority 2 splits for balance, not as late as
+possible.** Of the two-line, paren-aligned splits that fit, the one
+whose two lines carry the closest amount of text *after the `(`*
+wins, ties going to the call line. The indent and the call's prefix
+are not counted, so it is the call that is balanced, not the line.
+
+```java
+// 0.7.1 — latest comma that fits
+SzRecord record = new SzRecord("CUSTOMERS", "REC-001", "NAME+DOB",
+                               null);
+
+// 0.8.0 — best balanced comma
+SzRecord record = new SzRecord("CUSTOMERS", "REC-001",
+                               "NAME+DOB", null);
+```
+
+If even the best split leaves the continuation line under 60% of
+the call line, priority 2 is lopsided and the list goes to priority
+3, one argument per line (skipping priority 2b). A continuation
+line that is *longer* than the call line is never lopsided — a long
+last argument such as an assertion message stays priority 2 — and
+two-argument calls are exempt.
+
+```java
+// 0.7.1
+this.saveDemoResult("findInterestingEntitiesByEntityIdDefault", demoResult,
+                    true);
+
+// 0.8.0
+this.saveDemoResult("findInterestingEntitiesByEntityIdDefault",
+                    demoResult,
+                    true);
+```
+
+Across the four-repo, 504-file corpus this re-splits about 355
+calls, moves 55 to priority 3 and shortens 23 (below); lines over
+80 and advisories are unchanged and a second pass changes nothing.
+Fixtures `arg_list_wrap/25` and `/26` cover the two rules;
+`explicit_constructor_invocation/01` and one unit test had locked in
+the latest-comma split and are updated.
+
+**Breaking at `=` is chosen for balance
+([#52](https://github.com/senzing-garage/java-coding-standards/issues/52)).**
+0.7.x kept a value on the `=` line whenever its wrapped rows fit,
+however lopsided, and broke at `=` whenever they did not, even when
+the break made the statement wider. 0.8.0 compares the two shapes:
+
+- **If the value fits on one row after `=`, break at `=`.** This
+  replaces any inline wrap of an operator, a ternary, a split
+  string, a priority 2b or 3 argument list, or a two-argument call.
+  There are two exceptions, both for a short left-hand side
+  (measured without indent against the `= value;` line). A balanced
+  priority 2 call of three or more arguments stays inline under
+  40%, and a dot-aligned method chain stays inline under 50%.
+- **Otherwise the value stays on the `=` line** if it wraps cleanly
+  there, as before.
+- **Breaking at `=` never makes things wider.** When the value
+  overflows either way, the break is kept only if it narrows the
+  widest row.
+
+```java
+// 0.7.1
+String recordSource = JsonUtilities.getString(recordObject,
+                                              "DATA_SOURCE_CODE");
+AsyncResult<TaskResult> result = this.workerPool.execute(
+    execTask);
+
+// 0.8.0
+String recordSource
+    = JsonUtilities.getString(recordObject, "DATA_SOURCE_CODE");
+AsyncResult<TaskResult> result
+    = this.workerPool.execute(execTask);
+
+// 0.8.0 — unchanged: balanced call or chain under a short left side
+Task task = new Task("ACTION", new TreeMap<>(),
+                     new TreeSet<>(), groupName, true);
+long leaseTime = pooledConnection.getCurrentLeaseHandler()
+                                 .getLeaseTimeMillis();
+
+// 0.7.1 — the break buys nothing; the literal overflows either way
+IllegalStateException exception
+    = assertThrows(
+        IllegalStateException.class,
+        () -> {
+            options.setSQSInfoUri(sqsUri);
+        },
+        "Should throw IllegalStateException when SQS conflicts with RabbitMQ URI");
+
+// 0.8.0
+IllegalStateException exception = assertThrows(
+    IllegalStateException.class,
+    () -> {
+        options.setSQSInfoUri(sqsUri);
+    },
+    "Should throw IllegalStateException when SQS conflicts with RabbitMQ URI");
+```
+
+A block lambda no longer breaks at `=` either (`Task<TaskResult>
+execTask = () -> {` stays on one line): the break only pushed its
+body right.
+
+Across the corpus, measured on top of the priority 2 change above:
+
+- 784 inline wraps become an `=` break;
+- 13 two-call chains move from dot-aligned to one row after `=`;
+- 28 statements lose a useless `=` break.
+
+A second pass changes nothing. Checkstyle-visible lines over 80 go
+from 1120 to 1128; all eight are trailing `// @highlight` snippet
+markers in `sz-sdk-java` demos. The formatter does not count a
+trailing comment's width, so those lines were only under 80 before
+by accident.
+
+Fixtures `assignment_wrap/09_eq_break_balance`,
+`assignment_wrap/10_eq_break_never_widens` and
+`method_chain_wrap/30_eq_break_chain_balance` cover the rule.
+`assignment_wrap/05` (renamed
+`05_declaration_wraps_value_like_assignment`) and
+`condition_wrap/09` are updated. `arg_list_wrap/26` and
+`method_chain_wrap/25` get inputs the `=` break cannot reach, so
+they still test what they were written for. The standards'
+"Breaking at `=`" section is rewritten; its old example of a value
+kept on the `=` line, `boolean ready = Boolean.FALSE.equals(…)`,
+now breaks at `=` and is replaced.
+
+### Fixed
+
+**A priority 2 call line ending in column 80 dropped the whole list
+to priority 3.** The statement's `;` was reserved on the call line
+as well as on the continuation line, so a call line whose trailing
+comma landed in column 80 was rejected and the list fell to one
+argument per line (or to priority 2b), although the `;` never lands
+there. The reserve now applies to the continuation line only:
+
+```java
+// 0.7.1
+this.ids = Set.of(entityId1,
+                  entityId2,
+                  … one per line …
+                  entityId7);
+
+// 0.8.0
+this.ids = Set.of(entityId1, entityId2, entityId3, entityId4,
+                  entityId5, entityId6, entityId7);
+```
+
+**A wrapped concatenation among several arguments lost its
+continuation indent
+([#53](https://github.com/senzing-garage/java-coding-standards/issues/53)).**
+
+When a binary-expression argument of a multi-argument call had to
+wrap, its operator rows were aligned with the argument's first
+operand, which is the column the sibling arguments occupy. The
+continuation then read as another argument, the shape the
+standards' arg-list anti-pattern section marks WRONG. A
+multi-argument call paren is not a governing `(` for spec C6, so
+the continuation now takes the ordinary +4 relative to the
+argument:
+
+```java
+// 0.7.1 — `+` row in the sibling arguments' column
+multilineFormat(
+    "Failed to read JSON initialization "
+    + "file: " + initFile,
+    "",
+    "Cause: " + e.getMessage());
+
+// 0.8.0
+multilineFormat(
+    "Failed to read JSON initialization "
+        + "file: " + initFile,
+    "",
+    "Cause: " + e.getMessage());
+```
+
+Because format-on-save reverted any hand correction, adopters
+could not work around it. **This is a 0.6.0 regression;** 0.5.x
+emitted the +4 shape. Boolean chains as arguments are affected the
+same way (`||` / `&&` rows now sit +4 under the first operand).
+Fixtures `arg_list_wrap/05`, `arg_list_wrap/07` and `binary_wrap/06`
+(renamed `06_boolean_chain_arg_continuation_under_p4`) had locked
+in the flush shape and are updated; `arg_list_wrap/24` is the
+regression case. The arg-list anti-pattern section of the standards
+now shows the priority-4 case explicitly.
+
 ## [0.7.1] - 2026-10-21
 
 Bug-fix release. One defect, found while adopting 0.7.0 in

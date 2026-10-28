@@ -26,7 +26,7 @@ Wrap priority — the engine handles overflow on:
 - throws-clause types (single line → column-aligned one-per-
   line per spec).
 - method-call argument lists (P1 single line → P2 two-line
-  paren-aligned comma-packed → P4 next-line single-indent for
+  paren-aligned balanced → P4 next-line single-indent for
   single-arg overflow).
 - variable_declarator initializers (inline single-line →
   break-at-`=` with single-line value → inline-with-value-wrap).
@@ -154,6 +154,28 @@ def _thread_parser() -> Parser:
 # engine and the javadoc-reflow helpers.
 _MAX_LINE: Final[int] = 80
 
+# Method Call Arguments priority 2 balance threshold. P2 picks the
+# split whose two rows carry the closest amount of text after the
+# `(`; if even that split leaves the continuation row under this
+# fraction of the call row, the call is too lopsided for P2 and goes
+# to P3. A heavier continuation row is never lopsided.
+_P2_BALANCE_MIN_RATIO: Final[float] = 0.6
+
+# Break-at-`=` balance thresholds. They apply when breaking before
+# `=` would put the whole value on one continuation row, and compare
+# the left-hand-side row with that value row (both without indent).
+#
+# A value that would otherwise wrap as a balanced priority 2 call of
+# three or more arguments keeps that wrap when the left-hand-side row
+# is under `_EQ_BREAK_P2_MIN_RATIO` of the value row. Every other
+# inline wrap (operators, ternaries, P2b, P3, two-argument calls)
+# gives way to the `=` break at any ratio.
+_EQ_BREAK_P2_MIN_RATIO: Final[float] = 0.4
+# A method chain keeps its dot-aligned inline wrap when the
+# left-hand-side row is under `_EQ_BREAK_CHAIN_MIN_RATIO` of the
+# value row; otherwise the whole chain goes on one row after `=`.
+_EQ_BREAK_CHAIN_MIN_RATIO: Final[float] = 0.5
+
 
 def parse_source(source: bytes | bytearray) -> Tree:
     """Parse a Java source byte string and return the tree-sitter Tree.
@@ -264,6 +286,7 @@ class Emitter:
         "_array_init_inline_only",
         "_anchor_escaped",
         "_chain_ladder_fired",
+        "_balanced_p2_span",
         "_raw_rows_emitted",
         "warnings",
     )
@@ -362,6 +385,13 @@ class Emitter:
         # clears it before measuring and restores it after, unlike
         # `_anchor_escaped`, whose evidence is meant to propagate.
         self._chain_ladder_fired: bool = False
+        # Byte span of the last argument list committed as a
+        # balanced priority 2 wrap. The `=` balance rule reads it
+        # right after emitting a value inline, to tell a balanced
+        # P2 (which may keep the value on the `=` line) from every
+        # other wrap shape (which never does). Not snapshotted: a
+        # reader compares it against one specific argument list.
+        self._balanced_p2_span: tuple[int, int] | None = None
         # Set whenever an emit replays source rows verbatim through
         # `write_raw_lines`. Readers save-reset-check-restore, like
         # `_arg_list_p4_fired`. Distinguishes "this construct wrapped"
@@ -7222,6 +7252,134 @@ def _break_probe_wins(
     )
 
 
+def _inline_is_balanced_p2(
+    emitter: "Emitter", since: int, value: Node
+) -> bool:
+    """Return True when the value just emitted inline (from snapshot
+    `since`) came out as a balanced priority 2 wrap of a single call
+    with three or more arguments — the one inline wrap shape the `=`
+    balance rule may prefer to a break at `=`."""
+    call = _unwrap_parens(value)
+    if call.type not in ("method_invocation", "object_creation_expression"):
+        return False
+    _, segments = _collect_method_chain(call)
+    if len(segments) >= 2:
+        return False
+    args = call.child_by_field_name("arguments")
+    if args is None:
+        return False
+    if len([c for c in args.named_children if "comment" not in c.type]) < 3:
+        return False
+    return (
+        emitter.line_count == since + 1
+        and emitter._balanced_p2_span == (args.start_byte, args.end_byte)
+    )
+
+
+def _eq_break_is_lopsided(
+    emitter: "Emitter",
+    since: int,
+    value: Node,
+    extra_tail: int = 0,
+    inline_is_p2: bool = False,
+) -> bool:
+    """Return True when a just-emitted break-at-`=` shape whose value
+    sits on ONE continuation row should yield to the inline shape.
+
+    `since` is the `lines_count` of the snapshot taken before the
+    break, so `emitter._lines[since]` is the left-hand-side row and
+    the in-progress row is `= VALUE`. Both are measured without
+    their indent; the value row is charged for what follows it (the
+    statement's `;`), through `tail_reserve` plus `extra_tail`, with
+    the same meaning `_break_probe_wins` gives that argument.
+
+    A method chain of two or more calls is lopsided when the
+    left-hand side is short against the value row; its inline,
+    dot-aligned wrap then reads better:
+
+        long leaseTime = pooledConn.getCurrentLeaseHandler()
+                                   .getLeaseTime();
+
+    Any other value is lopsided only when its inline shape was a
+    balanced priority 2 call (`inline_is_p2`, see
+    `_inline_is_balanced_p2`) and the left-hand side is short:
+
+        Task task = new Task("ACTION", new TreeMap<>(),
+                             new TreeSet<>(), group, true);
+    """
+    lhs_row = len(emitter._lines[since].strip())
+    value_row = (
+        len(emitter._current.strip()) + emitter.tail_reserve + extra_tail
+    )
+    _, segments = _collect_method_chain(_unwrap_parens(value))
+    if len(segments) >= 2:
+        return lhs_row < _EQ_BREAK_CHAIN_MIN_RATIO * value_row
+    return inline_is_p2 and lhs_row < _EQ_BREAK_P2_MIN_RATIO * value_row
+
+
+def _widest_row(
+    emitter: "Emitter", since: int, extra_tail: int = 0
+) -> int:
+    """Widest row emitted since the snapshot `since`, counting what
+    the parent appends to the last row: `tail_reserve` plus
+    `extra_tail` (see `_break_probe_wins`). Used to compare the
+    inline and break-at-`=` shapes of an overflowing value."""
+    return max(
+        max((len(row) for row in emitter._lines[since:]), default=0),
+        emitter.column + extra_tail + emitter.tail_reserve,
+    )
+
+
+def _try_balanced_eq_break(
+    emitter: "Emitter",
+    source: bytes,
+    value: Node,
+    op_text: str,
+    extra_tail: int = 0,
+    inline_is_p2: bool = False,
+) -> bool:
+    """Probe the break-at-`=` shape in place of a clean inline shape
+    that had to WRAP its value. Keep it and return True when the
+    value fits on ONE continuation row and the two rows are balanced
+    (`_eq_break_is_lopsided` is False); otherwise restore the emitter
+    and return False, leaving the caller's inline shape to stand.
+
+    This is the 0.8.0 balance rule, shared by the declarator and the
+    assignment emitter so the two cannot drift:
+
+        // 0.7.x — inline, arguments wrapped
+        AsyncResult<TaskResult> result = this.workerPool.execute(
+            execTask);
+        // 0.8.0 — balanced `=` break
+        AsyncResult<TaskResult> result
+            = this.workerPool.execute(execTask);
+
+    `extra_tail` has the meaning `_break_probe_wins` gives it;
+    `inline_is_p2` is `_inline_is_balanced_p2` of the displaced
+    inline shape.
+    """
+    saved = emitter.snapshot()
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
+    emitter.write(op_text)
+    emitter.write(" ")
+    with _extra_tail_reserve(emitter, extra_tail):
+        _emit_node(emitter, source, value)
+    emitter.pop_indent()
+    keep = (
+        emitter.line_count == saved[0] + 1
+        and emitter.column + extra_tail + emitter.tail_reserve
+        <= _MAX_LINE
+        and not _eq_break_is_lopsided(
+            emitter, saved[0], value, extra_tail, inline_is_p2
+        )
+    )
+    if not keep:
+        emitter.restore(saved)
+    return keep
+
+
 def _emit_assignment_expression(
     emitter: Emitter, source: bytes, node: Node
 ) -> None:
@@ -7432,6 +7590,24 @@ def _emit_assignment_expression(
         emitter._chain_ladder_fired = False
         emit_inline_rhs()
     if inline_fits and not inline_orphan:
+        # 0.8.0 balance rule, as in `_emit_variable_declarator`'s
+        # Step 1. A laddered inline shape has already had its break
+        # probe above and is a chain, which the rule exempts.
+        if (
+            emitter.line_count > saved[0]
+            and not emitter._chain_ladder_fired
+        ):
+            inline_is_p2 = _inline_is_balanced_p2(
+                emitter, saved[0], right_node
+            )
+            emitter.restore(saved)
+            if not _try_balanced_eq_break(
+                emitter, source, right_node, op_text,
+                inline_is_p2=inline_is_p2,
+            ):
+                emitter._anchor_escaped = False
+                emitter._chain_ladder_fired = False
+                emit_inline_rhs()
         emitter._chain_ladder_fired = prev_laddered
         emitter._anchor_escaped = prev_escaped
         return
@@ -7502,6 +7678,7 @@ def _emit_assignment_expression(
     # Step 3 does: an argument anchored block-relatively is unmoored
     # from the `(` that owns it, and no width test can see that.
     inline_orphan = emitter._anchor_escaped
+    inline_widest = _widest_row(emitter, saved[0])
     if not inline_overflow and not inline_orphan:
         # Hand the flag back as found. An escape recorded by a
         # declarator nested in this RHS (inside a lambda block or
@@ -7521,6 +7698,17 @@ def _emit_assignment_expression(
     emitter.write(" ")
     _emit_node(emitter, source, right_node)
     emitter.pop_indent()
+    # 0.8.0 (#52), as in `_emit_variable_declarator`'s Step 3: when
+    # the inline shape merely overflowed, keep the break only if it
+    # narrows the widest row; otherwise it is wider and a line
+    # longer for nothing. An orphaned inline shape still takes the
+    # break.
+    if (
+        not inline_orphan
+        and _widest_row(emitter, saved[0]) >= inline_widest
+    ):
+        emitter.restore(saved)
+        emit_inline_rhs()
     emitter._anchor_escaped = prev_escaped
     # Spec C1 emit-and-warn: the break-at-`=` shape may itself
     # overflow when the RHS cannot be broken further (long
@@ -9960,10 +10148,12 @@ def _emit_argument_list(
     order by line length)":
 
         - P1 (single line): entire call fits in 80 chars.
-        - P2 (two-line paren-aligned, comma-packed): the
-          argument list spans exactly two source lines —
-          pack as many args as fit on the call line, wrap
-          the rest aligned to the column after `(`.
+        - P2 (two-line paren-aligned, balanced): the
+          argument list spans exactly two source lines,
+          split at the comma that balances the two rows
+          best (text after `(`); the rest is aligned to the
+          column after `(`. A lopsided best split (short
+          continuation row) goes to P3 instead.
         - P3 (paren-aligned, one arg per line): each arg on
           its own line at the column after `(`.
         - P4 (next-line single-indent): line-break before
@@ -9977,7 +10167,7 @@ def _emit_argument_list(
     rendered output stays within `_MAX_LINE`, or falls back
     to the last candidate per spec C1 emit + warn.
 
-    Current implementation: P1, P2-greedy, and P4 are wired
+    Current implementation: P1, P2-balanced, and P4 are wired
     as candidates. The multi-line source-preservation path
     (when the source already wraps to multiple rows) covers
     cases that would otherwise need P3 by emitting the
@@ -10108,7 +10298,7 @@ def _emit_argument_list(
     # lambda)` chain whose paren-aligned candidate fires on
     # the first pass but not the second can re-emit at a
     # different column). Multi-arg calls keep the existing
-    # P2-greedy / P4 cascade unchanged — spec C6's extension
+    # P2 / P4 cascade unchanged — spec C6's extension
     # to call parens applies only when there is a single arg
     # to anchor.
     # Unwrapped, like the three structural tests in the
@@ -10123,12 +10313,12 @@ def _emit_argument_list(
     )
 
     def _emit_arg_with_optional_paren_align(arg: Node) -> None:
-        # Binary positional arg paren-align: when a positional
+        # Binary positional arg continuation: when a positional
         # arg is a binary expression, set `paren_align_col` to
-        # the arg's start column so the binary's continuation
-        # operators paren-align under the arg's first operand
-        # instead of falling back to the `block + 4`
-        # cumulative indent. This produces:
+        # the arg's start column + 4 so the binary's
+        # continuation operators sit one indent deeper than the
+        # arg's first operand instead of falling back to the
+        # `block + 4` cumulative indent. This produces:
         #
         #     assertTrue(cond,
         #                "msg "
@@ -10141,13 +10331,20 @@ def _emit_argument_list(
         #                "msg "
         #         + var + " more");      // `+` at col 8
         #
+        # and never the flush shape, where the `+` row sits in
+        # the sibling arguments' column and reads as another
+        # argument (the standards' "is it an argument or a
+        # continuation?" anti-pattern). A multi-arg call paren
+        # is not a governing `(` for spec C6, so the +4
+        # continuation rule applies relative to the arg.
+        #
         # Narrow to direct binary_expression (no paren unwrap)
         # to avoid the idempotency drift that originally
         # narrowed the single-arg call-paren extension to
         # binary args only.
         if arg.type == "binary_expression":
             arg_col = emitter.column
-            prev_align = emitter.set_paren_align_col(arg_col)
+            prev_align = emitter.set_paren_align_col(arg_col + 4)
             try:
                 _emit_node(emitter, source, arg)
             finally:
@@ -10313,145 +10510,31 @@ def _emit_argument_list(
             emitter.write(")")
             emitter.pop_indent()
 
-    def emit_p2_greedy() -> None:
-        # P2: two-line paren-aligned comma-packed. Per spec
-        # "Method Call Arguments / Priority 2": break on a
-        # comma as late as possible (pack as many args as fit
-        # on the call line) and continue the rest on a
-        # SINGLE continuation line aligned to the first
-        # column after `(`.
+    def emit_p2_split(split: int) -> None:
+        # P2: two-line paren-aligned comma-packed, with the first
+        # `split` arguments on the call line and the rest on ONE
+        # continuation line aligned to the first column after `(`.
+        # The cascade emits every split and keeps the best balanced
+        # one (0.8.0); see the P2 block there. This function only
+        # lays out the given split — it does not judge it.
         #
-        # The two-line constraint distinguishes P2 from P3
-        # (paren-aligned one-per-line): P2 must fit the
-        # ENTIRE arg list on the call line + one continuation
-        # line, otherwise the wrap engine escalates to P3
-        # (each arg on its own line). This is what the spec
-        # calls out in "Method Call Arguments" as the "two-
-        # line comma-packed form ... fits on exactly two
-        # lines." A pre-0.6 bug allowed N-line packed shapes;
-        # 0.6.0 tightens to two-line strict.
-        #
-        # If P2 would spill onto a third line, `try_priorities`
-        # sees the emission failed the two-line invariant via
-        # `p2_committed_lines > 2` and falls through to
-        # `emit_p3_paren_one_per_line`.
+        # Every argument is emitted inline. An argument that has to
+        # wrap adds a row, and the caller's two-line check rejects
+        # the split. That is the same outcome the pre-0.8.0 greedy
+        # packer reached by breaking before such an argument: the
+        # emission then spilled past two lines and the tier was
+        # rejected, so P2 has only ever committed lists whose
+        # arguments all render on one row.
         emitter.write("(")
         cont_col = emitter.column
-        effective_max = _MAX_LINE - emitter.tail_reserve
-        prev_arg_multi_row = False
-        # Start-of-P2 line count for the two-line check. P2
-        # is committed only if `emitter.line_count -
-        # p2_start_line_count <= 1` (== 0 → all inline on
-        # the call line, == 1 → one continuation line, > 1
-        # → three or more lines, rejected).
-        p2_start_line_count = emitter.line_count
         for index, arg in enumerate(args):
-            if index == 0:
-                operand_start = emitter.line_count
-                _emit_arg_with_optional_paren_align(arg)
-                prev_arg_multi_row = (
-                    emitter.line_count > operand_start
-                )
-                continue
-            if prev_arg_multi_row:
-                # Item 8 invariant for arg lists: the previous
-                # arg's emission introduced newlines (a nested
-                # call / lambda / binary wrapped multi-row),
-                # so force break before this arg. Otherwise
-                # the next arg lands at whatever column the
-                # prior arg's wrap tail ended on, jamming
-                # `arg)` onto the same line as the wrapped
-                # construct's closing.
+            if index == split:
                 emitter.write(",")
                 emitter.newline()
                 emitter.write(" " * cont_col)
-                operand_start = emitter.line_count
-                _emit_arg_with_optional_paren_align(arg)
-                prev_arg_multi_row = (
-                    emitter.line_count > operand_start
-                )
-                continue
-            saved = emitter.snapshot()
-            emitter.write(", ")
-            operand_start = emitter.line_count
-            prev_p4 = emitter._arg_list_p4_fired
-            emitter._arg_list_p4_fired = False
+            elif index > 0:
+                emitter.write(", ")
             _emit_arg_with_optional_paren_align(arg)
-            widths_ok = (
-                emitter.last_lines_max_width(saved[0])
-                <= effective_max
-            )
-            if index == len(args) - 1:
-                # Reserve 1 char of slack on the final arg
-                # for the trailing `)` that follows.
-                #
-                # Asymmetry-justification: `widths_ok` above is
-                # a multi-line check (`last_lines_max_width`),
-                # while this final-arg check is column-only
-                # (`emitter.column`, the in-progress line's
-                # width). The combined gate is still correct
-                # because the multi-line check has already
-                # rejected any speculative emit whose
-                # intermediate wrapped line overflows; only the
-                # last line's tail (current column) still needs
-                # to leave room for the `)`. If a future
-                # refactor splits the gate, preserve that
-                # invariant: any intermediate line's width must
-                # be `<= effective_max`, only the final line
-                # needs the `< effective_max` (strict) cap.
-                widths_ok = (
-                    widths_ok
-                    and emitter.column < effective_max
-                )
-            # 0.6.0: reject the packed emission when the
-            # arg's own emission cascaded through arg-list
-            # P4 (leaf-arg wrap) — packing `arg1, deepCall(`
-            # then wrapping deepCall's args produces the
-            # "split call on same line as previous arg"
-            # shape (line 1 has `arg1, deepCall(`, line 2
-            # has `<indent>innerArg)`). Same line count as
-            # break-before-then-inline-emit, but the latter
-            # is cleaner. Same detection mechanism as
-            # binary emit's `paren_inner_wrap` — see
-            # `Emitter._arg_list_p4_fired`.
-            arg_wrapped_via_p4 = emitter._arg_list_p4_fired
-            emitter._arg_list_p4_fired = prev_p4 or arg_wrapped_via_p4
-            # 0.7.0: same reasoning as P1's `p1_invalid_wrap`. Packing
-            # this arg onto the call line "fits" only because the arg
-            # itself wrapped internally — every emitted line is under
-            # the cap, so the width check passes and P2 commits a
-            # partial break. Break before the arg instead, which
-            # usually leaves it room to render whole. Arguments that
-            # inherently own multiple rows are exempt.
-            arg_invalid_wrap = (
-                emitter.line_count > operand_start
-                and not _arg_owns_its_rows(arg)
-            )
-            # Patched in place rather than escalating the whole
-            # candidate, which is what P1 and P3 do. That asymmetry
-            # is safe because of the caller's two-line cap
-            # (`p2_line_count <= 1`) combined with its width check:
-            # if moving the argument to the continuation line still
-            # leaves it wrapping, the emission spills to a second
-            # continuation line and the cap rejects the whole tier;
-            # if it fits but overflows, the width check rejects it.
-            # Either way the cascade escalates. So the only P2
-            # outputs that survive are two lines and within budget —
-            # there is no locally-patched shape that slips through.
-            if not widths_ok or arg_wrapped_via_p4 or arg_invalid_wrap:
-                emitter.restore(saved)
-                emitter._arg_list_p4_fired = prev_p4
-                emitter.write(",")
-                emitter.newline()
-                emitter.write(" " * cont_col)
-                operand_start = emitter.line_count
-                _emit_arg_with_optional_paren_align(arg)
-                emitter._arg_list_p4_fired = (
-                    prev_p4 or emitter._arg_list_p4_fired
-                )
-            prev_arg_multi_row = (
-                emitter.line_count > operand_start
-            )
         emitter.write(")")
 
     # Closure-shared out-parameter: emit_p3 records whether
@@ -11028,21 +11111,83 @@ def _emit_argument_list(
         # enclosing construct, so the cascade goes straight to
         # P3's one-arg-per-line column. See
         # `_is_nested_or_chained_call`.
+        #
+        # 0.8.0 balanced P2. The split is no longer "as late as
+        # possible": every split that fits on two lines is emitted,
+        # and the one whose two rows carry the closest amount of text
+        # after the `(` wins, ties going to the longer call line.
+        # Measuring from the `(` rather than the line start is
+        # deliberate — the continuation row is paren-aligned, so its
+        # indent says nothing about how the CALL is balanced:
+        #
+        #     // 0.7.x, latest split
+        #     SzRecord record = new SzRecord("CUSTOMERS", "REC-001", "NAME+DOB",
+        #                                    null);
+        #     // 0.8.0, closest balance
+        #     SzRecord record = new SzRecord("CUSTOMERS", "REC-001",
+        #                                    "NAME+DOB", null);
+        #
+        # If even the best split leaves the continuation row under
+        # `_P2_BALANCE_MIN_RATIO` of the call row, P2 is lopsided and
+        # the list goes to P3, one argument per line. A continuation
+        # row that is the HEAVIER one never counts as lopsided. P2b is skipped
+        # in that case: P2 fitting means the paren-align column has
+        # room, which is exactly the case P2b is not for. Two-argument
+        # lists are exempt — their only split IS the P3 shape.
+        p2_lopsided_split: int | None = None
         if not _is_nested_or_chained_call(node):
             p2_snap = emitter.snapshot()
-            emit_p2_greedy()
-            p2_line_count = emitter.line_count - p2_snap[0]
-            p2_fits = (
-                emitter.last_lines_max_width(p2_snap[0])
-                <= effective_max
-                and p2_line_count <= 1
-            )
-            if p2_fits:
-                _fire_wrap_overflow_advisory(
-                    emitter, node, cascade_start, "argument list"
+            p2_cont_col = emitter.column + 1
+            p2_best: tuple[tuple[int, int], int, int, int] | None = None
+            for split in range(1, len(args)):
+                emit_p2_split(split)
+                # The parent's tail reserve (the statement's `;`, say)
+                # lands on the continuation row only, so the call row
+                # gets the full limit. Charging it to both rows is
+                # what made the 0.7.x greedy packer reject a call row
+                # that ended its comma in column 80 and drop the whole
+                # list to P3.
+                if (
+                    emitter.line_count - p2_snap[0] == 1
+                    and len(emitter._lines[p2_snap[0]]) <= _MAX_LINE
+                    and len(emitter._current) <= effective_max
+                ):
+                    call_row = len(emitter._lines[p2_snap[0]]) - p2_cont_col
+                    # Count what the parent appends (the `;` of the
+                    # statement, say) — the row is judged as it reads.
+                    cont_row = (
+                        len(emitter._current)
+                        - p2_cont_col
+                        + emitter.tail_reserve
+                    )
+                    key = (abs(call_row - cont_row), -call_row)
+                    if p2_best is None or key < p2_best[0]:
+                        p2_best = (key, split, call_row, cont_row)
+                emitter.restore(p2_snap)
+            if p2_best is not None:
+                _, split, call_row, cont_row = p2_best
+                # Only a short TAIL is lopsided. A continuation row
+                # heavier than the call row is a long last argument
+                # (an assertion message, a ternary) after short
+                # leading ones, which reads naturally as P2; P3 would
+                # just stack the short arguments above it.
+                balanced = (
+                    len(args) == 2
+                    or cont_row >= _P2_BALANCE_MIN_RATIO * call_row
                 )
-                return
-            emitter.restore(p2_snap)
+                if balanced:
+                    emit_p2_split(split)
+                    emitter._balanced_p2_span = (
+                        node.start_byte, node.end_byte
+                    )
+                    _fire_wrap_overflow_advisory(
+                        emitter, node, cascade_start, "argument list"
+                    )
+                    return
+                p2_lopsided_split = split
+        if p2_lopsided_split is None and not _is_nested_or_chained_call(
+            node
+        ):
             # 0.7.0 — spec priority 2b ("P4-packed" here for
             # historical reasons): the other member of the two-line
             # greedy family, with ZERO arguments on the call line.
@@ -11105,6 +11250,14 @@ def _emit_argument_list(
             )
             return
         emitter.restore(p3_snap)
+        # A lopsided P2 is still better than P4: it fit, and P3 was
+        # only preferred for balance.
+        if p2_lopsided_split is not None:
+            emit_p2_split(p2_lopsided_split)
+            _fire_wrap_overflow_advisory(
+                emitter, node, cascade_start, "argument list"
+            )
+            return
         # P4 (block+4 one-per-line) — spec C1 fallback,
         # commits unconditionally.
         emit_p4_multi_arg()
@@ -12298,6 +12451,21 @@ def _emit_variable_declarator(
         and not emitter._chain_ladder_fired
     )
     if inline_fits:
+        # 0.8.0 balance rule: a clean inline shape that had to WRAP
+        # the value gives way to a break at `=` that puts the whole
+        # value on one balanced row. See `_try_balanced_eq_break`.
+        if emitter.line_count > saved[0]:
+            inline_is_p2 = _inline_is_balanced_p2(
+                emitter, saved[0], value
+            )
+            emitter.restore(saved)
+            if not _try_balanced_eq_break(
+                emitter, source, value, "=", extra_tail=1,
+                inline_is_p2=inline_is_p2,
+            ):
+                emitter.write(" = ")
+                with _extra_tail_reserve(emitter, 1):
+                    _emit_node(emitter, source, value)
         # Hand both flags back as found, for the reason the Step 3
         # commit states at length below: the resets above are
         # local measurement devices, and a declarator nested
@@ -12511,6 +12679,19 @@ def _emit_variable_declarator(
         return
     # Backtrack and emit break-at-`=` even though the value
     # itself will wrap on the continuation line.
+    #
+    # 0.8.0 (#52): when the inline shape merely OVERFLOWS, the break
+    # is kept only if it narrows the widest row. The break adds an
+    # indent level to every wrapped row of the value, so for a value
+    # whose overflow comes from a wrapped row — an unsplittable
+    # literal among concatenated operands, an over-long statement
+    # in a block lambda's body — breaking makes the overflow worse
+    # and costs a line. (A value that overflows on the `=` row
+    # itself, such as one long atomic identifier, does narrow, and
+    # keeps the break.) An ORPHANED inline shape still takes the
+    # break unconditionally: there the break is a repair, not a
+    # width bet.
+    inline_widest = _widest_row(emitter, saved[0], 1)
     emitter.restore(saved)
     emitter.newline()
     emitter.push_indent()
@@ -12519,6 +12700,18 @@ def _emit_variable_declarator(
     with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
     emitter.pop_indent()
+    if (
+        not inline_orphan
+        and _widest_row(emitter, saved[0], 1) >= inline_widest
+    ):
+        # Re-emit the inline shape. It neither orphaned (tested
+        # above) nor needs its ladder evidence: the flag is handed
+        # back as found just below, as on every exit.
+        emitter.restore(saved)
+        emitter.write(" = ")
+        with _extra_tail_reserve(emitter, 1):
+            _emit_node(emitter, source, value)
+        emitter._anchor_escaped = prev_escaped
     # Unlike `_anchor_escaped`, which deliberately accumulates across
     # this backtrack (an escape anywhere under the value is evidence
     # the enclosing construct needs), the ladder flag is a PER-

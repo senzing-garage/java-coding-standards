@@ -644,10 +644,9 @@ class TestFormatSourceSubset:
         # paren-aligned, comma-packed)": when P1 single-line
         # would overflow 80 chars, pack as many args as fit on
         # the call line and align the continuation to the
-        # column right after `(`. Greedy packing — args go on
-        # the call line until adding the next one would push
-        # the line past 80; remaining args land at the paren-
-        # aligned continuation column.
+        # column right after `(`. Since 0.8.0 the split is the
+        # best balanced one, measured on the text after `(`,
+        # not the latest one that fits.
         src = (
             b"class A {\n"
             b"    void m() {\n"
@@ -657,20 +656,19 @@ class TestFormatSourceSubset:
             b"}\n"
         )
         out = format_java.format_source(src)
-        # The `(` lands at column 46, so continuation is at
-        # column 47 (46 leading spaces + the arg). The first
-        # three args (firstArg, secondArg, thirdArg) pack
-        # onto the call line; fourthArg breaks to the
-        # continuation.
+        # The continuation sits at 46 leading spaces, one past
+        # the `(`. The latest split (three args, then
+        # `fourthArg);`) is 30 chars against 11; splitting
+        # after `secondArg` is 20 against 21, the closest.
         assert out == (
             b"class A\n"
             b"{\n"
             b"    void m()\n"
             b"    {\n"
             b"        String r = svc.callSomeLongMethodName("
-            b"firstArg, secondArg, thirdArg,\n"
+            b"firstArg, secondArg,\n"
             b"                                              "
-            b"fourthArg);\n"
+            b"thirdArg, fourthArg);\n"
             b"    }\n"
             b"}\n"
         )
