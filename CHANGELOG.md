@@ -10,8 +10,10 @@ and this project adheres to
 
 ## [Unreleased]
 
-Bug-fix release in progress (0.7.2). Defects found while adopting
-0.7.1 in `data-mart-replicator`.
+Release in progress (0.8.0). Defects and spec gaps found while
+adopting 0.7.1 in `data-mart-replicator`. This is a minor release
+because it changes normative rules in the standards, not just the
+formatter's conformance to them.
 
 ### Fixed
 
@@ -36,7 +38,7 @@ multilineFormat(
     "",
     "Cause: " + e.getMessage());
 
-// 0.7.2
+// 0.8.0
 multilineFormat(
     "Failed to read JSON initialization "
         + "file: " + initFile,
