@@ -144,6 +144,65 @@ now breaks at `=` and is replaced.
 
 ### Fixed
 
+**The formatter deleted comments in control-statement headers and
+between method-chain segments.** Each of these emitters wrote its
+construct from grammar fields only and skipped the comments sitting
+between them, so the comments were silently removed:
+
+- a comment between a header's `)` and its `{` in `if`, `for`,
+  enhanced `for`, `while`, `switch`, `synchronized`, `try` and
+  try-with-resources;
+- a comment after a clause of a `for` header;
+- a trailing or own-line comment between method-chain segments.
+
+They are now kept where they were written. A header that carries a
+comment takes the Allman brace, a `for` header with a clause comment
+puts one clause on each row, and a chain with comments puts one
+segment on each row (its shape is chosen with the comments left
+out, as for a statement's trailing comment):
+
+```java
+// 0.7.1
+for (String record = engine.getRedoRecord();
+     record != null;
+     record = engine.getRedoRecord()) {
+
+builder.add(DELAY_KEY, 50)
+       .add(CONCURRENCY_KEY, 1)
+       .build();
+
+// 0.8.0
+for (String record = engine.getRedoRecord();  // @highlight regex="record.*"
+     record != null;
+     record = engine.getRedoRecord())  // @highlight regex="record.*"
+{
+
+builder.add(DELAY_KEY, 50)  // short delay so tasks get picked up
+       .add(CONCURRENCY_KEY, 1)  // single thread to force serialization
+       .build();
+```
+
+Two rarer positions are refused, leaving the file untouched, instead
+of being dropped: a comment between `else` and its branch, and one
+between a single call's receiver and its `.`.
+
+Across the five-repo corpus, 16 comments were lost this way: 2 Javadoc
+snippet `@highlight` tags in sz-sdk-java (0.5.1 adoption) and 14 chain
+comments in data-mart-replicator's 0.7.1 adoption working tree. With
+the fix, 903 corpus files format with exactly those 5 files changing.
+
+**A guard now refuses to write output that lost comment text.**
+`format_source` compares the words of every comment in the input
+with those in the output (re-flow changes only whitespace and comment
+markers, so words must all survive) and raises `CommentLossError` if
+any are missing. `format_file.py` reports it as an error, exits 1 and
+leaves the file unchanged. It is the backstop for any position still
+unhandled.
+
+- New fixtures `comment_preservation/11_method_chain_segment_comments`,
+  `12_control_header_side_comments` and
+  `13_for_header_clause_comments`.
+
 **A priority 2 call line ending in column 80 dropped the whole list
 to priority 3.** The statement's `;` was reserved on the call line
 as well as on the continuation line, so a call line whose trailing

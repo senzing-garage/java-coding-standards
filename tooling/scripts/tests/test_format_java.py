@@ -5869,6 +5869,66 @@ class TestCatchHeaderComments:
         assert "// ordinary" in out
 
 
+class TestCommentLossGuard:
+    """`format_source` refuses to return output that lost comment
+    words, whatever emitter dropped them.
+
+    Before 0.8.0, comments in control-statement headers and between
+    method-chain segments were silently deleted; the guard is the
+    backstop for any position still unhandled.
+    """
+
+    _SRC = (
+        "public class T\n{\n    void t()\n    {\n"
+        "        run(); // keep these words\n"
+        "    }\n}\n"
+    ).encode()
+
+    def test_dropped_comment_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An emitter that drops a comment trips the guard."""
+        monkeypatch.setitem(
+            format_java._NODE_EMITTERS,
+            "line_comment",
+            lambda emitter, source, node: None,
+        )
+        with pytest.raises(
+            format_java.CommentLossError, match="'keep'"
+        ):
+            format_java.format_source(self._SRC)
+
+    def test_reflow_is_not_loss(self) -> None:
+        """Re-flowing a long comment changes only whitespace and
+        markers, so the words survive and nothing is raised."""
+        words = " ".join(["word"] * 30)
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            f"        // {words}\n"
+            "        run();\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src).decode()
+        assert out.count("word") == 30
+
+    def test_comment_between_else_and_branch_is_refused(self) -> None:
+        src = (
+            "public class T\n{\n    void t(boolean a)\n    {\n"
+            "        if (a) {\n            x();\n        } else // why\n"
+            "        {\n            y();\n        }\n    }\n}\n"
+        ).encode()
+        with pytest.raises(NotImplementedError, match="`else`"):
+            format_java.format_source(src)
+
+    def test_comment_before_single_call_dot_is_refused(self) -> None:
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            "        receiver // why\n            .run();\n"
+            "    }\n}\n"
+        ).encode()
+        with pytest.raises(NotImplementedError, match="receiver"):
+            format_java.format_source(src)
+
+
 class TestDeclarationMatchesAssignmentTwin:
     """`Type x = RHS` and its bare twin `x = RHS` must settle on
     the same shape.

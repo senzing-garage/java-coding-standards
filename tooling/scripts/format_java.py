@@ -93,6 +93,7 @@ validation and diagnostics.
 from __future__ import annotations
 
 import argparse
+import collections
 import sys
 import threading
 from contextlib import contextmanager
@@ -3439,10 +3440,12 @@ def _emit_if_statement(
             "— grammar shape unexpected."
         )
 
+    header_comments = _header_side_comments(node, consequence)
     short_circuit = _short_circuit_body(consequence)
     if (
         alternative is None
         and short_circuit is not None
+        and not header_comments
         and not _is_else_branch_if(node)
     ):
         # No source-row gate. Earlier releases also required
@@ -3535,14 +3538,21 @@ def _emit_if_statement(
         _emit_node(emitter, source, condition)
     finally:
         emitter.set_tail_reserve(prev_reserve)
-    if emitter.line_count > cond_start_line_count:
-        emitter.newline()
-        emitter.write_indent()
-    else:
-        emitter.write(" ")
+    _write_header_body_gap(
+        emitter,
+        source,
+        header_comments,
+        allman=emitter.line_count > cond_start_line_count,
+    )
     _emit_branch_as_block(emitter, source, consequence)
 
     if alternative is not None:
+        if _header_side_comments(node, alternative, after=consequence):
+            raise NotImplementedError(
+                "a comment between `else` and its branch is not yet "
+                "supported — it would be dropped. Move it inside the "
+                "branch."
+            )
         if alternative.type == "if_statement":
             # else-if chain: dispatch the nested if_statement;
             # its emitter writes "if (...) { ... }" starting
@@ -3552,6 +3562,55 @@ def _emit_if_statement(
         else:
             emitter.write(" else ")
             _emit_branch_as_block(emitter, source, alternative)
+
+
+def _header_side_comments(
+    node: Node, body: Node, after: Node | None = None
+) -> list[Node]:
+    """Comments that are direct children of `node` and sit before
+    `body` (and after `after`, when given).
+
+    For a control statement these are the comments between its
+    header and its body — `if (ready) // why` above an Allman `{`,
+    or `for (…) // @highlight …`. Each statement emitter writes its
+    header and body from grammar fields only, so before 0.8.0 every
+    such comment was silently deleted. Comments inside the header's
+    parentheses belong to the condition's own subtree and are not
+    returned here.
+    """
+    lo = after.end_byte if after is not None else node.start_byte
+    return [
+        child for child in node.children
+        if child.type in ("line_comment", "block_comment")
+        and lo <= child.start_byte < body.start_byte
+    ]
+
+
+def _write_header_body_gap(
+    emitter: Emitter,
+    source: bytes,
+    comments: list[Node],
+    *,
+    allman: bool,
+) -> None:
+    """Write what goes between a control header and its `{`.
+
+    Without comments this is the usual choice: a space before a
+    same-line `{`, or a newline at the statement's indent for an
+    Allman `{`. Comments from `_header_side_comments` are written
+    after the header as end-of-line side comments (two spaces, per
+    spec C6) and force the Allman brace: a `//` comment ends the
+    row, so the `{` cannot follow it, and the source had to put the
+    `{` on its own row for the same reason.
+    """
+    for comment in comments:
+        emitter.write("  ")
+        _emit_node(emitter, source, comment)
+    if allman or comments:
+        emitter.newline()
+        emitter.write_indent()
+    else:
+        emitter.write(" ")
 
 
 _JAVADOC_BLOCK_TOKENS: Final[tuple[str, ...]] = (
@@ -5721,11 +5780,12 @@ def _emit_switch_expression(
         _emit_node(emitter, source, cond)
     finally:
         emitter.set_tail_reserve(prev_reserve)
-    if emitter.line_count > cond_start_line_count:
-        emitter.newline()
-        emitter.write_indent()
-    else:
-        emitter.write(" ")
+    _write_header_body_gap(
+        emitter,
+        source,
+        _header_side_comments(node, block),
+        allman=emitter.line_count > cond_start_line_count,
+    )
     _emit_node(emitter, source, block)
 
 
@@ -6055,18 +6115,21 @@ def _emit_synchronized_statement(
             "synchronized_statement missing condition or body — "
             "grammar shape unexpected."
         )
+    header_comments = _header_side_comments(node, body)
     emitter.write("synchronized ")
     if _node_spans_multiple_rows(cond):
         emitter.write_raw_lines(
             _node_source_text(source, cond), strip_trailing_ws=True
         )
-        emitter.newline()
-        emitter.write_indent()
-        _emit_node(emitter, source, body)
+        _write_header_body_gap(
+            emitter, source, header_comments, allman=True
+        )
     else:
         _emit_node(emitter, source, cond)
-        emitter.write(" ")
-        _emit_node(emitter, source, body)
+        _write_header_body_gap(
+            emitter, source, header_comments, allman=False
+        )
+    _emit_node(emitter, source, body)
 
 
 def _emit_explicit_constructor_invocation(
@@ -6283,7 +6346,10 @@ def _emit_try_statement(
             "shape unexpected."
         )
 
-    emitter.write("try ")
+    emitter.write("try")
+    _write_header_body_gap(
+        emitter, source, _header_side_comments(node, body), allman=False
+    )
     _emit_node(emitter, source, body)
     for child in node.children:
         if child.type in ("catch_clause", "finally_clause"):
@@ -6618,6 +6684,55 @@ def _emit_for_statement(
 
     condition = node.child_by_field_name("condition")
 
+    # 0.8.0: comments in and after the header. Each is a direct child
+    # of the `for_statement`, and the header was emitted from its
+    # fields alone, so all of them were silently deleted — including
+    # the Javadoc snippet markup in
+    #
+    #     for (String record = engine.getRedoRecord(); // @highlight …
+    #          record != null;
+    #          record = engine.getRedoRecord()) // @highlight …
+    #     {
+    #
+    # A comment after a clause goes at the end of that clause's row,
+    # which needs the one-clause-per-row header; a comment after the
+    # `)` (or after the last clause) goes after the `)`, which needs
+    # the Allman brace. See `_write_header_body_gap`.
+    close_paren = next(
+        (c for c in node.children if c.type == ")"), None
+    )
+    after_init: list[Node] = []
+    after_condition: list[Node] = []
+    after_header: list[Node] = []
+    if close_paren is not None:
+        for child in node.children:
+            if child.type not in ("line_comment", "block_comment"):
+                continue
+            if child.start_byte >= body.start_byte:
+                continue
+            if child.start_byte > close_paren.start_byte:
+                after_header.append(child)
+            elif condition is not None and (
+                child.start_byte < condition.start_byte
+            ):
+                after_init.append(child)
+            elif updates and child.start_byte < updates[0].start_byte:
+                after_condition.append(child)
+            else:
+                # After the last clause, before `)`: a `//` comment
+                # cannot stay there, so it moves after the `)`.
+                after_header.insert(0, child)
+    if condition is None:
+        # No condition row to end: `for (init; // …` would comment
+        # out the `;` that closes the empty condition.
+        after_condition[:0] = after_init
+        after_init = []
+
+    def write_clause_comments(comments: list[Node]) -> None:
+        for comment in comments:
+            emitter.write("  ")
+            _emit_node(emitter, source, comment)
+
     # 0.5.0 item 5 — when the source had the for-header
     # spanning multiple rows, the developer chose to break
     # init / cond / update onto separate lines (typically
@@ -6657,7 +6772,10 @@ def _emit_for_statement(
     for part in (*inits, condition, *updates):
         if part is not None:
             header_end_row = max(header_end_row, part.end_point[0])
-    source_was_multi_row = header_end_row != node.start_point[0]
+    source_was_multi_row = (
+        header_end_row != node.start_point[0]
+        or bool(after_init or after_condition)
+    )
 
     # Single-row source: build the header inline. After
     # emission, check whether wrapping inside the
@@ -6707,11 +6825,13 @@ def _emit_for_statement(
         )
         try:
             emit_for_init_section()
+            write_clause_comments(after_init)
             if condition is not None:
                 emitter.newline()
                 emitter.write(cont_indent)
                 _emit_node(emitter, source, condition)
             emitter.write(";")
+            write_clause_comments(after_condition)
             if updates:
                 emitter.newline()
                 emitter.write(cont_indent)
@@ -6802,17 +6922,17 @@ def _emit_for_statement(
     inline_form_overflows = (
         emitter.column + 2 > _MAX_LINE
     )
-    if (
-        emitter.line_count > header_start[0]
-        or body_on_new_row
-        or inline_form_overflows
-    ):
-        emitter.newline()
-        emitter.write_indent()
-        _emit_node(emitter, source, body)
-    else:
-        emitter.write(" ")
-        _emit_node(emitter, source, body)
+    _write_header_body_gap(
+        emitter,
+        source,
+        after_header,
+        allman=(
+            emitter.line_count > header_start[0]
+            or body_on_new_row
+            or inline_form_overflows
+        ),
+    )
+    _emit_node(emitter, source, body)
 
 
 def _emit_enhanced_for_statement(
@@ -6861,6 +6981,11 @@ def _emit_enhanced_for_statement(
     # "Multi-line Conditions" exception that already governs `if`,
     # `while` and (since 0.7.0) `switch`, so a wrapped header stays
     # visually separate from the body.
+    #
+    # Comments anywhere before the body — after the `)`, or inside
+    # the header, where they are direct children too — are written
+    # after the `)` (see `_header_side_comments`).
+    header_comments = _header_side_comments(node, body)
     saved = emitter.snapshot()
     emitter.write("for (")
     _emit_node(emitter, source, type_node)
@@ -6885,7 +7010,10 @@ def _emit_enhanced_for_statement(
         and emitter.column + 3 + emitter.tail_reserve <= _MAX_LINE
     )
     if inline_fits:
-        emitter.write(") ")
+        emitter.write(")")
+        _write_header_body_gap(
+            emitter, source, header_comments, allman=False
+        )
         _emit_node(emitter, source, body)
         return
     emitter.restore(saved)
@@ -6938,8 +7066,7 @@ def _emit_enhanced_for_statement(
             "the iterable expression or hoist it to a local."
         ),
     )
-    emitter.newline()
-    emitter.write_indent()
+    _write_header_body_gap(emitter, source, header_comments, allman=True)
     _emit_node(emitter, source, body)
 
 
@@ -6964,6 +7091,7 @@ def _emit_while_statement(
             "while_statement with missing fields or brace-less "
             "body is not yet supported."
         )
+    header_comments = _header_side_comments(node, body)
     emitter.write("while ")
     if _node_spans_multiple_rows(condition):
         # Preserve the developer-authored multi-line condition
@@ -6972,8 +7100,9 @@ def _emit_while_statement(
             _node_source_text(source, condition),
             strip_trailing_ws=True,
         )
-        emitter.newline()
-        emitter.write_indent()
+        _write_header_body_gap(
+            emitter, source, header_comments, allman=True
+        )
         _emit_node(emitter, source, body)
     else:
         # Single-row source: emit the condition inline and
@@ -6995,13 +7124,13 @@ def _emit_while_statement(
             _emit_node(emitter, source, condition)
         finally:
             emitter.set_tail_reserve(prev_reserve)
-        if emitter.line_count > cond_start_line_count:
-            emitter.newline()
-            emitter.write_indent()
-            _emit_node(emitter, source, body)
-        else:
-            emitter.write(" ")
-            _emit_node(emitter, source, body)
+        _write_header_body_gap(
+            emitter,
+            source,
+            header_comments,
+            allman=emitter.line_count > cond_start_line_count,
+        )
+        _emit_node(emitter, source, body)
 
 
 def _emit_do_statement(
@@ -7792,16 +7921,15 @@ def _emit_try_with_resources_statement(
         emitter.set_tail_reserve(prev_reserve)
     emitter.write(")")
 
-    if len(resources) > 1:
-        # Allman brace because the try condition is
-        # multi-line.
-        emitter.newline()
-        emitter.write_indent()
-        _emit_node(emitter, source, body)
-    else:
-        # Single resource on one line — same-line brace.
-        emitter.write(" ")
-        _emit_node(emitter, source, body)
+    # Several resources make the try condition multi-line, so the
+    # brace goes Allman; a single resource keeps the same-line brace.
+    _write_header_body_gap(
+        emitter,
+        source,
+        _header_side_comments(node, body, after=resources_node),
+        allman=len(resources) > 1,
+    )
+    _emit_node(emitter, source, body)
 
     # Optional catch and finally clauses cuddle with the
     # closing `}` of the body. Same shape as
@@ -11496,6 +11624,58 @@ def _emit_method_chain_wrapped(
         _emit_node(emitter, source, name)
         _emit_node(emitter, source, args)
 
+    # 0.8.0: comments between segments. Tree-sitter makes a comment
+    # that follows `.add(KEY, 50)` a child of the NEXT segment, sitting
+    # between that segment's receiver and its `.`:
+    #
+    #     builder.add(KEY_ONE, 50)  // Short delay
+    #            // Missing other properties
+    #            .add(KEY_TWO, 100)
+    #
+    # `emit_segment` writes only the name and arguments, so every such
+    # comment was silently deleted. Each segment's leading comments are
+    # now written just before that segment starts its row: one that sat
+    # on the previous segment's source row stays there as a trailing
+    # comment, any other gets its own row at the segment's dot column.
+    #
+    # The layout is chosen with the comments left out — the same as a
+    # statement's trailing comment, which is written after the
+    # statement and never measured — and then emitted again with them
+    # in place, so a long comment cannot move the chain to a different
+    # shape. A `//` comment ends its row, so the shapes that keep
+    # segments on one row (P1, the greedy same-method packing) are not
+    # candidates, and a comment on a segment that a shape keeps inline
+    # rules that shape out.
+    gap_comments: dict[int, list[Node]] = {}
+    for seg in segments:
+        leading: list[Node] = []
+        for child in seg.children:
+            if child.type == ".":
+                break
+            if child.type in ("line_comment", "block_comment"):
+                leading.append(child)
+        if leading:
+            gap_comments[seg.id] = leading
+    place_comments = [False]
+
+    def emit_gap_comments(seg: Node, col: int) -> None:
+        if not place_comments[0]:
+            return
+        for comment in gap_comments.get(seg.id, ()):
+            prev = comment.prev_sibling
+            if (
+                prev is not None
+                and comment.start_point[0] == prev.end_point[0]
+            ):
+                emitter.write("  ")
+            else:
+                emitter.newline()
+                emitter.write(" " * col)
+            _emit_node(emitter, source, comment)
+
+    def inline_has_comments(*inline: Node) -> bool:
+        return any(seg.id in gap_comments for seg in inline)
+
     # When emit_p1 runs, this list records "did a segment's emit
     # introduce newlines because the wrap engine had to break
     # something to fit (vs. because the source itself was
@@ -11725,6 +11905,7 @@ def _emit_method_chain_wrapped(
             emit_seg_track_wrap(segments[1])
             wrap_from = 2
         for seg in segments[wrap_from:]:
+            emit_gap_comments(seg, first_dot_col)
             emitter.newline()
             emitter.write(" " * first_dot_col)
             emitter.write(".")
@@ -11797,6 +11978,7 @@ def _emit_method_chain_wrapped(
             emit_seg_track_wrap(segments[0])
             wrap_from = 1
         for seg in segments[wrap_from:]:
+            emit_gap_comments(seg, tail_col)
             emitter.newline()
             emitter.write(" " * tail_col)
             emitter.write(".")
@@ -11822,6 +12004,7 @@ def _emit_method_chain_wrapped(
             emit_segment(segments[0])
             wrap_from = 1
         for seg in segments[wrap_from:]:
+            emit_gap_comments(seg, p3_col)
             emitter.newline()
             emitter.write(" " * p3_col)
             emitter.write(".")
@@ -11916,113 +12099,143 @@ def _emit_method_chain_wrapped(
     # are deliberate.
     effective_max = _MAX_LINE - emitter.tail_reserve
     saved = emitter.snapshot()
-    emit_p1()
-    p1_fits = (
-        emitter.last_lines_max_width(saved[0]) <= effective_max
-        and not p1_segment_break_seen[0]
-    )
-    if p1_fits:
+
+    def choose_shape() -> Callable[[], None]:
+        """Run the shape cascade; return the shape it committed."""
+        if not gap_comments:
+            emit_p1()
+        p1_fits = not gap_comments and (
+            emitter.last_lines_max_width(saved[0]) <= effective_max
+            and not p1_segment_break_seen[0]
+        )
+        if p1_fits:
+            return emit_p1
+        emitter.restore(saved)
+
+        # 0.5.0 item 2b: try emit_p2_greedy_dot_aligned BEFORE the
+        # standard P2 (one-per-line dot-aligned) when all chain
+        # segments call the same method name AND the chain has an
+        # explicit receiver. Same-method chains
+        # (`sb.append(a).append(b)…`) benefit from horizontal
+        # density; mixed-name chains (`.builder().setReader().get()`)
+        # keep the one-per-line shape via P2. Headless same-name
+        # chains (`getX().getX().getX()` — extremely unusual) also
+        # keep one-per-line because the canonical motivation
+        # (builder pattern with named receiver) doesn't apply.
+        # No `not chain_is_sole_arg` clause here, unlike the P3F and P2
+        # tiers below: `chain_is_sole_arg` is only ever assigned inside
+        # `if chain_is_positional_arg and head is None`, so it cannot be
+        # True while `head is not None` holds. Including it read as
+        # though headless sole-argument chains were being excluded from
+        # this tier too, when they can never reach it.
+        if (
+            head is not None
+            and not gap_comments
+            and _chain_segments_share_method_name(source, segments)
+        ):
+            greedy_saved = emitter.snapshot()
+            emit_p2_greedy_dot_aligned()
+            if emitter.last_lines_max_width(greedy_saved[0]) <= effective_max:
+                return emit_p2_greedy_dot_aligned
+            emitter.restore(greedy_saved)
+
+        # 0.7.0 removed the 0.6.0 "P1F" factory-chain tier, which sat
+        # here and packed receiver + factory + FIRST CHAIN onto line 1
+        # (`Factory.make(a).step1(b)` with `.step2(c)` aligned under
+        # `.step1`'s dot) whenever the receiver was a PascalCase
+        # identifier and the chain had 3+ segments.
+        #
+        # That violates the pack-all-or-nothing principle: the
+        # all-on-one-line shape is only available when the WHOLE chain
+        # fits. Once it does not, the correct break point is the first
+        # chain continuation dot — not "as many segments as happen to
+        # fit". P1F produced a line whose content was determined purely
+        # by where 80 characters ran out, which is also why the same
+        # idiom rendered two ways depending on whether segment 1 fit:
+        #
+        #     this.env = SzCoreEnvironment.newBuilder().instanceName(x)
+        #                                              .settings(y)
+        #
+        # rather than the canonical form the source already had:
+        #
+        #     this.env = SzCoreEnvironment.newBuilder()
+        #                                 .instanceName(x)
+        #                                 .settings(y)
+        #
+        # Falling straight through to P2F (`emit_p2`: receiver +
+        # factory on line 1, every remaining segment one per line at
+        # the first dot's column) restores that.
+
+        # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
+        # cascade. Fires when the whole chain is wrapped in a
+        # grouping paren (paren_expr_col set). Tried BEFORE the
+        # standard P2 (block+4-agnostic dot-align) because the
+        # paren-indent shape is preferred when we're inside a
+        # grouping paren — Q-CHAIN-5 confirms outer-paren-indent
+        # + 4 for the chain-tail. Falls through to P2 if the
+        # paren-indent shape overflows or Q-CHAIN-4 backoff
+        # triggers.
+        if (
+            not chain_is_sole_arg
+            and emitter.paren_expr_col is not None
+            and not (
+                head is not None
+                and head.type != "object_creation_expression"
+                and inline_has_comments(segments[0])
+            )
+        ):
+            p3f_saved = emitter.snapshot()
+            emit_p3f_paren_indent()
+            p3f_fits = (
+                emitter.last_lines_max_width(p3f_saved[0])
+                <= effective_max
+                and not p3f_segment_wrapped[0]
+            )
+            if p3f_fits:
+                return emit_p3f_paren_indent
+            emitter.restore(p3f_saved)
+
+        p2_saved = emitter.snapshot()
+        p2_inline = (
+            (segments[0],) if head is not None else (segments[1],)
+        )
+        if not chain_is_sole_arg and not inline_has_comments(*p2_inline):
+            emit_p2()
+            p2_fits = (
+                emitter.last_lines_max_width(p2_saved[0])
+                <= effective_max
+                and not p2_segment_wrapped[0]
+            )
+            if p2_fits:
+                return emit_p2
+            emitter.restore(p2_saved)
+        emit_p3()
+        # Method-chain wrap site advisory uses the first segment
+        # (or head, if present) as the source position — the
+        # earliest token of the chain is the most useful jump
+        # target for the developer fixing an overflow.
+        advisory_anchor = head if head is not None else segments[0]
+        _fire_wrap_overflow_advisory(
+            emitter, advisory_anchor, p2_saved[0], "method chain"
+        )
+        return emit_p3
+
+    if not gap_comments:
+        choose_shape()
         return
+    # Comments present: choose the shape with them left out, then
+    # emit that shape again with them in place (see `gap_comments`).
+    chosen = choose_shape()
     emitter.restore(saved)
-
-    # 0.5.0 item 2b: try emit_p2_greedy_dot_aligned BEFORE the
-    # standard P2 (one-per-line dot-aligned) when all chain
-    # segments call the same method name AND the chain has an
-    # explicit receiver. Same-method chains
-    # (`sb.append(a).append(b)…`) benefit from horizontal
-    # density; mixed-name chains (`.builder().setReader().get()`)
-    # keep the one-per-line shape via P2. Headless same-name
-    # chains (`getX().getX().getX()` — extremely unusual) also
-    # keep one-per-line because the canonical motivation
-    # (builder pattern with named receiver) doesn't apply.
-    # No `not chain_is_sole_arg` clause here, unlike the P3F and P2
-    # tiers below: `chain_is_sole_arg` is only ever assigned inside
-    # `if chain_is_positional_arg and head is None`, so it cannot be
-    # True while `head is not None` holds. Including it read as
-    # though headless sole-argument chains were being excluded from
-    # this tier too, when they can never reach it.
-    if (
-        head is not None
-        and _chain_segments_share_method_name(source, segments)
-    ):
-        greedy_saved = emitter.snapshot()
-        emit_p2_greedy_dot_aligned()
-        if emitter.last_lines_max_width(greedy_saved[0]) <= effective_max:
-            return
-        emitter.restore(greedy_saved)
-
-    # 0.7.0 removed the 0.6.0 "P1F" factory-chain tier, which sat
-    # here and packed receiver + factory + FIRST CHAIN onto line 1
-    # (`Factory.make(a).step1(b)` with `.step2(c)` aligned under
-    # `.step1`'s dot) whenever the receiver was a PascalCase
-    # identifier and the chain had 3+ segments.
-    #
-    # That violates the pack-all-or-nothing principle: the
-    # all-on-one-line shape is only available when the WHOLE chain
-    # fits. Once it does not, the correct break point is the first
-    # chain continuation dot — not "as many segments as happen to
-    # fit". P1F produced a line whose content was determined purely
-    # by where 80 characters ran out, which is also why the same
-    # idiom rendered two ways depending on whether segment 1 fit:
-    #
-    #     this.env = SzCoreEnvironment.newBuilder().instanceName(x)
-    #                                              .settings(y)
-    #
-    # rather than the canonical form the source already had:
-    #
-    #     this.env = SzCoreEnvironment.newBuilder()
-    #                                 .instanceName(x)
-    #                                 .settings(y)
-    #
-    # Falling straight through to P2F (`emit_p2`: receiver +
-    # factory on line 1, every remaining segment one per line at
-    # the first dot's column) restores that.
-
-    # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
-    # cascade. Fires when the whole chain is wrapped in a
-    # grouping paren (paren_expr_col set). Tried BEFORE the
-    # standard P2 (block+4-agnostic dot-align) because the
-    # paren-indent shape is preferred when we're inside a
-    # grouping paren — Q-CHAIN-5 confirms outer-paren-indent
-    # + 4 for the chain-tail. Falls through to P2 if the
-    # paren-indent shape overflows or Q-CHAIN-4 backoff
-    # triggers.
-    if (
-        not chain_is_sole_arg
-        and emitter.paren_expr_col is not None
-    ):
-        p3f_saved = emitter.snapshot()
-        emit_p3f_paren_indent()
-        p3f_fits = (
-            emitter.last_lines_max_width(p3f_saved[0])
-            <= effective_max
-            and not p3f_segment_wrapped[0]
+    place_comments[0] = True
+    chosen()
+    if chosen is emit_p3:
+        _fire_wrap_overflow_advisory(
+            emitter,
+            head if head is not None else segments[0],
+            saved[0],
+            "method chain",
         )
-        if p3f_fits:
-            return
-        emitter.restore(p3f_saved)
-
-    p2_saved = emitter.snapshot()
-    if not chain_is_sole_arg:
-        emit_p2()
-        p2_fits = (
-            emitter.last_lines_max_width(p2_saved[0])
-            <= effective_max
-            and not p2_segment_wrapped[0]
-        )
-        if p2_fits:
-            return
-        emitter.restore(p2_saved)
-    emit_p3()
-    # Method-chain wrap site advisory uses the first segment
-    # (or head, if present) as the source position — the
-    # earliest token of the chain is the most useful jump
-    # target for the developer fixing an overflow.
-    advisory_anchor = head if head is not None else segments[0]
-    _fire_wrap_overflow_advisory(
-        emitter, advisory_anchor, p2_saved[0], "method chain"
-    )
-
 
 def _emit_method_invocation(
     emitter: Emitter, source: bytes, node: Node
@@ -12098,6 +12311,19 @@ def _emit_method_invocation(
     # for no line-length gain: 19 extra advisories, measured against
     # the 305-advisory baseline in place when the comparison was run.
     object_node = node.child_by_field_name("object")
+    if any(
+        child.type in ("line_comment", "block_comment")
+        and child.start_byte < name_node.start_byte
+        for child in node.children
+    ):
+        # `receiver // why` then `.method()` on the next row: the
+        # single-call path keeps the call on one row, where a `//`
+        # comment cannot sit, and it used to drop the comment.
+        raise NotImplementedError(
+            "a comment between a call's receiver and its `.` is not "
+            "yet supported — it would be dropped. Move it above the "
+            "statement."
+        )
     if object_node is not None:
         name_text = _node_source_text(source, name_node)
         trailing = 1 + len(name_text) + 1
@@ -12897,6 +13123,64 @@ def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     handler(emitter, source, node)
 
 
+class CommentLossError(RuntimeError):
+    """Raised when formatting would lose comment text.
+
+    Not a `NotImplementedError` refusal: a refusal is the
+    formatter cleanly declining a construct it knows it does not
+    handle, while a lost comment is an emitter bug that silently
+    deleted the developer's words. `format_file.py` reports it as
+    an error, leaves the file untouched and exits non-zero.
+    """
+
+
+def _comment_words(tree: Tree) -> collections.Counter[str]:
+    """Multiset of the words in every comment of `tree`.
+
+    Words, not whole comments, because the formatter legitimately
+    re-flows comment text (javadoc and long `//` comments) and
+    re-indents block-comment rows; only whitespace and the comment
+    markers change. Stripping `//`, `/*`, `*/` and each row's
+    leading `*` leaves the words the developer wrote, which must
+    all survive.
+    """
+    words: collections.Counter[str] = collections.Counter()
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "line_comment":
+            words.update(node.text.decode("utf-8")[2:].split())
+        elif node.type == "block_comment":
+            body = node.text.decode("utf-8")[2:-2]
+            for row in body.splitlines():
+                words.update(row.strip().lstrip("*").split())
+        else:
+            stack.extend(node.children)
+    return words
+
+
+def _check_comments_preserved(before: Tree, after: bytes) -> None:
+    """Raise `CommentLossError` when `after` drops comment words.
+
+    The last line of defence against an emitter that skips a
+    comment child it does not expect — a comment inside a control
+    statement header or between method-chain segments has been
+    silently deleted this way. Whatever the cause, the formatter
+    must never write output that has lost comment text.
+    """
+    lost = _comment_words(before) - _comment_words(parse_source(after))
+    if lost:
+        sample = ", ".join(
+            repr(word) for word in sorted(lost.elements())[:12]
+        )
+        raise CommentLossError(
+            f"formatting would delete comment text "
+            f"({sum(lost.values())} words: {sample}); the file was "
+            f"left unchanged. This is a formatter bug — please "
+            f"report it with the file."
+        )
+
+
 def format_source(
     source: bytes,
     warnings_out: list[FormatterWarning] | None = None,
@@ -12948,7 +13232,9 @@ def format_source(
                 continue
             seen.add(key)
             warnings_out.append(warning)
-    return emitter.finish()
+    formatted = emitter.finish()
+    _check_comments_preserved(tree, formatted)
+    return formatted
 
 
 def print_warnings(

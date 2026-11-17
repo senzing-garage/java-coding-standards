@@ -2764,6 +2764,25 @@ of code and `//`, then a single space after `//`:
 balance -= fee;  // strip transaction fee
 ```
 
+A side comment on a control-statement header or on a method-chain
+segment stays on that row. Because a `//` comment ends its row,
+a header that carries one takes the Allman brace, and a chain with
+comments between its segments puts one segment on each row:
+
+```java
+for (String record = engine.getRedoRecord();  // @highlight regex="record.*"
+     record != null;
+     record = engine.getRedoRecord())  // @highlight regex="record.*"
+{
+    engine.processRedoRecord(record);
+}
+
+JsonObject task = Json.createObjectBuilder()
+                      .add("str", "str1")  // single value
+                      // remaining properties omitted
+                      .build();
+```
+
 **Inline `/* */` comments** (typically used as parameter
 documentation hints): standard spacing — space before and after:
 
