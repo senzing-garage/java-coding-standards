@@ -1324,28 +1324,62 @@ asked of every argument at every priority, rather than a
 per-construct judgment about whether a given continuation happens
 to be confusable.
 
-When the argument still has to wrap at priority 4, its
-continuation takes the ordinary +4 indent relative to the
-argument, never the argument column itself — a multi-argument
-call's `(` is not a governing paren (see "What does NOT count as
-a governing `(`"), and a flush continuation reintroduces the
-same ambiguity:
+When the argument still has to wrap at priority 4, its operator
+rows line up with the start of the argument, in the column its
+sibling arguments occupy. The leading operator is what marks the
+row as a continuation: no argument can begin with `+`, `&&`, `||`
+or `>`, so the operator does the work an extra indent would. This
+is the original Java Code Conventions' rule of aligning a wrapped
+operator with the beginning of its expression. It is not
+governing-paren alignment (a multi-argument call's `(` is not a
+governing paren; see "What does NOT count as a governing `(`"),
+and it applies only to an argument that starts its own row:
 
 ```java
-                    // WRONG — `+ "file: " + initFile` reads as an
-                    // argument.
-                    multilineFormat(
-                        "Failed to read JSON initialization "
-                        + "file: " + initFile,
-                        "",
-                        "Cause: " + e.getMessage());
+                        throw new RuntimeException(
+                            multilineFormat(
+                                "Failed to read JSON initialization "
+                                + "file: " + initFile,
+                                "",
+                                "Cause: " + e.getMessage()));
 
-                    // Right — the continuation is subordinate.
-                    multilineFormat(
-                        "Failed to read JSON initialization "
-                            + "file: " + initFile,
-                        "",
-                        "Cause: " + e.getMessage());
+                    assertTrue(
+                        message.contains("file")
+                        || message.contains("not found")
+                        || message.contains("does not exist"),
+                        "Exception message should indicate file issue");
+```
+
+An extra +4 indent is not used because it says the wrong thing
+when the first operand itself wraps. A comparison against a
+wrapped receiver chain would put its operator in the column of
+the chain's `.` rows, as if it were another chain segment. Flush,
+it sits with the start of the chain, which is what it compares:
+
+```java
+        assertTrue(
+            leisurely
+                .getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY)
+                .longValue()
+            > AbstractSchedulingService.DEFAULT_FOLLOW_UP_DELAY,
+            "LEISURELY should have longer delay than default");
+```
+
+When an operand is too long for any row (usually a string
+literal), the concatenation stays packed in this column and only
+that operand's row overflows, so the formatter flags it for a
+hand split. It does not move to a deeper column or put each
+operand on its own row, because neither removes the overflow:
+
+```java
+                    assertEquals(
+                        0,
+                        (retriedCount2 - retriedCount1),
+                        "Number of retried operations (" + retriedCount1
+                        + " vs " + retriedCount2
+                        + ") unexpectedly changed for the annotated method declared in "
+                        + method.getDeclaringClass().getSimpleName() + ": "
+                        + method.toString());
 ```
 
 This applies to any argument complex enough to wrap — a nested

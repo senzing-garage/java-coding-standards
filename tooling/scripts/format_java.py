@@ -2619,9 +2619,15 @@ def _emit_binary_expression(
     # For boolean chains the paren-aligned shape is
     # one-per-line (`emit_paren_aligned`); for non-boolean
     # chains it is greedy at `align_col` (`emit_greedy`).
-    align_col = emitter.paren_align_col
-    if align_col is not None:
-        paren_saved = emitter.snapshot()
+    def overflowing_rows(start_line: int) -> int:
+        # Rows past the limit since `start_line`. Only the
+        # in-progress row still has the trailing context ahead of
+        # it, so only that row is charged `tail_reserve`.
+        finalized = emitter._lines[start_line:]
+        over = sum(1 for row in finalized if len(row) > emitter.line_limit)
+        return over + (len(emitter._current) > effective_max)
+
+    def emit_paren_candidate(align_col: int) -> None:
         # Clear paren_align_col while emitting this candidate's
         # operands. The paren context applies to THIS binary
         # chain's operator continuations only; nested binary
@@ -2629,14 +2635,15 @@ def _emit_binary_expression(
         # `_emit_parenthesized_expression` to re-set
         # `paren_align_col` if they themselves sit inside
         # grouping parens.
+        nonlocal paren_inner_wrap
         prev_align = emitter.set_paren_align_col(None)
         # Reset the shared `paren_inner_wrap` flag before this
         # candidate's speculative emit so the post-emit check
-        # below reflects ONLY operands emitted under this
-        # candidate. Without the reset, a prior speculative
-        # attempt (e.g. emit_pair_aligned at the same align_col)
-        # could leave the flag True and cause this candidate to
-        # falsely reject. Keep this reset paired with any future
+        # reflects ONLY operands emitted under this candidate.
+        # Without the reset, a prior speculative attempt (e.g.
+        # emit_pair_aligned at the same align_col) could leave
+        # the flag True and cause this candidate to falsely
+        # reject. Keep this reset paired with any future
         # addition of a third candidate that calls the shared
         # emit_paren_aligned / emit_greedy.
         paren_inner_wrap = False
@@ -2647,6 +2654,15 @@ def _emit_binary_expression(
                 emit_greedy(align_col)
         finally:
             emitter.set_paren_align_col(prev_align)
+
+    # Set when the paren-aligned candidate was rejected ONLY for
+    # overflowing: its row count past the limit. The +4 fallback
+    # has to beat it to replace it (see the end of this function).
+    paren_over: int | None = None
+    align_col = emitter.paren_align_col
+    if align_col is not None:
+        paren_saved = emitter.snapshot()
+        emit_paren_candidate(align_col)
         # Commit the paren-aligned candidate ONLY when (a) all
         # lines fit within `effective_max` AND (b) no operand
         # wrapped multi-row internally. (b) is what keeps the
@@ -2665,6 +2681,8 @@ def _emit_binary_expression(
             and not paren_inner_wrap
         ):
             return
+        if not paren_inner_wrap:
+            paren_over = overflowing_rows(paren_saved[0])
         emitter.restore(paren_saved)
 
     # +4-indent fallback. For boolean chains: P2 (leftmost-only
@@ -2680,8 +2698,34 @@ def _emit_binary_expression(
         emit_greedy(p2_col)
     if emitter.last_lines_max_width(fallback_saved[0]) <= effective_max:
         return
+
+    greedy_over = overflowing_rows(fallback_saved[0])
     emitter.restore(fallback_saved)
     emit_p3()
+    fallback_over = overflowing_rows(fallback_saved[0])
+    # One operand per row is only worth its height when it clears
+    # the overflow. When an operand is too wide for any row (a
+    # long literal), P3 overflows on that same row and the chain
+    # just gets taller, so keep the packed greedy shape and let
+    # the advisory flag the row.
+    if not is_boolean and fallback_over >= greedy_over:
+        emitter.restore(fallback_saved)
+        emit_greedy(p2_col)
+        fallback_over = greedy_over
+    # Likewise the +4 column is only worth leaving the aligned
+    # column for when it clears the overflow. When it is no
+    # shallower than the aligned column (an argument on its own
+    # row, whose column is already block + 4), it offers no more
+    # room, so an operand that did not fit there fits no better
+    # here. A deep grouping `(` is different: the shallower +4
+    # column is the escape it exists for.
+    if (
+        paren_over is not None
+        and p2_col >= align_col
+        and fallback_over >= paren_over
+    ):
+        emitter.restore(fallback_saved)
+        emit_paren_candidate(align_col)
     _fire_wrap_overflow_advisory(
         emitter, node, fallback_saved[0], "binary expression"
     )
@@ -7910,19 +7954,15 @@ def _emit_try_with_resources_statement(
     # Column right after the opening `(`; subsequent resource
     # lines align here.
     align_col = emitter.column
-    # For a single-resource try with a same-line body brace
-    # (` {` after the closing `)`), bump `tail_reserve` by
-    # 2 so the resource's inline-fit check accounts for the
-    # two trailing chars the parent will append after the
-    # resource closes. The resource emitter already reserves
-    # 1 char for its own `)`; without this bump the ` {`
-    # falls outside the budget and a borderline-fit resource
-    # lands at 81 chars on disk. Multi-resource breaks Allman,
-    # so the body brace lands on its own line and no extra
-    # reserve is needed.
+    # Reserve what this header writes after the last resource:
+    # the closing `)`, plus ` {` for a single resource, which
+    # keeps a same-line body brace. Without it a borderline-fit
+    # resource lands at 81 or 82 chars on disk. Several
+    # resources break Allman, so only the `)` follows the last.
     prev_reserve = emitter.tail_reserve
-    if len(resources) == 1:
-        emitter.set_tail_reserve(prev_reserve + 2)
+    emitter.set_tail_reserve(
+        prev_reserve + (3 if len(resources) == 1 else 1)
+    )
     try:
         for index, resource in enumerate(resources):
             if index > 0:
@@ -10454,17 +10494,17 @@ def _emit_argument_list(
     )
 
     def _emit_arg_with_optional_paren_align(arg: Node) -> None:
-        # Binary positional arg continuation: when a positional
+        # Binary positional arg paren-align: when a positional
         # arg is a binary expression, set `paren_align_col` to
-        # the arg's start column + 4 so the binary's
-        # continuation operators sit one indent deeper than the
-        # arg's first operand instead of falling back to the
-        # `block + 4` cumulative indent. This produces:
+        # the arg's start column so the binary's continuation
+        # operators line up under the arg's first operand
+        # instead of falling back to the `block + 4`
+        # cumulative indent. This produces:
         #
         #     assertTrue(cond,
         #                "msg "
-        #                    + var
-        #                    + " more");
+        #                + var
+        #                + " more");
         #
         # instead of:
         #
@@ -10472,12 +10512,14 @@ def _emit_argument_list(
         #                "msg "
         #         + var + " more");      // `+` at col 8
         #
-        # and never the flush shape, where the `+` row sits in
-        # the sibling arguments' column and reads as another
-        # argument (the standards' "is it an argument or a
-        # continuation?" anti-pattern). A multi-arg call paren
-        # is not a governing `(` for spec C6, so the +4
-        # continuation rule applies relative to the arg.
+        # The leading operator is what marks the row as a
+        # continuation: no argument can begin with `+`, `&&` or
+        # `>`, so the operator stands in for the indent (the
+        # original Java Code Conventions' "align with the
+        # beginning of the expression"). 0.8.0 settled on this
+        # after trying +4 (#53): +4 put a comparison operator in
+        # the column of a wrapped receiver chain's `.` rows, as
+        # if it were another chain segment.
         #
         # Narrow to direct binary_expression (no paren unwrap)
         # to avoid the idempotency drift that originally
@@ -10485,7 +10527,7 @@ def _emit_argument_list(
         # binary args only.
         if arg.type == "binary_expression":
             arg_col = emitter.column
-            prev_align = emitter.set_paren_align_col(arg_col + 4)
+            prev_align = emitter.set_paren_align_col(arg_col)
             try:
                 _emit_node(emitter, source, arg)
             finally:
@@ -10636,20 +10678,31 @@ def _emit_argument_list(
         # rather than method-call parens.
         emitter.write("(")
         emitter.newline()
-        if emitter.paren_expr_col is not None:
-            emitter.write(" " * (emitter.paren_expr_col + 3))
-            _emit_node(emitter, source, args[0])
-            emitter.write(")")
-        else:
-            # Block-relative, and therefore unmoored from this call's
-            # `(`. Flag it so callers that can reposition the whole
-            # construct get the chance to avoid reaching this tier.
-            emitter._anchor_escaped = True
-            emitter.push_indent()
-            emitter.write_indent()
-            _emit_node(emitter, source, args[0])
-            emitter.write(")")
-            emitter.pop_indent()
+        # Reserve 1 char for the `)`, as the block-indent candidate
+        # does. This candidate is the one committed when nothing
+        # fits, so its argument is the one most likely to pack a
+        # row to exactly the limit, which the `)` then overflows.
+        prev_reserve = emitter.set_tail_reserve(
+            emitter.tail_reserve + 1
+        )
+        try:
+            if emitter.paren_expr_col is not None:
+                emitter.write(" " * (emitter.paren_expr_col + 3))
+                _emit_node(emitter, source, args[0])
+                emitter.write(")")
+            else:
+                # Block-relative, and therefore unmoored from this
+                # call's `(`. Flag it so callers that can reposition
+                # the whole construct get the chance to avoid
+                # reaching this tier.
+                emitter._anchor_escaped = True
+                emitter.push_indent()
+                emitter.write_indent()
+                _emit_node(emitter, source, args[0])
+                emitter.write(")")
+                emitter.pop_indent()
+        finally:
+            emitter.set_tail_reserve(prev_reserve)
 
     def emit_p2_split(split: int) -> None:
         # P2: two-line paren-aligned comma-packed, with the first

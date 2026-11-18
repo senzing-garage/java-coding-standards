@@ -9,7 +9,7 @@ public class Demo
                         throw new RuntimeException(
                             multilineFormat(
                                 "Failed to read JSON initialization "
-                                    + "file: " + initFile,
+                                + "file: " + initFile,
                                 "",
                                 "Cause: " + e.getMessage()));
                     }

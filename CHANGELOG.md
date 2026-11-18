@@ -257,44 +257,64 @@ this.ids = Set.of(entityId1, entityId2, entityId3, entityId4,
                   entityId5, entityId6, entityId7);
 ```
 
-**A wrapped concatenation among several arguments lost its
-continuation indent
-([#53](https://github.com/senzing-garage/java-coding-standards/issues/53)).**
+**A concatenation with an operand too long for any row is no
+longer exploded one operand per row, and the closing `)` is
+counted.**
 
-When a binary-expression argument of a multi-argument call had to
-wrap, its operator rows were aligned with the argument's first
-operand, which is the column the sibling arguments occupy. The
-continuation then read as another argument, the shape the
-standards' arg-list anti-pattern section marks WRONG. A
-multi-argument call paren is not a governing `(` for spec C6, so
-the continuation now takes the ordinary +4 relative to the
-argument:
+When a wrapped concatenation could not fit because one operand (a
+long string literal) is wider than any row, the formatter fell back
+to one operand per row. That never removed the overflow, since the
+literal's own row still overflowed, so the chain only got taller.
+It now keeps the packed layout whenever one operand per row would
+overflow as many rows. Likewise an argument's concatenation no
+longer moves from its own column to a deeper `block + 4` column
+that offers no more room. The overflowing row is still flagged for
+a hand split:
 
 ```java
-// 0.7.1 — `+` row in the sibling arguments' column
-multilineFormat(
-    "Failed to read JSON initialization "
-    + "file: " + initFile,
-    "",
-    "Cause: " + e.getMessage());
+// 0.7.1 — at a 24-column indent: 11 rows, widest 85
+assertEquals(
+    0,
+    (retriedCount2 - retriedCount1),
+    "Number of retried operations ("
+        + retriedCount1
+        + " vs "
+        + retriedCount2
+        + ") unexpectedly changed for annotated method from "
+        + method.getDeclaringClass().getSimpleName()
+        + ": "
+        + method.toString());
 
-// 0.8.0
-multilineFormat(
-    "Failed to read JSON initialization "
-        + "file: " + initFile,
-    "",
-    "Cause: " + e.getMessage());
+// 0.8.0 — 8 rows; only the literal's row is over (81)
+assertEquals(
+    0,
+    (retriedCount2 - retriedCount1),
+    "Number of retried operations (" + retriedCount1
+    + " vs " + retriedCount2
+    + ") unexpectedly changed for annotated method from "
+    + method.getDeclaringClass().getSimpleName()
+    + ": " + method.toString());
 ```
 
-Because format-on-save reverted any hand correction, adopters
-could not work around it. **This is a 0.6.0 regression;** 0.5.x
-emitted the +4 shape. Boolean chains as arguments are affected the
-same way (`||` / `&&` rows now sit +4 under the first operand).
-Fixtures `arg_list_wrap/05`, `arg_list_wrap/07` and `binary_wrap/06`
-(renamed `06_boolean_chain_arg_continuation_under_p4`) had locked
-in the flush shape and are updated; `arg_list_wrap/24` is the
-regression case. The arg-list anti-pattern section of the standards
-now shows the priority-4 case explicitly.
+The packed layout exposed two closers that were never reserved, so
+a row could pack to exactly 80 and the closer pushed it to 81: the
+`)` after a lone argument when no argument layout fits, and the `)`
+that ends a `try (` resource header (the ` {` after it was already
+reserved). Fixtures `binary_wrap/07` to `09`.
+
+**Wrapped operators in an argument stay aligned with the argument
+([#53](https://github.com/senzing-garage/java-coding-standards/issues/53)).**
+
+When a binary-expression argument of a multi-argument call wraps,
+its `+`, `&&`, `||`, arithmetic and comparison rows stay in the
+argument's own column, as in 0.7.1. An extra +4 indent was tried
+during 0.8.0 and dropped: the leading operator already marks the
+row as a continuation, because no argument can begin with one, and
+the +4 column put a comparison operator under the `.` rows of a
+wrapped receiver chain, as if it were another segment. The
+standards now state the rule and the reason. Across the five
+adopting repositories the +4 version added 38 rows and 3 new rows
+over 80, all string literals sized for the 0.7.1 column.
 
 ## [0.7.1] - 2026-10-21
 
