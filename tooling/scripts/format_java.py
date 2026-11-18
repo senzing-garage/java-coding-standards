@@ -7950,15 +7950,17 @@ def _emit_try_with_resources_statement(
             "children — grammar shape unexpected."
         )
 
+    header_start = emitter.line_count
     emitter.write("try (")
     # Column right after the opening `(`; subsequent resource
     # lines align here.
     align_col = emitter.column
     # Reserve what this header writes after the last resource:
-    # the closing `)`, plus ` {` for a single resource, which
-    # keeps a same-line body brace. Without it a borderline-fit
-    # resource lands at 81 or 82 chars on disk. Several
-    # resources break Allman, so only the `)` follows the last.
+    # the closing `)`, plus ` {` for a single resource, whose
+    # brace stays on the same line when the header fits on one
+    # row. Without it a borderline-fit resource lands at 81 or 82
+    # chars on disk. Several resources always wrap and break
+    # Allman, so only the `)` follows the last.
     prev_reserve = emitter.tail_reserve
     emitter.set_tail_reserve(
         prev_reserve + (3 if len(resources) == 1 else 1)
@@ -7974,13 +7976,13 @@ def _emit_try_with_resources_statement(
         emitter.set_tail_reserve(prev_reserve)
     emitter.write(")")
 
-    # Several resources make the try condition multi-line, so the
-    # brace goes Allman; a single resource keeps the same-line brace.
+    # A header that wrapped is a multi-line condition, so the brace
+    # goes Allman, as for `if`; several resources always wrap.
     _write_header_body_gap(
         emitter,
         source,
         _header_side_comments(node, body, after=resources_node),
-        allman=len(resources) > 1,
+        allman=emitter.line_count > header_start,
     )
     _emit_node(emitter, source, body)
 
@@ -8049,7 +8051,7 @@ def _emit_resource(
     value_introduced_newlines = emitter.line_count > saved[0]
     inline_fits = (
         emitter.last_lines_max_width(saved[0]) <= effective_max
-        and emitter.column < effective_max
+        and emitter.column <= effective_max
     )
     if inline_fits and not value_introduced_newlines:
         return
@@ -8071,7 +8073,7 @@ def _emit_resource(
     )
     p2_fits = (
         emitter.last_lines_max_width(p2_saved[0]) <= effective_max
-        and emitter.column < effective_max
+        and emitter.column <= effective_max
     )
     if p2_fits and not value_introduced_newlines_p2:
         return
@@ -10512,6 +10514,10 @@ def _emit_argument_list(
         #                "msg "
         #         + var + " more");      // `+` at col 8
         #
+        # Also used for a lone argument placed on its own row
+        # (priority 4), so `throw new X(\n    "msg "\n    + v)`
+        # lines its operators up with the message the same way.
+        #
         # The leading operator is what marks the row as a
         # continuation: no argument can begin with `+`, `&&` or
         # `>`, so the operator stands in for the indent (the
@@ -10644,7 +10650,7 @@ def _emit_argument_list(
             emitter.tail_reserve + 1
         )
         try:
-            _emit_node(emitter, source, args[0])
+            _emit_arg_with_optional_paren_align(args[0])
         finally:
             emitter.set_tail_reserve(prev_reserve)
         emitter.write(")")
@@ -10688,7 +10694,7 @@ def _emit_argument_list(
         try:
             if emitter.paren_expr_col is not None:
                 emitter.write(" " * (emitter.paren_expr_col + 3))
-                _emit_node(emitter, source, args[0])
+                _emit_arg_with_optional_paren_align(args[0])
                 emitter.write(")")
             else:
                 # Block-relative, and therefore unmoored from this
@@ -10698,7 +10704,7 @@ def _emit_argument_list(
                 emitter._anchor_escaped = True
                 emitter.push_indent()
                 emitter.write_indent()
-                _emit_node(emitter, source, args[0])
+                _emit_arg_with_optional_paren_align(args[0])
                 emitter.write(")")
                 emitter.pop_indent()
         finally:

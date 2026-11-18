@@ -299,22 +299,68 @@ assertEquals(
 The packed layout exposed two closers that were never reserved, so
 a row could pack to exactly 80 and the closer pushed it to 81: the
 `)` after a lone argument when no argument layout fits, and the `)`
-that ends a `try (` resource header (the ` {` after it was already
-reserved). Fixtures `binary_wrap/07` to `09`.
+that ends a `try (` resource header. The resource's own fit check
+had been one column strict, which hid the missing `)` on one-row
+headers; it is now exact, so a header of exactly 80 still fits.
+Fixtures `binary_wrap/07`, `binary_wrap/08` and `allman_braces/22`.
+
+**A wrapped single-resource `try (` header puts its `{` on its own
+row.** The standards already required this for any multi-line try
+condition, but the formatter applied it only to several resources.
+A single resource that wraps, at `=` or inside its value, now gets
+the Allman brace like a wrapped `if`:
+
+```java
+// 0.7.1
+try (InputStream is
+         = cls.getResourceAsStream(POM_PROPERTIES_PATH)) {
+    props.load(is);
+}
+
+// 0.8.0
+try (InputStream is
+         = cls.getResourceAsStream(POM_PROPERTIES_PATH))
+{
+    props.load(is);
+}
+```
 
 **Wrapped operators in an argument stay aligned with the argument
 ([#53](https://github.com/senzing-garage/java-coding-standards/issues/53)).**
 
 When a binary-expression argument of a multi-argument call wraps,
 its `+`, `&&`, `||`, arithmetic and comparison rows stay in the
-argument's own column, as in 0.7.1. An extra +4 indent was tried
+argument's own column, as in 0.7.1. A lone argument placed on its
+own row now does the same. 0.7.1 indented those operator rows +4,
+and here, because the literal's row overflowed, also put one
+operand per row:
+
+```java
+// 0.7.1
+throw new IllegalArgumentException(
+    "The specified target object does not implement any interfaces "
+        + "to proxy.  class=[ "
+        + targetObject.getClass().getName()
+        + " ], targetObject=[ "
+        + targetObject
+        + " ]");
+
+// 0.8.0
+throw new IllegalArgumentException(
+    "The specified target object does not implement any interfaces "
+    + "to proxy.  class=[ " + targetObject.getClass().getName()
+    + " ], targetObject=[ " + targetObject + " ]");
+```
+
+For an argument among siblings, an extra +4 indent was tried
 during 0.8.0 and dropped: the leading operator already marks the
 row as a continuation, because no argument can begin with one, and
 the +4 column put a comparison operator under the `.` rows of a
 wrapped receiver chain, as if it were another segment. The
 standards now state the rule and the reason. Across the five
 adopting repositories the +4 version added 38 rows and 3 new rows
-over 80, all string literals sized for the 0.7.1 column.
+over 80, all string literals sized for the 0.7.1 column. Making
+lone arguments flush as well changes about 100 files there.
 
 ## [0.7.1] - 2026-10-21
 

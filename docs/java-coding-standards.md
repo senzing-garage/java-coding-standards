@@ -1350,6 +1350,16 @@ and it applies only to an argument that starts its own row:
                         "Exception message should indicate file issue");
 ```
 
+A lone argument that has to go on its own row (priority 4)
+follows the same rule:
+
+```java
+            throw new IllegalArgumentException(
+                "The specified target object does not implement any interfaces "
+                + "to proxy.  class=[ " + targetObject.getClass().getName()
+                + " ], targetObject=[ " + targetObject + " ]");
+```
+
 An extra +4 indent is not used because it says the wrong thing
 when the first operand itself wraps. A comparison against a
 wrapped receiver chain would put its operator in the column of
@@ -3776,8 +3786,19 @@ try (FileInputStream in = new FileInputStream(input);
 ```
 
 Single-line resource → same-line brace. Multi-line condition
-(single resource that wraps via break-on-`=`, or any
-multi-resource form) → Allman brace on its own line.
+(a single resource that wraps, whether at `=` or inside its
+value, or any multi-resource form) → Allman brace on its own
+line:
+
+```java
+        try (java.sql.ResultSet triggers = stmt.executeQuery(
+            "SELECT tgname, pg_get_triggerdef(oid) as triggerdef "
+            + "FROM pg_trigger " + "WHERE tgrelid = '" + tableName
+            + "'::regclass " + "AND NOT tgisinternal"))
+        {
+            x();
+        }
+```
 
 ---
 

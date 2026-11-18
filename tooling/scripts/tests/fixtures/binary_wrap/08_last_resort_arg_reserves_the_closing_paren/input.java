@@ -1,22 +1,13 @@
-class Demo
+public class TaskGroup
 {
-    void m()
+    void add(Task task)
     {
-        while (true) {
-            while (true) {
-                if (tryCount >= MAX_REINITIALIZE_COUNT) {
-                    System.err.println(
-                        "*** WARNING: Default configuration is constantly "
-                            + "changing.  Could not reinitialize to the latest "
-                            + "default configuration ID after "
-                            + tryCount
-                            + " attempts.  activeConfigId=[ "
-                            + activeConfigId
-                            + " ], defaultConfigId=[ "
-                            + defaultConfigId
-                            + " ]");
-                }
-            }
+        // check the task group of the task
+        if (task.getTaskGroup() != this) {
+            throw new IllegalArgumentException(
+                "The specified task does not have this TaskGroup as its group.  "
+                + "task=[ " + task + " ], actualGroup=[ "
+                + task.getTaskGroup() + " ], expectedGroup=[ " + this + " ]");
         }
     }
 }

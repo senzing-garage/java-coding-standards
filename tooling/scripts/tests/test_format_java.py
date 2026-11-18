@@ -679,7 +679,8 @@ class TestFormatSourceSubset:
         # would exceed 80 chars, line-break before the arg.
         # The arg lands at `(indent_level + 1) * 4` (single-
         # indent past the statement start); the closing `)`
-        # stays on the arg's last line.
+        # stays on the arg's last line. A binary arg's operator
+        # rows line up with the arg (0.8.0).
         src = (
             b"class A {\n"
             b"    void m(Object x) {\n"
@@ -702,7 +703,7 @@ class TestFormatSourceSubset:
             b"            throw new IllegalArgumentException(\n"
             b'                "Cannot specify a secondary value'
             b' when "\n'
-            b'                    + "the primary value is null.'
+            b'                + "the primary value is null.'
             b' primary=[ " + x + " ]");\n'
             b"        }\n"
             b"    }\n"
