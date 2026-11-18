@@ -94,6 +94,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import re
 import sys
 import threading
 from contextlib import contextmanager
@@ -289,6 +290,8 @@ class Emitter:
         "_chain_ladder_fired",
         "_balanced_p2_span",
         "_raw_rows_emitted",
+        "line_limit",
+        "snippet_layout",
         "warnings",
     )
 
@@ -411,6 +414,16 @@ class Emitter:
         # without the array committing to a multi-line P3/P4
         # shape that would only have been discarded.
         self._array_init_inline_only: bool = False
+        # 0.8.0: the width every wrap decision measures against.
+        # `_MAX_LINE` everywhere except in Javadoc snippet demo code,
+        # where `_emit_node` raises it per statement: by a snippet
+        # region's indent, which the rendered snippet strips, and
+        # without limit for a row that carries snippet markup. See
+        # `_SnippetLayout`.
+        self.line_limit: int = _MAX_LINE
+        # The file's snippet regions and tagged rows, or `None` when
+        # it has no snippet markup — every Java file but demo code.
+        self.snippet_layout: _SnippetLayout | None = None
 
     @property
     def column(self) -> int:
@@ -824,7 +837,7 @@ def try_priorities(
     # so the cap stays consistent across all attempts even
     # if a misbehaving candidate adjusts tail_reserve
     # internally without unwinding it.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     for index, fn in enumerate(candidates):
         emitter.restore(initial)
         speculative = emitter.snapshot()
@@ -910,7 +923,7 @@ def _fire_wrap_overflow_advisory(
     else:
         current_on_disk = len(current) + emitter.tail_reserve
     max_on_disk = max(max_finalized_width, current_on_disk)
-    if max_on_disk <= _MAX_LINE:
+    if max_on_disk <= emitter.line_limit:
         return
     # Deduplicate: a wrap engine that contains another wrap engine
     # which already fired (e.g. an argument list containing a
@@ -977,7 +990,7 @@ def _fire_wrap_overflow_advisory(
         width=max_on_disk,
         message=(
             f"{site_label} wrap could not fit within "
-            f"{_MAX_LINE} chars (max line width "
+            f"{emitter.line_limit} chars (max line width "
             f"{max_on_disk}). {remedy}"
         ),
     ))
@@ -1409,7 +1422,7 @@ def _emit_class_declaration(
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+    if emitter.last_lines_max_width(saved[0]) > emitter.line_limit:
         # Overflow — backtrack and rewrap. Use last_lines_max_width
         # rather than just emitter.column so internal multi-line
         # source-preservation (super_interfaces / type_parameters
@@ -1471,7 +1484,7 @@ def _emit_extends_implements_p2_p3(
             emitter.write(" ")
     if has_implements:
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(attempt[0]) <= _MAX_LINE:
+    if emitter.last_lines_max_width(attempt[0]) <= emitter.line_limit:
         return
 
     # P3: each clause on its own continuation line.
@@ -1485,7 +1498,7 @@ def _emit_extends_implements_p2_p3(
         emitter.newline()
         emitter.write(cont_indent)
         _emit_node(emitter, source, super_interfaces_node)
-        if emitter.last_lines_max_width(p3_impl_saved[0]) > _MAX_LINE:
+        if emitter.last_lines_max_width(p3_impl_saved[0]) > emitter.line_limit:
             # P4: implements clause still overflows on its own
             # line (a class implementing 3+ long-named interfaces
             # exceeds 80 chars even after breaking `implements`
@@ -1616,7 +1629,7 @@ def _emit_class_header_wrapped(
         # No runtime impact today — class declarations are
         # never inside a tail-reserved context — but the
         # pattern stays uniform.
-        p2_effective_max = _MAX_LINE - emitter.tail_reserve
+        p2_effective_max = emitter.line_limit - emitter.tail_reserve
         if emitter.last_lines_max_width(attempt[0]) > p2_effective_max:
             # P2 overflowed — emit P3 instead. Each param on
             # its own continuation line at `cont_indent`; the
@@ -1666,7 +1679,7 @@ def _emit_class_header_wrapped(
     if has_implements:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(attempt[0]) <= _MAX_LINE:
+    if emitter.last_lines_max_width(attempt[0]) <= emitter.line_limit:
         return
 
     emitter.restore(attempt)
@@ -2518,7 +2531,7 @@ def _emit_binary_expression(
     # and triggers the fall-through to P2). Verified
     # empirically: removing the `line_count == saved[0]`
     # clause causes that fixture to fail.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     saved = emitter.snapshot()
     emit_p1()
     p1_fits = (
@@ -3101,7 +3114,7 @@ def _emit_method_declaration(
     # exactly 80 chars would land at 81 on disk. Reserve 1
     # extra char in the fit threshold to catch that case.
     semicolon_reserve = 1 if body is None else 0
-    fit_threshold = _MAX_LINE - semicolon_reserve
+    fit_threshold = emitter.line_limit - semicolon_reserve
     saved = emitter.snapshot()
     if type_parameters_node is not None:
         # Per spec B11: `<T>` comes BEFORE the return type, with
@@ -3485,7 +3498,7 @@ def _emit_if_statement(
         _emit_node(emitter, source, short_circuit)
         tier1_fits = (
             emitter.last_lines_max_width(tier1_saved[0])
-            <= _MAX_LINE - emitter.tail_reserve
+            <= emitter.line_limit - emitter.tail_reserve
             and emitter.line_count == tier1_saved[0]
         )
         if tier1_fits:
@@ -4733,7 +4746,7 @@ def _emit_comment(
         if (
             text.startswith("//")
             and emitter.column == 4 * emitter.indent_level
-            and emitter.column + len(text) > _MAX_LINE
+            and emitter.column + len(text) > emitter.line_limit
             and not _is_directive_line_comment(text)
             and "://" not in text
         ):
@@ -4816,7 +4829,7 @@ def _emit_reflowed_line_comment(
         emitter.write(text)
         return
     prefix = "// "
-    max_content = _MAX_LINE - indent_col - len(prefix)
+    max_content = emitter.line_limit - indent_col - len(prefix)
     if max_content <= 0:
         # Indent eats the whole budget — emit verbatim and
         # let the C1 emit-and-warn behavior surface the
@@ -4943,7 +4956,7 @@ def _emit_annotation_argument_list(
         emitter.write("(")
         _emit_node(emitter, source, args[0])
         emitter.write(")")
-        effective_max = _MAX_LINE - emitter.tail_reserve
+        effective_max = emitter.line_limit - emitter.tail_reserve
         if (
             emitter.line_count == p1_saved[0]
             and emitter.last_lines_max_width(p1_saved[0])
@@ -5145,7 +5158,7 @@ def _emit_ternary_expression(
     # actually wrapped internally," which produces ugly
     # output where the inner construct's wrap point and the
     # outer construct's continuation collide visually.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     t1_saved = emitter.snapshot()
     emit_t1()
     t1_fits = (
@@ -5338,7 +5351,7 @@ def _emit_array_initializer(
         return
 
     # Cascade.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     is_multi_dim = any(
         c.type == "array_initializer" for c in elements
     )
@@ -5581,7 +5594,7 @@ def _emit_array_init_multiline(
     emitter.write("{")
     emitter.newline()
     emitter.push_indent()
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
 
     # Element-per-line counts across all continuation lines.
     # `line_element_counts[i]` = number of elements finalized
@@ -6028,7 +6041,7 @@ def _emit_record_declaration(
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
     if super_interfaces_node is not None and (
-        emitter.last_lines_max_width(saved[0]) > _MAX_LINE
+        emitter.last_lines_max_width(saved[0]) > emitter.line_limit
         or params_wrapped
     ):
         # Priority 2+ — re-emit with the `implements` clause on
@@ -6462,7 +6475,7 @@ def _emit_catch_clause(
     # break. Not an `assert`: rejecting priority 1 degrades to the
     # next tier, where raising would abort the file.
     p1_fits = (
-        emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+        emitter.column + 1 + emitter.tail_reserve <= emitter.line_limit
         and emitter.line_count == p1_saved[0]
     )
     if p1_fits:
@@ -6895,7 +6908,7 @@ def _emit_for_statement(
         # non-convergent: the next pass saw multi-row source, took
         # the branch above, and produced the correct one-clause-per-
         # line form, so the file only settled on a second format.
-        effective_max = _MAX_LINE - emitter.tail_reserve
+        effective_max = emitter.line_limit - emitter.tail_reserve
         single_line_header = (
             emitter.line_count == header_start[0]
         )
@@ -6920,7 +6933,7 @@ def _emit_for_statement(
     #       Allman to keep the header within budget.
     body_on_new_row = body.start_point[0] != node.start_point[0]
     inline_form_overflows = (
-        emitter.column + 2 > _MAX_LINE
+        emitter.column + 2 > emitter.line_limit
     )
     _write_header_body_gap(
         emitter,
@@ -7007,7 +7020,7 @@ def _emit_enhanced_for_statement(
     # identical indent wrap or not purely by enclosing context.
     inline_fits = (
         emitter.line_count == saved[0]
-        and emitter.column + 3 + emitter.tail_reserve <= _MAX_LINE
+        and emitter.column + 3 + emitter.tail_reserve <= emitter.line_limit
     )
     if inline_fits:
         emitter.write(")")
@@ -7375,9 +7388,9 @@ def _break_probe_wins(
     rows = emitter._lines[since:]
     return (
         not emitter._chain_ladder_fired
-        and max((len(row) for row in rows), default=0) <= _MAX_LINE
+        and max((len(row) for row in rows), default=0) <= emitter.line_limit
         and emitter.column + extra_tail + emitter.tail_reserve
-        <= _MAX_LINE
+        <= emitter.line_limit
     )
 
 
@@ -7499,7 +7512,7 @@ def _try_balanced_eq_break(
     keep = (
         emitter.line_count == saved[0] + 1
         and emitter.column + extra_tail + emitter.tail_reserve
-        <= _MAX_LINE
+        <= emitter.line_limit
         and not _eq_break_is_lopsided(
             emitter, saved[0], value, extra_tail, inline_is_p2
         )
@@ -7571,7 +7584,7 @@ def _emit_assignment_expression(
     cascade_start = emitter.line_count
     _emit_node(emitter, source, left_node)
 
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
 
     def emit_inline_rhs() -> None:
         # Shared inline emission for Step 1 and Step 3 — both
@@ -7657,7 +7670,7 @@ def _emit_assignment_expression(
     _finalized_rows = emitter._lines[saved[0]:]
     inline_fits = (
         max((len(row) for row in _finalized_rows), default=0)
-        <= _MAX_LINE
+        <= emitter.line_limit
         and emitter.column <= effective_max
     )
     # Same orphan check `_emit_variable_declarator` runs, for the
@@ -7800,8 +7813,8 @@ def _emit_assignment_expression(
     emitter._anchor_escaped = False
     emit_inline_rhs()
     inline_overflow = (
-        emitter.last_lines_max_width(saved[0]) > _MAX_LINE
-        or emitter.column + emitter.tail_reserve > _MAX_LINE
+        emitter.last_lines_max_width(saved[0]) > emitter.line_limit
+        or emitter.column + emitter.tail_reserve > emitter.line_limit
     )
     # Orphan check, as in Step 1 and as `_emit_variable_declarator`
     # Step 3 does: an argument anchored block-relatively is unmoored
@@ -7984,7 +7997,7 @@ def _emit_resource(
     # `emitter.line_count` — a clean inline emission produces no
     # additional finalized lines.
     start_col = emitter.column
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
 
     # Step 1: try inline with no value-wrap.
     saved = emitter.snapshot()
@@ -8491,7 +8504,7 @@ def _emit_enum_declaration(
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+    if emitter.last_lines_max_width(saved[0]) > emitter.line_limit:
         # When `super_interfaces_node is None`, nothing was
         # emitted since the snapshot, so this check cannot
         # trip — matching the unconditional style used in
@@ -8725,7 +8738,7 @@ def _emit_interface_declaration(
     if extends_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, extends_interfaces_node)
-    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+    if emitter.last_lines_max_width(saved[0]) > emitter.line_limit:
         emitter.restore(saved)
         # Reuse the class-header wrap helper; interfaces have no
         # `superclass` so pass `None` there. `extends_interfaces`
@@ -9042,7 +9055,7 @@ def _emit_throws(
         if index > 0:
             emitter.write(", ")
         _emit_node(emitter, source, t)
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     if emitter.last_lines_max_width(saved[0]) <= effective_max:
         return
 
@@ -9254,7 +9267,7 @@ def _emit_formal_parameters(
     # know about trailing tokens beyond `)` (e.g. the abstract-
     # method `;` reserve set by `_emit_method_declaration`) can
     # force the priority engine past a borderline P1.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     # P1: try single-line.
     saved = emitter.snapshot()
     emitter.write("(")
@@ -9665,7 +9678,7 @@ def _emit_field_access(
 
     saved = emitter.snapshot()
     line_start_col = _current_line_leading_spaces(emitter)
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     emit_inline()
     inline_width = emitter.last_lines_max_width(saved[0])
     if inline_width <= effective_max:
@@ -10988,13 +11001,13 @@ def _emit_argument_list(
             opener_ok = True
             if saved[0] < len(emitter._lines):
                 opener_ok = (
-                    len(emitter._lines[saved[0]]) <= _MAX_LINE
+                    len(emitter._lines[saved[0]]) <= emitter.line_limit
                 )
             # The closer line — the in-progress line at the
             # end of P1 emit, containing `})` plus tail
             # context the parent will append.
             closer_ok = (
-                emitter.column + emitter.tail_reserve <= _MAX_LINE
+                emitter.column + emitter.tail_reserve <= emitter.line_limit
             )
             if opener_ok and closer_ok:
                 _fire_wrap_overflow_advisory(
@@ -11059,7 +11072,7 @@ def _emit_argument_list(
             # its own entry: `emit_p1` is expected to unwind any
             # `tail_reserve` it adjusts, but the cap should not
             # depend on that expectation holding.
-            effective_max = _MAX_LINE - emitter.tail_reserve
+            effective_max = emitter.line_limit - emitter.tail_reserve
             emit_p1()
             stayed_inline = emitter.line_count == saved[0]
             if not (
@@ -11125,7 +11138,7 @@ def _emit_argument_list(
             # dangling, so the partial break this rejects does
             # not arise there.
             saved = emitter.snapshot()
-            effective_max = _MAX_LINE - emitter.tail_reserve
+            effective_max = emitter.line_limit - emitter.tail_reserve
             emit_p1()
             if (
                 p1_invalid_wrap[0]
@@ -11166,7 +11179,7 @@ def _emit_argument_list(
         #     line at the line-start-col + 4 anchor. Spec
         #     C1 emit-and-warn fallback.
         initial = emitter.snapshot()
-        effective_max = _MAX_LINE - emitter.tail_reserve
+        effective_max = emitter.line_limit - emitter.tail_reserve
         # P1. Reset the arg-list-P4 flag before the speculative
         # emit so the post-emit check detects only P4 firings
         # caused by THIS emit_p1(), not sticky True from a prior
@@ -11277,7 +11290,7 @@ def _emit_argument_list(
                 # list to P3.
                 if (
                     emitter.line_count - p2_snap[0] == 1
-                    and len(emitter._lines[p2_snap[0]]) <= _MAX_LINE
+                    and len(emitter._lines[p2_snap[0]]) <= emitter.line_limit
                     and len(emitter._current) <= effective_max
                 ):
                     call_row = len(emitter._lines[p2_snap[0]]) - p2_cont_col
@@ -12097,7 +12110,7 @@ def _emit_method_chain_wrapped(
     # it's legitimately multi-line (e.g. a head that is itself
     # another chain). P2 / P3 commit by width — their newlines
     # are deliberate.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     saved = emitter.snapshot()
 
     def choose_shape() -> Callable[[], None]:
@@ -12423,7 +12436,7 @@ def _emit_variable_declarator_with_array_rhs(
     writes after this emitter returns.
     """
     is_new_type_array = _rhs_is_new_type_array(value)
-    effective_max_with_semi = _MAX_LINE - emitter.tail_reserve - 1
+    effective_max_with_semi = emitter.line_limit - emitter.tail_reserve - 1
 
     # Priority 1: inline all — force array inline. The `+ 1` in
     # `effective_max_with_semi` accounts for the trailing `;`
@@ -12600,7 +12613,7 @@ def _emit_variable_declarator(
     #       expression wrap, etc.), with the ladder probe and the
     #       overflow backtrack that (1) deliberately declines to
     #       guess at.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
 
     # 0.6.0: array-literal RHS gets its own cascade per the
     # spec's "Array initializers" section. Priority 2 is
@@ -12822,8 +12835,8 @@ def _emit_variable_declarator(
     # and 2 above compute the same budget via `<=
     # effective_max`; this check keeps Step 3 consistent.
     inline_overflow = (
-        emitter.last_lines_max_width(saved[0]) > _MAX_LINE
-        or emitter.column + 1 + emitter.tail_reserve > _MAX_LINE
+        emitter.last_lines_max_width(saved[0]) > emitter.line_limit
+        or emitter.column + 1 + emitter.tail_reserve > emitter.line_limit
     )
     if (
         inline_laddered
@@ -13108,19 +13121,215 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
 }
 
 
+# A `//` comment whose text starts with one of these is Javadoc
+# snippet markup (JEP 413): it shapes how `{@snippet file=…}` renders
+# the demo code it sits in.
+_SNIPPET_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"//\s*@(?:start|end|highlight|replace|link)\b"
+)
+
+# One token of a markup comment: a `@tag`, or an attribute with an
+# optional value. A quoted value is one token, so a word inside
+# `regex="…"` is never read as an attribute name.
+_SNIPPET_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"@(?P<tag>\w+)"
+    r"|(?P<name>\w+)(?:\s*=\s*(?P<value>\"[^\"]*\"|'[^']*'|[^\s\"']+))?"
+)
+
+# Never wrapped when they carry snippet markup, and given a fresh
+# width when they sit inside a region: the nodes that own a row of
+# their own. A nested statement recomputes its width, so a tagged
+# `if` header is exempt while the statements of its body are not.
+_SNIPPET_ROW_OWNERS: Final[frozenset[str]] = frozenset({
+    "local_variable_declaration",
+    "field_declaration",
+    "expression_statement",
+    "return_statement",
+    "throw_statement",
+    "yield_statement",
+    "break_statement",
+    "continue_statement",
+    "if_statement",
+    "for_statement",
+    "enhanced_for_statement",
+    "while_statement",
+    "do_statement",
+    "try_statement",
+    "try_with_resources_statement",
+    "catch_clause",
+    "finally_clause",
+    "switch_expression",
+    "switch_rule",
+    "synchronized_statement",
+    "labeled_statement",
+    "explicit_constructor_invocation",
+})
+
+# Wide enough that no wrap decision ever fires.
+_SNIPPET_UNLIMITED: Final[int] = 1 << 20
+
+
+def _snippet_tags(text: str) -> list[tuple[str, dict[str, str | None]]]:
+    """The markup tags in a `//` comment, each with its attributes.
+
+    `[]` for a comment that is not snippet markup. A comment may
+    carry several tags (`// @replace regex="x" replacement="" @highlight
+    regex="y"`); attribute values keep their quotes stripped and are
+    `None` for a bare attribute such as `@end region`.
+    """
+    if not _SNIPPET_TAG_RE.match(text):
+        return []
+    tags: list[tuple[str, dict[str, str | None]]] = []
+    for match in _SNIPPET_TOKEN_RE.finditer(text, 2):
+        if match.group("tag") is not None:
+            tags.append((match.group("tag"), {}))
+        elif tags:
+            value = match.group("value")
+            if value is not None and value[:1] in ("\"", "'"):
+                value = value[1:-1]
+            tags[-1][1][match.group("name")] = value
+    return tags
+
+
+class _SnippetLayout:
+    """Where Javadoc snippet markup changes the width limit.
+
+    `{@snippet file=… region=…}` renders the code between
+    `// @start region=…` and its `@end` with the region's common
+    indent stripped, so the 80 columns that matter are counted from
+    the region's indent, not from the left margin: a statement
+    inside a region is measured against `_MAX_LINE` plus that
+    indent. The indent is the output indent of the `@start` comment,
+    recorded as the comment is emitted — before anything inside the
+    region — because it may differ from the source indent.
+
+    A row that carries markup (a trailing `// @highlight …`, a
+    `{  // @link …` on a block's opening row, or the statement after
+    an own-row tag ending in `:`) is never wrapped: the tag applies
+    to its row, so a wrap would highlight or replace only part of
+    the statement — `@replace regex="if.*" replacement="..."` would
+    leave the `if` body's rows behind in the rendered snippet.
+    """
+
+    __slots__ = ("regions", "bases", "unlimited")
+
+    def __init__(self, tree: Tree) -> None:
+        # (first byte, last byte, @start comment's first byte) of
+        # each outermost `@start` region. An inner region is cut out
+        # with its own, deeper indent stripped, so the outer region
+        # is the one whose rendered rows are widest.
+        self.regions: list[tuple[int, int, int]] = []
+        self.bases: dict[int, int] = {}
+        self.unlimited: set[tuple[int, int]] = set()
+        comments: list[Node] = []
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "line_comment":
+                comments.append(node)
+            else:
+                stack.extend(reversed(node.children))
+        # Open regions, innermost last: (name, @start comment or
+        # None for a region opened by @highlight/@replace/@link).
+        open_regions: list[tuple[str | None, Node | None]] = []
+        for comment in comments:
+            text = comment.text.decode("utf-8")
+            tags = _snippet_tags(text)
+            for tag, attrs in tags:
+                if tag == "end":
+                    self._close(open_regions, attrs.get("region"), comment)
+                elif "region" in attrs:
+                    open_regions.append((
+                        attrs["region"],
+                        comment if tag == "start" else None,
+                    ))
+            if any(tag not in ("start", "end") for tag, _ in tags):
+                owner = self._tagged_row_owner(comment, text)
+                if owner is not None:
+                    self.unlimited.add((owner.start_byte, owner.end_byte))
+
+    def _close(
+        self,
+        open_regions: list[tuple[str | None, Node | None]],
+        name: str | None,
+        end: Node,
+    ) -> None:
+        """Close the region an `@end` names, or the innermost one."""
+        index = len(open_regions) - 1
+        if name is not None:
+            while index >= 0 and open_regions[index][0] != name:
+                index -= 1
+        if index < 0:
+            return
+        start = open_regions.pop(index)[1]
+        if start is not None and not any(s for _, s in open_regions):
+            self.regions.append(
+                (start.start_byte, end.end_byte, start.start_byte)
+            )
+
+    @staticmethod
+    def _tagged_row_owner(comment: Node, text: str) -> Node | None:
+        """The row-owning node whose row a markup comment tags."""
+        prev = comment.prev_sibling
+        if prev is not None and prev.end_point[0] == comment.start_point[0]:
+            if prev.type in _SNIPPET_ROW_OWNERS:
+                return prev
+            owner = comment.parent
+            while owner is not None and owner.type not in _SNIPPET_ROW_OWNERS:
+                owner = owner.parent
+            return owner
+        if text.rstrip().endswith(":"):
+            target = comment.next_named_sibling
+            while target is not None and target.type in (
+                "line_comment", "block_comment"
+            ):
+                target = target.next_named_sibling
+            if target is not None and target.type in _SNIPPET_ROW_OWNERS:
+                return target
+        return None
+
+    def limit_for(self, emitter: Emitter, node: Node) -> int:
+        """The width `node` is measured against."""
+        if node.type == "line_comment":
+            for _, _, key in self.regions:
+                if key == node.start_byte:
+                    self.bases[key] = 4 * emitter.indent_level
+        elif (node.start_byte, node.end_byte) in self.unlimited:
+            return _SNIPPET_UNLIMITED
+        for first, last, key in self.regions:
+            if first < node.start_byte < last and key in self.bases:
+                return _MAX_LINE + self.bases[key]
+        return _MAX_LINE
+
+
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     """Dispatch a single node to its registered emitter.
 
     Raises `NotImplementedError` for node types not yet handled,
     which is the explicit "this construct isn't supported yet"
     signal during incremental rollout.
+
+    In a file with Javadoc snippet markup, a row-owning node (and a
+    comment) is emitted against the width `_SnippetLayout` gives it.
     """
     handler = _NODE_EMITTERS.get(node.type)
     if handler is None:
         raise NotImplementedError(
             f"No emitter registered for node type {node.type!r}"
         )
-    handler(emitter, source, node)
+    layout = emitter.snippet_layout
+    if layout is None or (
+        node.type not in _SNIPPET_ROW_OWNERS
+        and node.type != "line_comment"
+    ):
+        handler(emitter, source, node)
+        return
+    saved = emitter.line_limit
+    emitter.line_limit = layout.limit_for(emitter, node)
+    try:
+        handler(emitter, source, node)
+    finally:
+        emitter.line_limit = saved
 
 
 class CommentLossError(RuntimeError):
@@ -13218,6 +13427,9 @@ def format_source(
             "garbled. Fix the syntax error in the input first."
         )
     emitter = Emitter()
+    layout = _SnippetLayout(tree)
+    if layout.regions or layout.unlimited:
+        emitter.snippet_layout = layout
     _emit_node(emitter, source, tree.root_node)
     if warnings_out is not None:
         # Deduplicate by source position — speculative emit cascades

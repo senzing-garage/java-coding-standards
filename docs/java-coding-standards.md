@@ -29,6 +29,40 @@ at the end of this document.
   line-length check when breaking the line would harm readability
   (see "Formatted Log and Diagnostic Messages" below).
 
+### Javadoc snippet demo code
+
+Demo code that a `{@snippet file=… region=…}` tag renders into the
+Javadoc is measured the way readers see it:
+
+- **A snippet region is measured from its own indent.** The
+  rendered snippet strips the region's common indent, so a
+  statement between `// @start region=…` and its `@end` may run
+  80 columns past the indent of the `@start` comment. A region
+  whose `@start` sits at column 12 allows rows to column 92.
+- **A row that carries snippet markup is never wrapped.** A
+  markup tag (`@highlight`, `@replace`, `@link`) applies to its own
+  row, so wrapping the statement would apply it to only part of
+  the code. This covers a trailing tag, a tag on a block's
+  opening row (`} catch (…) {  // @highlight …`) and the statement
+  after an own-row tag that ends in `:`. A nested statement is
+  measured on its own, so only the tagged row is exempt.
+
+```java
+// @start region="register"
+long configId = configMgr.registerConfig(configDefinition, "Added CUSTOMERS data source");  // @highlight regex="configMgr.*"
+
+if (config == configMgr) throw new IllegalStateException("never happens");  // @replace regex="if.*" replacement="..."
+
+// wider than 80 in the rendered snippet and not tagged: wrapped
+JsonObject jsonObject = Json.createReader(new StringReader(result))
+                            .readObject();
+// @end region="register"
+```
+
+Checkstyle does not see these rows: demo sources are added as a
+test source root after the `validate` phase that runs it, so the
+formatter is what holds them to the rule.
+
 ---
 
 ## Indentation

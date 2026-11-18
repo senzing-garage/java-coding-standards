@@ -7001,3 +7001,77 @@ class TestEnumConstantReservesItsSeparator:
         assert widest > 80, out
         assert warnings, "a row that cannot fit must warn"
         assert warnings[0].width == widest, (warnings[0].width, widest)
+
+
+class TestSnippetLayout:
+    """Javadoc snippet markup in demo code: regions are measured from
+    their own indent, and a row that carries a markup tag is never
+    wrapped. The fixtures under `snippet_markup/` cover the emitted
+    shapes; these pin the markup parsing they depend on.
+    """
+
+    @staticmethod
+    def _layout(body: str) -> format_java._SnippetLayout:
+        src = "public class T\n{\n    void t()\n    {\n" + body + "    }\n}\n"
+        return format_java._SnippetLayout(format_java.parse_source(
+            src.encode()
+        ))
+
+    def test_tags_and_quoted_attributes(self) -> None:
+        """Several tags per comment; a quoted value is one token, so a
+        `region` inside a regex is not a region attribute."""
+        tags = format_java._snippet_tags(
+            '// @replace regex="region = " replacement=""'
+            ' @highlight region type=italic'
+        )
+        assert tags == [
+            ("replace", {"regex": "region = ", "replacement": ""}),
+            ("highlight", {"region": None, "type": "italic"}),
+        ]
+
+    def test_ordinary_comment_is_not_markup(self) -> None:
+        assert format_java._snippet_tags("// see @highlight docs") == []
+        assert format_java._snippet_tags("// @param is not markup") == []
+
+    def test_named_end_closes_its_own_region(self) -> None:
+        """`@end region="outer"` closes the `@start`, not the
+        highlight region opened inside it, which a bare `@end`
+        closes: `b()` is inside the region and `c()` is not."""
+        body = (
+            '        // @start region="outer"\n'
+            '        // @highlight region="hl"\n'
+            "        a();\n"
+            "        // @end\n"
+            "        b();\n"
+            '        // @end region="outer"\n'
+            "        c();\n"
+        )
+        layout = self._layout(body)
+        assert len(layout.regions) == 1
+        first, last, _ = layout.regions[0]
+        src = body.encode()
+        offset = len(b"public class T\n{\n    void t()\n    {\n")
+        assert first < offset + src.index(b"b();") < last
+        assert last < offset + src.index(b"c();")
+
+    def test_only_the_outermost_start_region_is_kept(self) -> None:
+        layout = self._layout(
+            '        // @start region="outer"\n'
+            '        // @start region="inner"\n'
+            "        a();\n"
+            '        // @end region="inner"\n'
+            '        // @end region="outer"\n'
+        )
+        assert len(layout.regions) == 1
+
+    def test_unbalanced_end_is_ignored(self) -> None:
+        layout = self._layout(
+            '        // @end region="nothing"\n        a();\n'
+        )
+        assert layout.regions == []
+
+    def test_file_without_markup_keeps_the_plain_emitter(self) -> None:
+        """No markup means no layout: every non-demo file formats
+        exactly as before."""
+        layout = self._layout("        a();  // an ordinary comment:\n")
+        assert not layout.regions and not layout.unlimited

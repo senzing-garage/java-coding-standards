@@ -142,6 +142,41 @@ they still test what they were written for. The standards'
 kept on the `=` line, `boolean ready = Boolean.FALSE.equals(…)`,
 now breaks at `=` and is replaced.
 
+**Javadoc snippet demo code is measured as it is rendered.** The
+formatter wrapped `sz-sdk-java`'s demo code to 80 columns from the
+left margin, although `{@snippet}` renders it with the region's
+indent stripped, and it wrapped rows that carry markup, which
+broke the markup: a tag applies to its own row, so after the wrap
+it sat on the statement's last row only, where its regex often no
+longer matched. 123 tagged rows in the demos were split this way.
+Now:
+
+- a statement inside a `// @start region=…` region is measured from
+  the indent of its `@start` comment, so the 80 columns are the
+  rendered snippet's;
+- a row that carries a `@highlight`, `@replace` or `@link` tag
+  (trailing, on a block's opening row, or the statement after an
+  own-row tag ending in `:`) is never wrapped.
+
+```java
+// 0.7.1 — `long.*` matches nothing on the tagged row
+long configId = configMgr.registerConfig(
+    configDefinition, "Added CUSTOMERS data source");  // @highlight regex="long.*"
+
+// 0.8.0
+long configId = configMgr.registerConfig(configDefinition, "Added CUSTOMERS data source");  // @highlight regex="long.*"
+```
+
+Formatting `sz-sdk-java`'s demos from before their 0.5.1 adoption,
+the rows of rendered snippets that differ from what the authors
+wrote (ignoring indentation) drop from 1134 to 377. What remains is
+ordinary normalization (Tier 1 `if`, argument lists packed when
+they fit, alignment padding removed) and untagged rows wider than
+80 in the rendered snippet. Files without snippet markup format
+exactly as before: across the 903-file corpus only the demo files
+change. The standards' new "Javadoc snippet demo code" section
+states the rule; fixtures `snippet_markup/01` to `04` cover it.
+
 ### Fixed
 
 **The formatter deleted comments in control-statement headers and
