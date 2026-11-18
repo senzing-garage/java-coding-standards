@@ -25,9 +25,32 @@ at the end of this document.
   - Lines containing URLs (`http://`, `https://`, `href`)
   - `static final` field declarations with generic type parameters
     (e.g., `Map<String, Set<ConfigOption>>`)
+  - A row whose code fits and whose overflow is a trailing `//`
+    comment (see "Trailing comments" below)
 - Use `// CSOFF` before and `// CSON` after a line to suppress the
   line-length check when breaking the line would harm readability
   (see "Formatted Log and Diagnostic Messages" below).
+
+### Trailing comments
+
+A trailing `//` comment is not counted toward the limit when the
+code before it fits. It reads with its row, so it stays there:
+
+```java
+        Scheduler scheduler = service.createScheduler(false);  // false = primary tasks
+```
+
+Moved above the row, the same comment would read as a description
+of the whole statement ("construct with false for primary tasks"),
+and between the segments of a method chain it would split the
+chain. The formatter therefore never moves a trailing comment and
+never lets one change the code's layout: the code is wrapped
+exactly as it would be without the comment. Whether a long note
+belongs on its own row above is the author's call, made by hand.
+
+The rule covers `//` comments only, after code that ends by column
+80. A row that is only a comment is still reflowed to the limit,
+and a `/* */` comment counts toward the row's length.
 
 ### Javadoc snippet demo code
 

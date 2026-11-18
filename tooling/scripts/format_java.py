@@ -280,6 +280,8 @@ class Emitter:
     __slots__ = (
         "_lines",
         "_current",
+        "_sides",
+        "_current_side",
         "_indent",
         "_tail_reserve",
         "_paren_align_col",
@@ -298,6 +300,17 @@ class Emitter:
     def __init__(self) -> None:
         self._lines: list[str] = []
         self._current: str = ""
+        # Trailing `//` comments, kept beside their rows rather than
+        # in them: `_sides[i]` belongs to `_lines[i]` (usually ""),
+        # `_current_side` to `_current`. Each holds the padding plus
+        # the comment and is joined back on in `finish()`. Because the
+        # row text is code only, every width measurement the wrap
+        # engines make ignores trailing comments: a comment never
+        # changes the code's layout, and may itself run past the
+        # limit (checkstyle's LineLength ignores a row whose code
+        # fits and whose overflow is a trailing comment).
+        self._sides: list[str] = []
+        self._current_side: str = ""
         self._indent: int = 0
         # Collected formatter warnings — non-blocking advisories
         # about layout corner cases the formatter can't fully
@@ -453,7 +466,23 @@ class Emitter:
                 "Emitter.write() does not accept newlines; "
                 "call newline() explicitly. Got: " + repr(text)
             )
+        if self._current_side and text.strip():
+            raise ValueError(
+                "Emitter.write() after a trailing line comment would "
+                "put code inside the comment. Got: " + repr(text)
+            )
         self._current += text
+
+    def write_trailing_line_comment(self, text: str) -> None:
+        """End the current row with a `//` comment kept beside it.
+
+        The padding already written after the code moves with the
+        comment, so the row's text, and every width measured from
+        it, is the code alone.
+        """
+        code_end = len(self._current.rstrip(" \t"))
+        self._current_side = self._current[code_end:] + text
+        self._current = self._current[:code_end]
 
     def write_indent(self) -> None:
         """Emit the current indent prefix at the start of a line.
@@ -479,7 +508,9 @@ class Emitter:
         commit so emitters need not pre-trim them.
         """
         self._lines.append(self._current.rstrip(" \t"))
+        self._sides.append(self._current_side)
         self._current = ""
+        self._current_side = ""
 
     @property
     def tail_reserve(self) -> int:
@@ -544,16 +575,16 @@ class Emitter:
     def snapshot(
         self,
     ) -> tuple[
-        int, str, int, int, int | None, int | None, bool, bool, bool,
-        bool, bool, int
+        int, str, str, int, int, int | None, int | None, bool, bool,
+        bool, bool, bool, int
     ]:
         """Capture the emitter state for speculative emission.
 
-        Returns a tuple `(lines_count, current, indent,
+        Returns a tuple `(lines_count, current, current_side, indent,
         tail_reserve, paren_align_col, paren_expr_col,
         arg_list_p4_fired, array_init_inline_only,
         anchor_escaped, chain_ladder_fired, raw_rows_emitted,
-        warnings_count)` suitable for `restore()` — twelve
+        warnings_count)` suitable for `restore()` — thirteen
         fields, in the order `restore()` unpacks them. The
         wrap-priority engines use the pattern:
 
@@ -585,6 +616,7 @@ class Emitter:
         return (
             len(self._lines),
             self._current,
+            self._current_side,
             self._indent,
             self._tail_reserve,
             self._paren_align_col,
@@ -600,8 +632,8 @@ class Emitter:
     def restore(
         self,
         snap: tuple[
-            int, str, int, int, int | None, int | None, bool, bool,
-            bool, bool, bool, int
+            int, str, str, int, int, int | None, int | None, bool,
+            bool, bool, bool, bool, int
         ],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
@@ -615,6 +647,7 @@ class Emitter:
         (
             lines_count,
             current,
+            current_side,
             indent,
             tail_reserve,
             paren_align_col,
@@ -627,7 +660,9 @@ class Emitter:
             warnings_count,
         ) = snap
         del self._lines[lines_count:]
+        del self._sides[lines_count:]
         self._current = current
+        self._current_side = current_side
         self._indent = indent
         self._tail_reserve = tail_reserve
         self._paren_align_col = paren_align_col
@@ -691,6 +726,11 @@ class Emitter:
         # the difference.
         self._raw_rows_emitted = True
         parts = text.split("\n")
+        if self._current_side and parts[0].strip():
+            raise ValueError(
+                "write_raw_lines() after a trailing line comment would "
+                "put text inside the comment. Got: " + repr(text[:32])
+            )
         # First segment continues the current line.
         self._current += parts[0]
         for part in parts[1:]:
@@ -698,6 +738,8 @@ class Emitter:
                 self._lines.append(self._current.rstrip(" \t"))
             else:
                 self._lines.append(self._current)
+            self._sides.append(self._current_side)
+            self._current_side = ""
             self._current = part
 
     def push_indent(self) -> None:
@@ -725,18 +767,19 @@ class Emitter:
               `b"\\n"`. The single trailing newline is reserved
               for files with at least one byte of real content.
         """
-        if self._current:
-            self._lines.append(self._current.rstrip(" \t"))
-            self._current = ""
-        if not self._lines:
-            return b""
+        if self._current or self._current_side:
+            self.newline()
+        rows = [
+            line + side
+            for line, side in zip(self._lines, self._sides, strict=True)
+        ]
         # Drop any trailing all-empty lines to keep the EOF
         # contract exact (one newline at end, no trailing blanks).
-        while self._lines and self._lines[-1] == "":
-            self._lines.pop()
-        if not self._lines:
+        while rows and rows[-1] == "":
+            rows.pop()
+        if not rows:
             return b""
-        return ("\n".join(self._lines) + "\n").encode("utf-8")
+        return ("\n".join(rows) + "\n").encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -4795,6 +4838,9 @@ def _emit_comment(
             and "://" not in text
         ):
             _emit_reflowed_line_comment(emitter, text)
+            return
+        if text.startswith("//") and emitter._current.strip():
+            emitter.write_trailing_line_comment(text)
             return
         emitter.write(text)
         return

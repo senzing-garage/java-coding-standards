@@ -7076,3 +7076,68 @@ class TestSnippetLayout:
         exactly as before."""
         layout = self._layout("        a();  // an ordinary comment:\n")
         assert not layout.regions and not layout.unlimited
+
+
+class TestTrailingLineComments:
+    """A trailing `//` comment is kept beside its row, not in it, so it
+    never changes the code's layout and may run past the limit. The
+    shared checkstyle LineLength `ignorePattern` accepts such a row
+    when its code fits.
+    """
+
+    @staticmethod
+    def _format(body: str) -> tuple[str, list[format_java.FormatterWarning]]:
+        src = "class T\n{\n    void m()\n    {\n" + body + "    }\n}\n"
+        warnings: list[format_java.FormatterWarning] = []
+        out = format_java.format_source(src.encode(), warnings_out=warnings)
+        return out.decode(), warnings
+
+    def test_overflowing_comment_stays_on_its_row(self) -> None:
+        """The `=` decision measured the comment and broke the chain
+        differently than it would without it; it no longer does."""
+        chain = (
+            "        JsonObject config = Json\n"
+            "            .createObjectBuilder()\n"
+            "            .add(AbstractSchedulingService.CONCURRENCY_KEY, 1){}\n"
+            "            .add(AbstractSchedulingService.POSTPONED_TIMEOUT_KEY, 100)\n"
+            "            .build();\n"
+        )
+        comment = "  // Single thread to force serialization"
+        with_comment, warnings = self._format(chain.format(comment))
+        without, _ = self._format(chain.format(""))
+        assert with_comment.replace(comment, "") == without
+        assert comment + "\n" in with_comment
+        assert warnings == []
+
+    def test_simple_statement_keeps_its_comment_and_layout(self) -> None:
+        out, warnings = self._format(
+            "        Scheduler scheduler = service.createScheduler(false);"
+            "  // false = primary tasks\n"
+        )
+        assert (
+            "        Scheduler scheduler = service.createScheduler(false);"
+            "  // false = primary tasks\n"
+        ) in out
+        assert warnings == []
+
+    def test_code_after_a_trailing_comment_is_refused(self) -> None:
+        emitter = format_java.Emitter()
+        emitter.write("x();  ")
+        emitter.write_trailing_line_comment("// note")
+        assert emitter.column == len("x();")
+        emitter.write("  ")
+        with pytest.raises(ValueError):
+            emitter.write("y();")
+
+    def test_restore_drops_a_speculative_comment(self) -> None:
+        emitter = format_java.Emitter()
+        emitter.write("a();")
+        emitter.newline()
+        saved = emitter.snapshot()
+        emitter.write("b();  ")
+        emitter.write_trailing_line_comment("// gone")
+        emitter.newline()
+        emitter.restore(saved)
+        emitter.write("c();  ")
+        emitter.write_trailing_line_comment("// kept")
+        assert emitter.finish() == b"a();\nc();  // kept\n"

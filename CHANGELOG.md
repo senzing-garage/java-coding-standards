@@ -142,6 +142,42 @@ they still test what they were written for. The standards'
 kept on the `=` line, `boolean ready = Boolean.FALSE.equals(…)`,
 now breaks at `=` and is replaced.
 
+**A trailing `//` comment may run past 80 when the code fits.**
+The shared checkstyle `LineLength` rule gains an `ignorePattern`
+alternative for a row whose code (outside string and char
+literals) ends by column 80 and whose overflow is a trailing `//`
+comment. The formatter keeps such a comment beside its row and no
+longer measures it: the `=` break decision counted it, so a long
+comment could change how the code wrapped, and the chain wrap
+reported an overflow that was only the comment. Moving the comment
+above the row was considered and rejected; it changes what the
+comment appears to describe, and inside a method chain it splits
+the chain:
+
+```java
+// earlier on this branch: the comment counted, which moved the
+// `=` break, and it was still a checkstyle error
+JsonObject config = Json
+    .createObjectBuilder()
+    .add(AbstractSchedulingService.CONCURRENCY_KEY, 1)  // Single thread to force serialization
+    .add(AbstractSchedulingService.POSTPONED_TIMEOUT_KEY, 100)
+    .build();
+
+// 0.8.0: the layout the code gets without the comment; checkstyle passes
+JsonObject config
+    = Json.createObjectBuilder()
+          .add(AbstractSchedulingService.CONCURRENCY_KEY, 1)  // Single thread to force serialization
+          .add(AbstractSchedulingService.POSTPONED_TIMEOUT_KEY, 100)
+          .build();
+```
+
+(0.7.1 deleted a comment between chain segments; see "Fixed".)
+
+Across the five adopting repositories this clears 25 LineLength
+errors, all in `data-mart-replicator` tests, and changes the layout
+of that one statement. A row that is only a comment, a `//` inside
+a string literal, and code that itself passes 80 are still errors.
+
 **Javadoc snippet demo code is measured as it is rendered.** The
 formatter wrapped `sz-sdk-java`'s demo code to 80 columns from the
 left margin, although `{@snippet}` renders it with the region's
