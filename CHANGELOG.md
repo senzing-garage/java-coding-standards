@@ -215,6 +215,30 @@ states the rule; fixtures `snippet_markup/01` to `04` cover it.
 
 ### Fixed
 
+**A lone operator-expression argument moved to its own row when the
+`)` did not fit.** Laying the argument out after the `(`, the
+expression did not know a `)` followed it, so it kept its last
+operand on a row the `)` then pushed past 80. The whole shape was
+rejected and the argument moved to a row of its own, leaving the
+call name alone above it:
+
+```java
+// 0.7.1
+fail(
+    "Unexpectedly succeeded in adding record: " + testData);
+
+// 0.8.0
+fail("Unexpectedly succeeded in adding record: "
+     + testData);
+```
+
+The argument now starts after the `(` whenever that fits with the `)`
+reserved, every continuation row is an operator under the argument,
+and it takes no more rows than the argument on its own row. When the
+rows must be lopsided, the leading row carries the weight. Across the
+five-repo corpus 31 statements change in 17 files, none grows, and no
+row newly exceeds 80.
+
 **A block lambda's body could flip its chain's layout on every
 other save.** When a method chain checked whether a shape fit, it
 charged the statement's trailing `;` to every row, including the

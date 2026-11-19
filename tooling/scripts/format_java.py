@@ -10610,6 +10610,9 @@ def _emit_argument_list(
     # arguments on the call line, the rest beneath at a different
     # column.
     p1_invalid_wrap = [False]
+    # Extra tail reserve for a lone binary argument's P1 retry (see
+    # the single-argument cascade below).
+    p1_close_reserve = [0]
 
     def emit_p1() -> None:
         p1_invalid_wrap[0] = False
@@ -10617,9 +10620,13 @@ def _emit_argument_list(
         if single_arg_binary:
             arg_col = emitter.column
             prev_align = emitter.set_paren_align_col(arg_col)
+            prev_reserve = emitter.set_tail_reserve(
+                emitter.tail_reserve + p1_close_reserve[0]
+            )
             try:
                 _emit_node(emitter, source, args[0])
             finally:
+                emitter.set_tail_reserve(prev_reserve)
                 emitter.set_paren_align_col(prev_align)
         else:
             cont_col = emitter.column
@@ -11271,6 +11278,60 @@ def _emit_argument_list(
                         emit_p4_single_arg_paren_defer,
                     ],
                 )
+                if single_arg_binary:
+                    # A lone operator expression whose P1 failed only
+                    # because its last row could not also hold the `)`:
+                    # the expression packed that row without knowing a
+                    # `)` follows. Retry P1 with the `)` reserved, and
+                    # keep it when it fits in no more rows than P4.
+                    # P4 puts the call and its `(` alone on the first
+                    # row with all the weight below it, so at equal
+                    # rows the argument starting after `(` is the
+                    # balanced shape:
+                    #
+                    #     fail("Unexpectedly succeeded in adding record: "
+                    #          + testData);
+                    #
+                    # rather than
+                    #
+                    #     fail(
+                    #         "Unexpectedly succeeded in adding record: " + testData);
+                    p4_rows = emitter.line_count - saved[0]
+                    emitter.restore(saved)
+                    p1_close_reserve[0] = 1
+                    try:
+                        emit_p1()
+                    finally:
+                        p1_close_reserve[0] = 0
+                    # Keep it only in the shape it is for: every
+                    # continuation row an operator under the
+                    # argument's first column. An operand that broke
+                    # internally (a chain, a nested call) leaves rows
+                    # that start elsewhere, and P4 handles those.
+                    arg_col = len(saved[1]) + 1
+                    continuation = emitter._lines[saved[0] + 1:] + [
+                        emitter._current
+                    ]
+                    operator_rows = all(
+                        len(row) - len(row.lstrip(" ")) == arg_col
+                        and row.lstrip(" ").split(" ", 1)[0]
+                        in _BINARY_OP_PRECEDENCE
+                        for row in continuation
+                    )
+                    if not (
+                        operator_rows
+                        and emitter.last_lines_max_width(saved[0])
+                        <= effective_max
+                        and emitter.line_count - saved[0] <= p4_rows
+                    ):
+                        emitter.restore(saved)
+                        try_priorities(
+                            emitter,
+                            [
+                                emit_p4_single_arg_block_indent,
+                                emit_p4_single_arg_paren_defer,
+                            ],
+                        )
     else:
         # Multi-arg cascade — manual snapshot/restore because
         # P2's two-line constraint (per spec "Method Call

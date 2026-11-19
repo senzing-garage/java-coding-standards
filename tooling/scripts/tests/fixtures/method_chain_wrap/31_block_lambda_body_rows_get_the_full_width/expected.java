@@ -24,15 +24,15 @@ class BlockLambdaBodyRows
         if (a) {
             x.run(() -> {
                 if (c) {
-                    fail(
-                        "Unexpectedly succeeded in adding record: " + testData);
+                    fail("Unexpectedly succeeded in adding record: "
+                         + testData);
                     this.count += mxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx;
                 }
             });
             if (b) {
                 if (c) {
-                    fail(
-                        "Unexpectedly succeeded in adding record: " + testData);
+                    fail("Unexpectedly succeeded in adding record: "
+                         + testData);
                     this.count += mxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx;
                 }
             }

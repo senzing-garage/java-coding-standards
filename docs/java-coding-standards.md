@@ -1373,6 +1373,29 @@ and it applies only to an argument that starts its own row:
                         "Exception message should indicate file issue");
 ```
 
+A lone operator expression goes on its own row only when it has
+to. If it can start right after the `(`, with every continuation
+row an operator under its first operand, in no more rows than
+moving it to a row of its own, it does. When the rows must be
+lopsided, the leading row carries the weight, not the overflow
+row; a call name and `(` alone on the first row is the most
+lopsided shape there is:
+
+```java
+                    fail("Unexpectedly succeeded in adding record: "
+                         + testData);
+
+                    sourceStats.setEntityCount(sourceStats.getEntityCount()
+                                               + 1);
+```
+
+not
+
+```java
+                    fail(
+                        "Unexpectedly succeeded in adding record: " + testData);
+```
+
 A lone argument that has to go on its own row (priority 4)
 follows the same rule:
 
