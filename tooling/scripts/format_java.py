@@ -26,7 +26,7 @@ Wrap priority — the engine handles overflow on:
 - throws-clause types (single line → column-aligned one-per-
   line per spec).
 - method-call argument lists (P1 single line → P2 two-line
-  paren-aligned comma-packed → P4 next-line single-indent for
+  paren-aligned balanced → P4 next-line single-indent for
   single-arg overflow).
 - variable_declarator initializers (inline single-line →
   break-at-`=` with single-line value → inline-with-value-wrap).
@@ -93,6 +93,8 @@ validation and diagnostics.
 from __future__ import annotations
 
 import argparse
+import collections
+import re
 import sys
 import threading
 from contextlib import contextmanager
@@ -153,6 +155,28 @@ def _thread_parser() -> Parser:
 # Spec line-length limit. Used throughout the wrap-priority
 # engine and the javadoc-reflow helpers.
 _MAX_LINE: Final[int] = 80
+
+# Method Call Arguments priority 2 balance threshold. P2 picks the
+# split whose two rows carry the closest amount of text after the
+# `(`; if even that split leaves the continuation row under this
+# fraction of the call row, the call is too lopsided for P2 and goes
+# to P3. A heavier continuation row is never lopsided.
+_P2_BALANCE_MIN_RATIO: Final[float] = 0.6
+
+# Break-at-`=` balance thresholds. They apply when breaking before
+# `=` would put the whole value on one continuation row, and compare
+# the left-hand-side row with that value row (both without indent).
+#
+# A value that would otherwise wrap as a balanced priority 2 call of
+# three or more arguments keeps that wrap when the left-hand-side row
+# is under `_EQ_BREAK_P2_MIN_RATIO` of the value row. Every other
+# inline wrap (operators, ternaries, P2b, P3, two-argument calls)
+# gives way to the `=` break at any ratio.
+_EQ_BREAK_P2_MIN_RATIO: Final[float] = 0.4
+# A method chain keeps its dot-aligned inline wrap when the
+# left-hand-side row is under `_EQ_BREAK_CHAIN_MIN_RATIO` of the
+# value row; otherwise the whole chain goes on one row after `=`.
+_EQ_BREAK_CHAIN_MIN_RATIO: Final[float] = 0.5
 
 
 def parse_source(source: bytes | bytearray) -> Tree:
@@ -256,6 +280,8 @@ class Emitter:
     __slots__ = (
         "_lines",
         "_current",
+        "_sides",
+        "_current_side",
         "_indent",
         "_tail_reserve",
         "_paren_align_col",
@@ -264,13 +290,27 @@ class Emitter:
         "_array_init_inline_only",
         "_anchor_escaped",
         "_chain_ladder_fired",
+        "_balanced_p2_span",
         "_raw_rows_emitted",
+        "line_limit",
+        "snippet_layout",
         "warnings",
     )
 
     def __init__(self) -> None:
         self._lines: list[str] = []
         self._current: str = ""
+        # Trailing `//` comments, kept beside their rows rather than
+        # in them: `_sides[i]` belongs to `_lines[i]` (usually ""),
+        # `_current_side` to `_current`. Each holds the padding plus
+        # the comment and is joined back on in `finish()`. Because the
+        # row text is code only, every width measurement the wrap
+        # engines make ignores trailing comments: a comment never
+        # changes the code's layout, and may itself run past the
+        # limit (checkstyle's LineLength ignores a row whose code
+        # fits and whose overflow is a trailing comment).
+        self._sides: list[str] = []
+        self._current_side: str = ""
         self._indent: int = 0
         # Collected formatter warnings — non-blocking advisories
         # about layout corner cases the formatter can't fully
@@ -362,6 +402,13 @@ class Emitter:
         # clears it before measuring and restores it after, unlike
         # `_anchor_escaped`, whose evidence is meant to propagate.
         self._chain_ladder_fired: bool = False
+        # Byte span of the last argument list committed as a
+        # balanced priority 2 wrap. The `=` balance rule reads it
+        # right after emitting a value inline, to tell a balanced
+        # P2 (which may keep the value on the `=` line) from every
+        # other wrap shape (which never does). Not snapshotted: a
+        # reader compares it against one specific argument list.
+        self._balanced_p2_span: tuple[int, int] | None = None
         # Set whenever an emit replays source rows verbatim through
         # `write_raw_lines`. Readers save-reset-check-restore, like
         # `_arg_list_p4_fired`. Distinguishes "this construct wrapped"
@@ -380,6 +427,16 @@ class Emitter:
         # without the array committing to a multi-line P3/P4
         # shape that would only have been discarded.
         self._array_init_inline_only: bool = False
+        # 0.8.0: the width every wrap decision measures against.
+        # `_MAX_LINE` everywhere except in Javadoc snippet demo code,
+        # where `_emit_node` raises it per statement: by a snippet
+        # region's indent, which the rendered snippet strips, and
+        # without limit for a row that carries snippet markup. See
+        # `_SnippetLayout`.
+        self.line_limit: int = _MAX_LINE
+        # The file's snippet regions and tagged rows, or `None` when
+        # it has no snippet markup — every Java file but demo code.
+        self.snippet_layout: _SnippetLayout | None = None
 
     @property
     def column(self) -> int:
@@ -409,7 +466,23 @@ class Emitter:
                 "Emitter.write() does not accept newlines; "
                 "call newline() explicitly. Got: " + repr(text)
             )
+        if self._current_side and text.strip():
+            raise ValueError(
+                "Emitter.write() after a trailing line comment would "
+                "put code inside the comment. Got: " + repr(text)
+            )
         self._current += text
+
+    def write_trailing_line_comment(self, text: str) -> None:
+        """End the current row with a `//` comment kept beside it.
+
+        The padding already written after the code moves with the
+        comment, so the row's text, and every width measured from
+        it, is the code alone.
+        """
+        code_end = len(self._current.rstrip(" \t"))
+        self._current_side = self._current[code_end:] + text
+        self._current = self._current[:code_end]
 
     def write_indent(self) -> None:
         """Emit the current indent prefix at the start of a line.
@@ -435,7 +508,9 @@ class Emitter:
         commit so emitters need not pre-trim them.
         """
         self._lines.append(self._current.rstrip(" \t"))
+        self._sides.append(self._current_side)
         self._current = ""
+        self._current_side = ""
 
     @property
     def tail_reserve(self) -> int:
@@ -500,16 +575,16 @@ class Emitter:
     def snapshot(
         self,
     ) -> tuple[
-        int, str, int, int, int | None, int | None, bool, bool, bool,
-        bool, bool, int
+        int, str, str, int, int, int | None, int | None, bool, bool,
+        bool, bool, bool, int
     ]:
         """Capture the emitter state for speculative emission.
 
-        Returns a tuple `(lines_count, current, indent,
+        Returns a tuple `(lines_count, current, current_side, indent,
         tail_reserve, paren_align_col, paren_expr_col,
         arg_list_p4_fired, array_init_inline_only,
         anchor_escaped, chain_ladder_fired, raw_rows_emitted,
-        warnings_count)` suitable for `restore()` — twelve
+        warnings_count)` suitable for `restore()` — thirteen
         fields, in the order `restore()` unpacks them. The
         wrap-priority engines use the pattern:
 
@@ -541,6 +616,7 @@ class Emitter:
         return (
             len(self._lines),
             self._current,
+            self._current_side,
             self._indent,
             self._tail_reserve,
             self._paren_align_col,
@@ -556,8 +632,8 @@ class Emitter:
     def restore(
         self,
         snap: tuple[
-            int, str, int, int, int | None, int | None, bool, bool,
-            bool, bool, bool, int
+            int, str, str, int, int, int | None, int | None, bool,
+            bool, bool, bool, bool, int
         ],
     ) -> None:
         """Restore a previously-captured state from `snapshot()`.
@@ -571,6 +647,7 @@ class Emitter:
         (
             lines_count,
             current,
+            current_side,
             indent,
             tail_reserve,
             paren_align_col,
@@ -583,7 +660,9 @@ class Emitter:
             warnings_count,
         ) = snap
         del self._lines[lines_count:]
+        del self._sides[lines_count:]
         self._current = current
+        self._current_side = current_side
         self._indent = indent
         self._tail_reserve = tail_reserve
         self._paren_align_col = paren_align_col
@@ -647,6 +726,11 @@ class Emitter:
         # the difference.
         self._raw_rows_emitted = True
         parts = text.split("\n")
+        if self._current_side and parts[0].strip():
+            raise ValueError(
+                "write_raw_lines() after a trailing line comment would "
+                "put text inside the comment. Got: " + repr(text[:32])
+            )
         # First segment continues the current line.
         self._current += parts[0]
         for part in parts[1:]:
@@ -654,6 +738,8 @@ class Emitter:
                 self._lines.append(self._current.rstrip(" \t"))
             else:
                 self._lines.append(self._current)
+            self._sides.append(self._current_side)
+            self._current_side = ""
             self._current = part
 
     def push_indent(self) -> None:
@@ -681,18 +767,19 @@ class Emitter:
               `b"\\n"`. The single trailing newline is reserved
               for files with at least one byte of real content.
         """
-        if self._current:
-            self._lines.append(self._current.rstrip(" \t"))
-            self._current = ""
-        if not self._lines:
-            return b""
+        if self._current or self._current_side:
+            self.newline()
+        rows = [
+            line + side
+            for line, side in zip(self._lines, self._sides, strict=True)
+        ]
         # Drop any trailing all-empty lines to keep the EOF
         # contract exact (one newline at end, no trailing blanks).
-        while self._lines and self._lines[-1] == "":
-            self._lines.pop()
-        if not self._lines:
+        while rows and rows[-1] == "":
+            rows.pop()
+        if not rows:
             return b""
-        return ("\n".join(self._lines) + "\n").encode("utf-8")
+        return ("\n".join(rows) + "\n").encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -793,7 +880,7 @@ def try_priorities(
     # so the cap stays consistent across all attempts even
     # if a misbehaving candidate adjusts tail_reserve
     # internally without unwinding it.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     for index, fn in enumerate(candidates):
         emitter.restore(initial)
         speculative = emitter.snapshot()
@@ -879,7 +966,7 @@ def _fire_wrap_overflow_advisory(
     else:
         current_on_disk = len(current) + emitter.tail_reserve
     max_on_disk = max(max_finalized_width, current_on_disk)
-    if max_on_disk <= _MAX_LINE:
+    if max_on_disk <= emitter.line_limit:
         return
     # Deduplicate: a wrap engine that contains another wrap engine
     # which already fired (e.g. an argument list containing a
@@ -946,7 +1033,7 @@ def _fire_wrap_overflow_advisory(
         width=max_on_disk,
         message=(
             f"{site_label} wrap could not fit within "
-            f"{_MAX_LINE} chars (max line width "
+            f"{emitter.line_limit} chars (max line width "
             f"{max_on_disk}). {remedy}"
         ),
     ))
@@ -1378,7 +1465,7 @@ def _emit_class_declaration(
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+    if emitter.last_lines_max_width(saved[0]) > emitter.line_limit:
         # Overflow — backtrack and rewrap. Use last_lines_max_width
         # rather than just emitter.column so internal multi-line
         # source-preservation (super_interfaces / type_parameters
@@ -1440,7 +1527,7 @@ def _emit_extends_implements_p2_p3(
             emitter.write(" ")
     if has_implements:
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(attempt[0]) <= _MAX_LINE:
+    if emitter.last_lines_max_width(attempt[0]) <= emitter.line_limit:
         return
 
     # P3: each clause on its own continuation line.
@@ -1454,7 +1541,7 @@ def _emit_extends_implements_p2_p3(
         emitter.newline()
         emitter.write(cont_indent)
         _emit_node(emitter, source, super_interfaces_node)
-        if emitter.last_lines_max_width(p3_impl_saved[0]) > _MAX_LINE:
+        if emitter.last_lines_max_width(p3_impl_saved[0]) > emitter.line_limit:
             # P4: implements clause still overflows on its own
             # line (a class implementing 3+ long-named interfaces
             # exceeds 80 chars even after breaking `implements`
@@ -1585,7 +1672,7 @@ def _emit_class_header_wrapped(
         # No runtime impact today — class declarations are
         # never inside a tail-reserved context — but the
         # pattern stays uniform.
-        p2_effective_max = _MAX_LINE - emitter.tail_reserve
+        p2_effective_max = emitter.line_limit - emitter.tail_reserve
         if emitter.last_lines_max_width(attempt[0]) > p2_effective_max:
             # P2 overflowed — emit P3 instead. Each param on
             # its own continuation line at `cont_indent`; the
@@ -1635,7 +1722,7 @@ def _emit_class_header_wrapped(
     if has_implements:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(attempt[0]) <= _MAX_LINE:
+    if emitter.last_lines_max_width(attempt[0]) <= emitter.line_limit:
         return
 
     emitter.restore(attempt)
@@ -2487,7 +2574,7 @@ def _emit_binary_expression(
     # and triggers the fall-through to P2). Verified
     # empirically: removing the `line_count == saved[0]`
     # clause causes that fixture to fail.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     saved = emitter.snapshot()
     emit_p1()
     p1_fits = (
@@ -2575,9 +2662,15 @@ def _emit_binary_expression(
     # For boolean chains the paren-aligned shape is
     # one-per-line (`emit_paren_aligned`); for non-boolean
     # chains it is greedy at `align_col` (`emit_greedy`).
-    align_col = emitter.paren_align_col
-    if align_col is not None:
-        paren_saved = emitter.snapshot()
+    def overflowing_rows(start_line: int) -> int:
+        # Rows past the limit since `start_line`. Only the
+        # in-progress row still has the trailing context ahead of
+        # it, so only that row is charged `tail_reserve`.
+        finalized = emitter._lines[start_line:]
+        over = sum(1 for row in finalized if len(row) > emitter.line_limit)
+        return over + (len(emitter._current) > effective_max)
+
+    def emit_paren_candidate(align_col: int) -> None:
         # Clear paren_align_col while emitting this candidate's
         # operands. The paren context applies to THIS binary
         # chain's operator continuations only; nested binary
@@ -2585,14 +2678,15 @@ def _emit_binary_expression(
         # `_emit_parenthesized_expression` to re-set
         # `paren_align_col` if they themselves sit inside
         # grouping parens.
+        nonlocal paren_inner_wrap
         prev_align = emitter.set_paren_align_col(None)
         # Reset the shared `paren_inner_wrap` flag before this
         # candidate's speculative emit so the post-emit check
-        # below reflects ONLY operands emitted under this
-        # candidate. Without the reset, a prior speculative
-        # attempt (e.g. emit_pair_aligned at the same align_col)
-        # could leave the flag True and cause this candidate to
-        # falsely reject. Keep this reset paired with any future
+        # reflects ONLY operands emitted under this candidate.
+        # Without the reset, a prior speculative attempt (e.g.
+        # emit_pair_aligned at the same align_col) could leave
+        # the flag True and cause this candidate to falsely
+        # reject. Keep this reset paired with any future
         # addition of a third candidate that calls the shared
         # emit_paren_aligned / emit_greedy.
         paren_inner_wrap = False
@@ -2603,6 +2697,15 @@ def _emit_binary_expression(
                 emit_greedy(align_col)
         finally:
             emitter.set_paren_align_col(prev_align)
+
+    # Set when the paren-aligned candidate was rejected ONLY for
+    # overflowing: its row count past the limit. The +4 fallback
+    # has to beat it to replace it (see the end of this function).
+    paren_over: int | None = None
+    align_col = emitter.paren_align_col
+    if align_col is not None:
+        paren_saved = emitter.snapshot()
+        emit_paren_candidate(align_col)
         # Commit the paren-aligned candidate ONLY when (a) all
         # lines fit within `effective_max` AND (b) no operand
         # wrapped multi-row internally. (b) is what keeps the
@@ -2621,6 +2724,8 @@ def _emit_binary_expression(
             and not paren_inner_wrap
         ):
             return
+        if not paren_inner_wrap:
+            paren_over = overflowing_rows(paren_saved[0])
         emitter.restore(paren_saved)
 
     # +4-indent fallback. For boolean chains: P2 (leftmost-only
@@ -2636,8 +2741,34 @@ def _emit_binary_expression(
         emit_greedy(p2_col)
     if emitter.last_lines_max_width(fallback_saved[0]) <= effective_max:
         return
+
+    greedy_over = overflowing_rows(fallback_saved[0])
     emitter.restore(fallback_saved)
     emit_p3()
+    fallback_over = overflowing_rows(fallback_saved[0])
+    # One operand per row is only worth its height when it clears
+    # the overflow. When an operand is too wide for any row (a
+    # long literal), P3 overflows on that same row and the chain
+    # just gets taller, so keep the packed greedy shape and let
+    # the advisory flag the row.
+    if not is_boolean and fallback_over >= greedy_over:
+        emitter.restore(fallback_saved)
+        emit_greedy(p2_col)
+        fallback_over = greedy_over
+    # Likewise the +4 column is only worth leaving the aligned
+    # column for when it clears the overflow. When it is no
+    # shallower than the aligned column (an argument on its own
+    # row, whose column is already block + 4), it offers no more
+    # room, so an operand that did not fit there fits no better
+    # here. A deep grouping `(` is different: the shallower +4
+    # column is the escape it exists for.
+    if (
+        paren_over is not None
+        and p2_col >= align_col
+        and fallback_over >= paren_over
+    ):
+        emitter.restore(fallback_saved)
+        emit_paren_candidate(align_col)
     _fire_wrap_overflow_advisory(
         emitter, node, fallback_saved[0], "binary expression"
     )
@@ -3070,7 +3201,7 @@ def _emit_method_declaration(
     # exactly 80 chars would land at 81 on disk. Reserve 1
     # extra char in the fit threshold to catch that case.
     semicolon_reserve = 1 if body is None else 0
-    fit_threshold = _MAX_LINE - semicolon_reserve
+    fit_threshold = emitter.line_limit - semicolon_reserve
     saved = emitter.snapshot()
     if type_parameters_node is not None:
         # Per spec B11: `<T>` comes BEFORE the return type, with
@@ -3409,10 +3540,12 @@ def _emit_if_statement(
             "— grammar shape unexpected."
         )
 
+    header_comments = _header_side_comments(node, consequence)
     short_circuit = _short_circuit_body(consequence)
     if (
         alternative is None
         and short_circuit is not None
+        and not header_comments
         and not _is_else_branch_if(node)
     ):
         # No source-row gate. Earlier releases also required
@@ -3452,7 +3585,7 @@ def _emit_if_statement(
         _emit_node(emitter, source, short_circuit)
         tier1_fits = (
             emitter.last_lines_max_width(tier1_saved[0])
-            <= _MAX_LINE - emitter.tail_reserve
+            <= emitter.line_limit - emitter.tail_reserve
             and emitter.line_count == tier1_saved[0]
         )
         if tier1_fits:
@@ -3505,14 +3638,21 @@ def _emit_if_statement(
         _emit_node(emitter, source, condition)
     finally:
         emitter.set_tail_reserve(prev_reserve)
-    if emitter.line_count > cond_start_line_count:
-        emitter.newline()
-        emitter.write_indent()
-    else:
-        emitter.write(" ")
+    _write_header_body_gap(
+        emitter,
+        source,
+        header_comments,
+        allman=emitter.line_count > cond_start_line_count,
+    )
     _emit_branch_as_block(emitter, source, consequence)
 
     if alternative is not None:
+        if _header_side_comments(node, alternative, after=consequence):
+            raise NotImplementedError(
+                "a comment between `else` and its branch is not yet "
+                "supported — it would be dropped. Move it inside the "
+                "branch."
+            )
         if alternative.type == "if_statement":
             # else-if chain: dispatch the nested if_statement;
             # its emitter writes "if (...) { ... }" starting
@@ -3522,6 +3662,55 @@ def _emit_if_statement(
         else:
             emitter.write(" else ")
             _emit_branch_as_block(emitter, source, alternative)
+
+
+def _header_side_comments(
+    node: Node, body: Node, after: Node | None = None
+) -> list[Node]:
+    """Comments that are direct children of `node` and sit before
+    `body` (and after `after`, when given).
+
+    For a control statement these are the comments between its
+    header and its body — `if (ready) // why` above an Allman `{`,
+    or `for (…) // @highlight …`. Each statement emitter writes its
+    header and body from grammar fields only, so before 0.8.0 every
+    such comment was silently deleted. Comments inside the header's
+    parentheses belong to the condition's own subtree and are not
+    returned here.
+    """
+    lo = after.end_byte if after is not None else node.start_byte
+    return [
+        child for child in node.children
+        if child.type in ("line_comment", "block_comment")
+        and lo <= child.start_byte < body.start_byte
+    ]
+
+
+def _write_header_body_gap(
+    emitter: Emitter,
+    source: bytes,
+    comments: list[Node],
+    *,
+    allman: bool,
+) -> None:
+    """Write what goes between a control header and its `{`.
+
+    Without comments this is the usual choice: a space before a
+    same-line `{`, or a newline at the statement's indent for an
+    Allman `{`. Comments from `_header_side_comments` are written
+    after the header as end-of-line side comments (two spaces, per
+    spec C6) and force the Allman brace: a `//` comment ends the
+    row, so the `{` cannot follow it, and the source had to put the
+    `{` on its own row for the same reason.
+    """
+    for comment in comments:
+        emitter.write("  ")
+        _emit_node(emitter, source, comment)
+    if allman or comments:
+        emitter.newline()
+        emitter.write_indent()
+    else:
+        emitter.write(" ")
 
 
 _JAVADOC_BLOCK_TOKENS: Final[tuple[str, ...]] = (
@@ -4644,11 +4833,14 @@ def _emit_comment(
         if (
             text.startswith("//")
             and emitter.column == 4 * emitter.indent_level
-            and emitter.column + len(text) > _MAX_LINE
+            and emitter.column + len(text) > emitter.line_limit
             and not _is_directive_line_comment(text)
             and "://" not in text
         ):
             _emit_reflowed_line_comment(emitter, text)
+            return
+        if text.startswith("//") and emitter._current.strip():
+            emitter.write_trailing_line_comment(text)
             return
         emitter.write(text)
         return
@@ -4727,7 +4919,7 @@ def _emit_reflowed_line_comment(
         emitter.write(text)
         return
     prefix = "// "
-    max_content = _MAX_LINE - indent_col - len(prefix)
+    max_content = emitter.line_limit - indent_col - len(prefix)
     if max_content <= 0:
         # Indent eats the whole budget — emit verbatim and
         # let the C1 emit-and-warn behavior surface the
@@ -4854,7 +5046,7 @@ def _emit_annotation_argument_list(
         emitter.write("(")
         _emit_node(emitter, source, args[0])
         emitter.write(")")
-        effective_max = _MAX_LINE - emitter.tail_reserve
+        effective_max = emitter.line_limit - emitter.tail_reserve
         if (
             emitter.line_count == p1_saved[0]
             and emitter.last_lines_max_width(p1_saved[0])
@@ -5056,7 +5248,7 @@ def _emit_ternary_expression(
     # actually wrapped internally," which produces ugly
     # output where the inner construct's wrap point and the
     # outer construct's continuation collide visually.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     t1_saved = emitter.snapshot()
     emit_t1()
     t1_fits = (
@@ -5249,7 +5441,7 @@ def _emit_array_initializer(
         return
 
     # Cascade.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     is_multi_dim = any(
         c.type == "array_initializer" for c in elements
     )
@@ -5492,7 +5684,7 @@ def _emit_array_init_multiline(
     emitter.write("{")
     emitter.newline()
     emitter.push_indent()
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
 
     # Element-per-line counts across all continuation lines.
     # `line_element_counts[i]` = number of elements finalized
@@ -5691,11 +5883,12 @@ def _emit_switch_expression(
         _emit_node(emitter, source, cond)
     finally:
         emitter.set_tail_reserve(prev_reserve)
-    if emitter.line_count > cond_start_line_count:
-        emitter.newline()
-        emitter.write_indent()
-    else:
-        emitter.write(" ")
+    _write_header_body_gap(
+        emitter,
+        source,
+        _header_side_comments(node, block),
+        allman=emitter.line_count > cond_start_line_count,
+    )
     _emit_node(emitter, source, block)
 
 
@@ -5938,7 +6131,7 @@ def _emit_record_declaration(
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
     if super_interfaces_node is not None and (
-        emitter.last_lines_max_width(saved[0]) > _MAX_LINE
+        emitter.last_lines_max_width(saved[0]) > emitter.line_limit
         or params_wrapped
     ):
         # Priority 2+ — re-emit with the `implements` clause on
@@ -6025,18 +6218,21 @@ def _emit_synchronized_statement(
             "synchronized_statement missing condition or body — "
             "grammar shape unexpected."
         )
+    header_comments = _header_side_comments(node, body)
     emitter.write("synchronized ")
     if _node_spans_multiple_rows(cond):
         emitter.write_raw_lines(
             _node_source_text(source, cond), strip_trailing_ws=True
         )
-        emitter.newline()
-        emitter.write_indent()
-        _emit_node(emitter, source, body)
+        _write_header_body_gap(
+            emitter, source, header_comments, allman=True
+        )
     else:
         _emit_node(emitter, source, cond)
-        emitter.write(" ")
-        _emit_node(emitter, source, body)
+        _write_header_body_gap(
+            emitter, source, header_comments, allman=False
+        )
+    _emit_node(emitter, source, body)
 
 
 def _emit_explicit_constructor_invocation(
@@ -6253,7 +6449,10 @@ def _emit_try_statement(
             "shape unexpected."
         )
 
-    emitter.write("try ")
+    emitter.write("try")
+    _write_header_body_gap(
+        emitter, source, _header_side_comments(node, body), allman=False
+    )
     _emit_node(emitter, source, body)
     for child in node.children:
         if child.type in ("catch_clause", "finally_clause"):
@@ -6366,7 +6565,7 @@ def _emit_catch_clause(
     # break. Not an `assert`: rejecting priority 1 degrades to the
     # next tier, where raising would abort the file.
     p1_fits = (
-        emitter.column + 1 + emitter.tail_reserve <= _MAX_LINE
+        emitter.column + 1 + emitter.tail_reserve <= emitter.line_limit
         and emitter.line_count == p1_saved[0]
     )
     if p1_fits:
@@ -6588,6 +6787,55 @@ def _emit_for_statement(
 
     condition = node.child_by_field_name("condition")
 
+    # 0.8.0: comments in and after the header. Each is a direct child
+    # of the `for_statement`, and the header was emitted from its
+    # fields alone, so all of them were silently deleted — including
+    # the Javadoc snippet markup in
+    #
+    #     for (String record = engine.getRedoRecord(); // @highlight …
+    #          record != null;
+    #          record = engine.getRedoRecord()) // @highlight …
+    #     {
+    #
+    # A comment after a clause goes at the end of that clause's row,
+    # which needs the one-clause-per-row header; a comment after the
+    # `)` (or after the last clause) goes after the `)`, which needs
+    # the Allman brace. See `_write_header_body_gap`.
+    close_paren = next(
+        (c for c in node.children if c.type == ")"), None
+    )
+    after_init: list[Node] = []
+    after_condition: list[Node] = []
+    after_header: list[Node] = []
+    if close_paren is not None:
+        for child in node.children:
+            if child.type not in ("line_comment", "block_comment"):
+                continue
+            if child.start_byte >= body.start_byte:
+                continue
+            if child.start_byte > close_paren.start_byte:
+                after_header.append(child)
+            elif condition is not None and (
+                child.start_byte < condition.start_byte
+            ):
+                after_init.append(child)
+            elif updates and child.start_byte < updates[0].start_byte:
+                after_condition.append(child)
+            else:
+                # After the last clause, before `)`: a `//` comment
+                # cannot stay there, so it moves after the `)`.
+                after_header.insert(0, child)
+    if condition is None:
+        # No condition row to end: `for (init; // …` would comment
+        # out the `;` that closes the empty condition.
+        after_condition[:0] = after_init
+        after_init = []
+
+    def write_clause_comments(comments: list[Node]) -> None:
+        for comment in comments:
+            emitter.write("  ")
+            _emit_node(emitter, source, comment)
+
     # 0.5.0 item 5 — when the source had the for-header
     # spanning multiple rows, the developer chose to break
     # init / cond / update onto separate lines (typically
@@ -6627,7 +6875,10 @@ def _emit_for_statement(
     for part in (*inits, condition, *updates):
         if part is not None:
             header_end_row = max(header_end_row, part.end_point[0])
-    source_was_multi_row = header_end_row != node.start_point[0]
+    source_was_multi_row = (
+        header_end_row != node.start_point[0]
+        or bool(after_init or after_condition)
+    )
 
     # Single-row source: build the header inline. After
     # emission, check whether wrapping inside the
@@ -6677,11 +6928,13 @@ def _emit_for_statement(
         )
         try:
             emit_for_init_section()
+            write_clause_comments(after_init)
             if condition is not None:
                 emitter.newline()
                 emitter.write(cont_indent)
                 _emit_node(emitter, source, condition)
             emitter.write(";")
+            write_clause_comments(after_condition)
             if updates:
                 emitter.newline()
                 emitter.write(cont_indent)
@@ -6745,7 +6998,7 @@ def _emit_for_statement(
         # non-convergent: the next pass saw multi-row source, took
         # the branch above, and produced the correct one-clause-per-
         # line form, so the file only settled on a second format.
-        effective_max = _MAX_LINE - emitter.tail_reserve
+        effective_max = emitter.line_limit - emitter.tail_reserve
         single_line_header = (
             emitter.line_count == header_start[0]
         )
@@ -6770,19 +7023,19 @@ def _emit_for_statement(
     #       Allman to keep the header within budget.
     body_on_new_row = body.start_point[0] != node.start_point[0]
     inline_form_overflows = (
-        emitter.column + 2 > _MAX_LINE
+        emitter.column + 2 > emitter.line_limit
     )
-    if (
-        emitter.line_count > header_start[0]
-        or body_on_new_row
-        or inline_form_overflows
-    ):
-        emitter.newline()
-        emitter.write_indent()
-        _emit_node(emitter, source, body)
-    else:
-        emitter.write(" ")
-        _emit_node(emitter, source, body)
+    _write_header_body_gap(
+        emitter,
+        source,
+        after_header,
+        allman=(
+            emitter.line_count > header_start[0]
+            or body_on_new_row
+            or inline_form_overflows
+        ),
+    )
+    _emit_node(emitter, source, body)
 
 
 def _emit_enhanced_for_statement(
@@ -6831,6 +7084,11 @@ def _emit_enhanced_for_statement(
     # "Multi-line Conditions" exception that already governs `if`,
     # `while` and (since 0.7.0) `switch`, so a wrapped header stays
     # visually separate from the body.
+    #
+    # Comments anywhere before the body — after the `)`, or inside
+    # the header, where they are direct children too — are written
+    # after the `)` (see `_header_side_comments`).
+    header_comments = _header_side_comments(node, body)
     saved = emitter.snapshot()
     emitter.write("for (")
     _emit_node(emitter, source, type_node)
@@ -6852,10 +7110,13 @@ def _emit_enhanced_for_statement(
     # identical indent wrap or not purely by enclosing context.
     inline_fits = (
         emitter.line_count == saved[0]
-        and emitter.column + 3 + emitter.tail_reserve <= _MAX_LINE
+        and emitter.column + 3 + emitter.tail_reserve <= emitter.line_limit
     )
     if inline_fits:
-        emitter.write(") ")
+        emitter.write(")")
+        _write_header_body_gap(
+            emitter, source, header_comments, allman=False
+        )
         _emit_node(emitter, source, body)
         return
     emitter.restore(saved)
@@ -6908,8 +7169,7 @@ def _emit_enhanced_for_statement(
             "the iterable expression or hoist it to a local."
         ),
     )
-    emitter.newline()
-    emitter.write_indent()
+    _write_header_body_gap(emitter, source, header_comments, allman=True)
     _emit_node(emitter, source, body)
 
 
@@ -6934,6 +7194,7 @@ def _emit_while_statement(
             "while_statement with missing fields or brace-less "
             "body is not yet supported."
         )
+    header_comments = _header_side_comments(node, body)
     emitter.write("while ")
     if _node_spans_multiple_rows(condition):
         # Preserve the developer-authored multi-line condition
@@ -6942,8 +7203,9 @@ def _emit_while_statement(
             _node_source_text(source, condition),
             strip_trailing_ws=True,
         )
-        emitter.newline()
-        emitter.write_indent()
+        _write_header_body_gap(
+            emitter, source, header_comments, allman=True
+        )
         _emit_node(emitter, source, body)
     else:
         # Single-row source: emit the condition inline and
@@ -6965,13 +7227,13 @@ def _emit_while_statement(
             _emit_node(emitter, source, condition)
         finally:
             emitter.set_tail_reserve(prev_reserve)
-        if emitter.line_count > cond_start_line_count:
-            emitter.newline()
-            emitter.write_indent()
-            _emit_node(emitter, source, body)
-        else:
-            emitter.write(" ")
-            _emit_node(emitter, source, body)
+        _write_header_body_gap(
+            emitter,
+            source,
+            header_comments,
+            allman=emitter.line_count > cond_start_line_count,
+        )
+        _emit_node(emitter, source, body)
 
 
 def _emit_do_statement(
@@ -7216,10 +7478,138 @@ def _break_probe_wins(
     rows = emitter._lines[since:]
     return (
         not emitter._chain_ladder_fired
-        and max((len(row) for row in rows), default=0) <= _MAX_LINE
+        and max((len(row) for row in rows), default=0) <= emitter.line_limit
         and emitter.column + extra_tail + emitter.tail_reserve
-        <= _MAX_LINE
+        <= emitter.line_limit
     )
+
+
+def _inline_is_balanced_p2(
+    emitter: "Emitter", since: int, value: Node
+) -> bool:
+    """Return True when the value just emitted inline (from snapshot
+    `since`) came out as a balanced priority 2 wrap of a single call
+    with three or more arguments — the one inline wrap shape the `=`
+    balance rule may prefer to a break at `=`."""
+    call = _unwrap_parens(value)
+    if call.type not in ("method_invocation", "object_creation_expression"):
+        return False
+    _, segments = _collect_method_chain(call)
+    if len(segments) >= 2:
+        return False
+    args = call.child_by_field_name("arguments")
+    if args is None:
+        return False
+    if len([c for c in args.named_children if "comment" not in c.type]) < 3:
+        return False
+    return (
+        emitter.line_count == since + 1
+        and emitter._balanced_p2_span == (args.start_byte, args.end_byte)
+    )
+
+
+def _eq_break_is_lopsided(
+    emitter: "Emitter",
+    since: int,
+    value: Node,
+    extra_tail: int = 0,
+    inline_is_p2: bool = False,
+) -> bool:
+    """Return True when a just-emitted break-at-`=` shape whose value
+    sits on ONE continuation row should yield to the inline shape.
+
+    `since` is the `lines_count` of the snapshot taken before the
+    break, so `emitter._lines[since]` is the left-hand-side row and
+    the in-progress row is `= VALUE`. Both are measured without
+    their indent; the value row is charged for what follows it (the
+    statement's `;`), through `tail_reserve` plus `extra_tail`, with
+    the same meaning `_break_probe_wins` gives that argument.
+
+    A method chain of two or more calls is lopsided when the
+    left-hand side is short against the value row; its inline,
+    dot-aligned wrap then reads better:
+
+        long leaseTime = pooledConn.getCurrentLeaseHandler()
+                                   .getLeaseTime();
+
+    Any other value is lopsided only when its inline shape was a
+    balanced priority 2 call (`inline_is_p2`, see
+    `_inline_is_balanced_p2`) and the left-hand side is short:
+
+        Task task = new Task("ACTION", new TreeMap<>(),
+                             new TreeSet<>(), group, true);
+    """
+    lhs_row = len(emitter._lines[since].strip())
+    value_row = (
+        len(emitter._current.strip()) + emitter.tail_reserve + extra_tail
+    )
+    _, segments = _collect_method_chain(_unwrap_parens(value))
+    if len(segments) >= 2:
+        return lhs_row < _EQ_BREAK_CHAIN_MIN_RATIO * value_row
+    return inline_is_p2 and lhs_row < _EQ_BREAK_P2_MIN_RATIO * value_row
+
+
+def _widest_row(
+    emitter: "Emitter", since: int, extra_tail: int = 0
+) -> int:
+    """Widest row emitted since the snapshot `since`, counting what
+    the parent appends to the last row: `tail_reserve` plus
+    `extra_tail` (see `_break_probe_wins`). Used to compare the
+    inline and break-at-`=` shapes of an overflowing value."""
+    return max(
+        max((len(row) for row in emitter._lines[since:]), default=0),
+        emitter.column + extra_tail + emitter.tail_reserve,
+    )
+
+
+def _try_balanced_eq_break(
+    emitter: "Emitter",
+    source: bytes,
+    value: Node,
+    op_text: str,
+    extra_tail: int = 0,
+    inline_is_p2: bool = False,
+) -> bool:
+    """Probe the break-at-`=` shape in place of a clean inline shape
+    that had to WRAP its value. Keep it and return True when the
+    value fits on ONE continuation row and the two rows are balanced
+    (`_eq_break_is_lopsided` is False); otherwise restore the emitter
+    and return False, leaving the caller's inline shape to stand.
+
+    This is the 0.8.0 balance rule, shared by the declarator and the
+    assignment emitter so the two cannot drift:
+
+        // 0.7.x — inline, arguments wrapped
+        AsyncResult<TaskResult> result = this.workerPool.execute(
+            execTask);
+        // 0.8.0 — balanced `=` break
+        AsyncResult<TaskResult> result
+            = this.workerPool.execute(execTask);
+
+    `extra_tail` has the meaning `_break_probe_wins` gives it;
+    `inline_is_p2` is `_inline_is_balanced_p2` of the displaced
+    inline shape.
+    """
+    saved = emitter.snapshot()
+    emitter.newline()
+    emitter.push_indent()
+    emitter.write_indent()
+    emitter.write(op_text)
+    emitter.write(" ")
+    with _extra_tail_reserve(emitter, extra_tail):
+        _emit_node(emitter, source, value)
+    emitter.pop_indent()
+    keep = (
+        emitter.line_count == saved[0] + 1
+        and emitter.column + extra_tail + emitter.tail_reserve
+        <= emitter.line_limit
+        and not _eq_break_is_lopsided(
+            emitter, saved[0], value, extra_tail, inline_is_p2
+        )
+    )
+    if not keep:
+        emitter.restore(saved)
+    return keep
 
 
 def _emit_assignment_expression(
@@ -7284,7 +7674,7 @@ def _emit_assignment_expression(
     cascade_start = emitter.line_count
     _emit_node(emitter, source, left_node)
 
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
 
     def emit_inline_rhs() -> None:
         # Shared inline emission for Step 1 and Step 3 — both
@@ -7370,7 +7760,7 @@ def _emit_assignment_expression(
     _finalized_rows = emitter._lines[saved[0]:]
     inline_fits = (
         max((len(row) for row in _finalized_rows), default=0)
-        <= _MAX_LINE
+        <= emitter.line_limit
         and emitter.column <= effective_max
     )
     # Same orphan check `_emit_variable_declarator` runs, for the
@@ -7432,6 +7822,24 @@ def _emit_assignment_expression(
         emitter._chain_ladder_fired = False
         emit_inline_rhs()
     if inline_fits and not inline_orphan:
+        # 0.8.0 balance rule, as in `_emit_variable_declarator`'s
+        # Step 1. A laddered inline shape has already had its break
+        # probe above and is a chain, which the rule exempts.
+        if (
+            emitter.line_count > saved[0]
+            and not emitter._chain_ladder_fired
+        ):
+            inline_is_p2 = _inline_is_balanced_p2(
+                emitter, saved[0], right_node
+            )
+            emitter.restore(saved)
+            if not _try_balanced_eq_break(
+                emitter, source, right_node, op_text,
+                inline_is_p2=inline_is_p2,
+            ):
+                emitter._anchor_escaped = False
+                emitter._chain_ladder_fired = False
+                emit_inline_rhs()
         emitter._chain_ladder_fired = prev_laddered
         emitter._anchor_escaped = prev_escaped
         return
@@ -7495,13 +7903,14 @@ def _emit_assignment_expression(
     emitter._anchor_escaped = False
     emit_inline_rhs()
     inline_overflow = (
-        emitter.last_lines_max_width(saved[0]) > _MAX_LINE
-        or emitter.column + emitter.tail_reserve > _MAX_LINE
+        emitter.last_lines_max_width(saved[0]) > emitter.line_limit
+        or emitter.column + emitter.tail_reserve > emitter.line_limit
     )
     # Orphan check, as in Step 1 and as `_emit_variable_declarator`
     # Step 3 does: an argument anchored block-relatively is unmoored
     # from the `(` that owns it, and no width test can see that.
     inline_orphan = emitter._anchor_escaped
+    inline_widest = _widest_row(emitter, saved[0])
     if not inline_overflow and not inline_orphan:
         # Hand the flag back as found. An escape recorded by a
         # declarator nested in this RHS (inside a lambda block or
@@ -7521,6 +7930,17 @@ def _emit_assignment_expression(
     emitter.write(" ")
     _emit_node(emitter, source, right_node)
     emitter.pop_indent()
+    # 0.8.0 (#52), as in `_emit_variable_declarator`'s Step 3: when
+    # the inline shape merely overflowed, keep the break only if it
+    # narrows the widest row; otherwise it is wider and a line
+    # longer for nothing. An orphaned inline shape still takes the
+    # break.
+    if (
+        not inline_orphan
+        and _widest_row(emitter, saved[0]) >= inline_widest
+    ):
+        emitter.restore(saved)
+        emit_inline_rhs()
     emitter._anchor_escaped = prev_escaped
     # Spec C1 emit-and-warn: the break-at-`=` shape may itself
     # overflow when the RHS cannot be broken further (long
@@ -7576,23 +7996,21 @@ def _emit_try_with_resources_statement(
             "children — grammar shape unexpected."
         )
 
+    header_start = emitter.line_count
     emitter.write("try (")
     # Column right after the opening `(`; subsequent resource
     # lines align here.
     align_col = emitter.column
-    # For a single-resource try with a same-line body brace
-    # (` {` after the closing `)`), bump `tail_reserve` by
-    # 2 so the resource's inline-fit check accounts for the
-    # two trailing chars the parent will append after the
-    # resource closes. The resource emitter already reserves
-    # 1 char for its own `)`; without this bump the ` {`
-    # falls outside the budget and a borderline-fit resource
-    # lands at 81 chars on disk. Multi-resource breaks Allman,
-    # so the body brace lands on its own line and no extra
-    # reserve is needed.
+    # Reserve what this header writes after the last resource:
+    # the closing `)`, plus ` {` for a single resource, whose
+    # brace stays on the same line when the header fits on one
+    # row. Without it a borderline-fit resource lands at 81 or 82
+    # chars on disk. Several resources always wrap and break
+    # Allman, so only the `)` follows the last.
     prev_reserve = emitter.tail_reserve
-    if len(resources) == 1:
-        emitter.set_tail_reserve(prev_reserve + 2)
+    emitter.set_tail_reserve(
+        prev_reserve + (3 if len(resources) == 1 else 1)
+    )
     try:
         for index, resource in enumerate(resources):
             if index > 0:
@@ -7604,16 +8022,15 @@ def _emit_try_with_resources_statement(
         emitter.set_tail_reserve(prev_reserve)
     emitter.write(")")
 
-    if len(resources) > 1:
-        # Allman brace because the try condition is
-        # multi-line.
-        emitter.newline()
-        emitter.write_indent()
-        _emit_node(emitter, source, body)
-    else:
-        # Single resource on one line — same-line brace.
-        emitter.write(" ")
-        _emit_node(emitter, source, body)
+    # A header that wrapped is a multi-line condition, so the brace
+    # goes Allman, as for `if`; several resources always wrap.
+    _write_header_body_gap(
+        emitter,
+        source,
+        _header_side_comments(node, body, after=resources_node),
+        allman=emitter.line_count > header_start,
+    )
+    _emit_node(emitter, source, body)
 
     # Optional catch and finally clauses cuddle with the
     # closing `}` of the body. Same shape as
@@ -7668,7 +8085,7 @@ def _emit_resource(
     # `emitter.line_count` — a clean inline emission produces no
     # additional finalized lines.
     start_col = emitter.column
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
 
     # Step 1: try inline with no value-wrap.
     saved = emitter.snapshot()
@@ -7680,7 +8097,7 @@ def _emit_resource(
     value_introduced_newlines = emitter.line_count > saved[0]
     inline_fits = (
         emitter.last_lines_max_width(saved[0]) <= effective_max
-        and emitter.column < effective_max
+        and emitter.column <= effective_max
     )
     if inline_fits and not value_introduced_newlines:
         return
@@ -7702,7 +8119,7 @@ def _emit_resource(
     )
     p2_fits = (
         emitter.last_lines_max_width(p2_saved[0]) <= effective_max
-        and emitter.column < effective_max
+        and emitter.column <= effective_max
     )
     if p2_fits and not value_introduced_newlines_p2:
         return
@@ -7780,14 +8197,27 @@ def _emit_lambda_expression(
         )
     _emit_node(emitter, source, parameters)
     emitter.write(" -> ")
-    if body.type == "block" and _lambda_uses_chain_cascade_indent(
-        emitter
-    ):
-        _emit_lambda_block_body(emitter, source, body)
-    elif body.type == "block":
+    if body.type != "block":
         _emit_node(emitter, source, body)
-    else:
-        _emit_node(emitter, source, body)
+        return
+    # The body's statements start fresh: the reserve for what follows
+    # the lambda (`);` and the like) belongs to the row holding the
+    # closing `}`, and an enclosing paren's alignment column means
+    # nothing to them. Without this, every body row lost the
+    # enclosing call's reserve and wrapped a column or two early.
+    prev_reserve = emitter.set_tail_reserve(0)
+    prev_align = emitter.set_paren_align_col(None)
+    prev_expr = emitter._paren_expr_col
+    emitter._paren_expr_col = None
+    try:
+        if _lambda_uses_chain_cascade_indent(emitter):
+            _emit_lambda_block_body(emitter, source, body)
+        else:
+            _emit_node(emitter, source, body)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
+        emitter.set_paren_align_col(prev_align)
+        emitter._paren_expr_col = prev_expr
 
 
 def _lambda_uses_chain_cascade_indent(emitter: Emitter) -> bool:
@@ -8175,7 +8605,7 @@ def _emit_enum_declaration(
     if super_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, super_interfaces_node)
-    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+    if emitter.last_lines_max_width(saved[0]) > emitter.line_limit:
         # When `super_interfaces_node is None`, nothing was
         # emitted since the snapshot, so this check cannot
         # trip — matching the unconditional style used in
@@ -8409,7 +8839,7 @@ def _emit_interface_declaration(
     if extends_interfaces_node is not None:
         emitter.write(" ")
         _emit_node(emitter, source, extends_interfaces_node)
-    if emitter.last_lines_max_width(saved[0]) > _MAX_LINE:
+    if emitter.last_lines_max_width(saved[0]) > emitter.line_limit:
         emitter.restore(saved)
         # Reuse the class-header wrap helper; interfaces have no
         # `superclass` so pass `None` there. `extends_interfaces`
@@ -8726,7 +9156,7 @@ def _emit_throws(
         if index > 0:
             emitter.write(", ")
         _emit_node(emitter, source, t)
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     if emitter.last_lines_max_width(saved[0]) <= effective_max:
         return
 
@@ -8938,7 +9368,7 @@ def _emit_formal_parameters(
     # know about trailing tokens beyond `)` (e.g. the abstract-
     # method `;` reserve set by `_emit_method_declaration`) can
     # force the priority engine past a borderline P1.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     # P1: try single-line.
     saved = emitter.snapshot()
     emitter.write("(")
@@ -9349,7 +9779,7 @@ def _emit_field_access(
 
     saved = emitter.snapshot()
     line_start_col = _current_line_leading_spaces(emitter)
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     emit_inline()
     inline_width = emitter.last_lines_max_width(saved[0])
     if inline_width <= effective_max:
@@ -9960,10 +10390,12 @@ def _emit_argument_list(
     order by line length)":
 
         - P1 (single line): entire call fits in 80 chars.
-        - P2 (two-line paren-aligned, comma-packed): the
-          argument list spans exactly two source lines —
-          pack as many args as fit on the call line, wrap
-          the rest aligned to the column after `(`.
+        - P2 (two-line paren-aligned, balanced): the
+          argument list spans exactly two source lines,
+          split at the comma that balances the two rows
+          best (text after `(`); the rest is aligned to the
+          column after `(`. A lopsided best split (short
+          continuation row) goes to P3 instead.
         - P3 (paren-aligned, one arg per line): each arg on
           its own line at the column after `(`.
         - P4 (next-line single-indent): line-break before
@@ -9977,7 +10409,7 @@ def _emit_argument_list(
     rendered output stays within `_MAX_LINE`, or falls back
     to the last candidate per spec C1 emit + warn.
 
-    Current implementation: P1, P2-greedy, and P4 are wired
+    Current implementation: P1, P2-balanced, and P4 are wired
     as candidates. The multi-line source-preservation path
     (when the source already wraps to multiple rows) covers
     cases that would otherwise need P3 by emitting the
@@ -10108,7 +10540,7 @@ def _emit_argument_list(
     # lambda)` chain whose paren-aligned candidate fires on
     # the first pass but not the second can re-emit at a
     # different column). Multi-arg calls keep the existing
-    # P2-greedy / P4 cascade unchanged — spec C6's extension
+    # P2 / P4 cascade unchanged — spec C6's extension
     # to call parens applies only when there is a single arg
     # to anchor.
     # Unwrapped, like the three structural tests in the
@@ -10126,20 +10558,33 @@ def _emit_argument_list(
         # Binary positional arg paren-align: when a positional
         # arg is a binary expression, set `paren_align_col` to
         # the arg's start column so the binary's continuation
-        # operators paren-align under the arg's first operand
+        # operators line up under the arg's first operand
         # instead of falling back to the `block + 4`
         # cumulative indent. This produces:
         #
         #     assertTrue(cond,
         #                "msg "
-        #                    + var
-        #                    + " more");
+        #                + var
+        #                + " more");
         #
         # instead of:
         #
         #     assertTrue(cond,
         #                "msg "
         #         + var + " more");      // `+` at col 8
+        #
+        # Also used for a lone argument placed on its own row
+        # (priority 4), so `throw new X(\n    "msg "\n    + v)`
+        # lines its operators up with the message the same way.
+        #
+        # The leading operator is what marks the row as a
+        # continuation: no argument can begin with `+`, `&&` or
+        # `>`, so the operator stands in for the indent (the
+        # original Java Code Conventions' "align with the
+        # beginning of the expression"). 0.8.0 settled on this
+        # after trying +4 (#53): +4 put a comparison operator in
+        # the column of a wrapped receiver chain's `.` rows, as
+        # if it were another chain segment.
         #
         # Narrow to direct binary_expression (no paren unwrap)
         # to avoid the idempotency drift that originally
@@ -10165,6 +10610,9 @@ def _emit_argument_list(
     # arguments on the call line, the rest beneath at a different
     # column.
     p1_invalid_wrap = [False]
+    # Extra tail reserve for a lone binary argument's P1 retry (see
+    # the single-argument cascade below).
+    p1_close_reserve = [0]
 
     def emit_p1() -> None:
         p1_invalid_wrap[0] = False
@@ -10172,9 +10620,13 @@ def _emit_argument_list(
         if single_arg_binary:
             arg_col = emitter.column
             prev_align = emitter.set_paren_align_col(arg_col)
+            prev_reserve = emitter.set_tail_reserve(
+                emitter.tail_reserve + p1_close_reserve[0]
+            )
             try:
                 _emit_node(emitter, source, args[0])
             finally:
+                emitter.set_tail_reserve(prev_reserve)
                 emitter.set_paren_align_col(prev_align)
         else:
             cont_col = emitter.column
@@ -10264,7 +10716,7 @@ def _emit_argument_list(
             emitter.tail_reserve + 1
         )
         try:
-            _emit_node(emitter, source, args[0])
+            _emit_arg_with_optional_paren_align(args[0])
         finally:
             emitter.set_tail_reserve(prev_reserve)
         emitter.write(")")
@@ -10298,160 +10750,57 @@ def _emit_argument_list(
         # rather than method-call parens.
         emitter.write("(")
         emitter.newline()
-        if emitter.paren_expr_col is not None:
-            emitter.write(" " * (emitter.paren_expr_col + 3))
-            _emit_node(emitter, source, args[0])
-            emitter.write(")")
-        else:
-            # Block-relative, and therefore unmoored from this call's
-            # `(`. Flag it so callers that can reposition the whole
-            # construct get the chance to avoid reaching this tier.
-            emitter._anchor_escaped = True
-            emitter.push_indent()
-            emitter.write_indent()
-            _emit_node(emitter, source, args[0])
-            emitter.write(")")
-            emitter.pop_indent()
+        # Reserve 1 char for the `)`, as the block-indent candidate
+        # does. This candidate is the one committed when nothing
+        # fits, so its argument is the one most likely to pack a
+        # row to exactly the limit, which the `)` then overflows.
+        prev_reserve = emitter.set_tail_reserve(
+            emitter.tail_reserve + 1
+        )
+        try:
+            if emitter.paren_expr_col is not None:
+                emitter.write(" " * (emitter.paren_expr_col + 3))
+                _emit_arg_with_optional_paren_align(args[0])
+                emitter.write(")")
+            else:
+                # Block-relative, and therefore unmoored from this
+                # call's `(`. Flag it so callers that can reposition
+                # the whole construct get the chance to avoid
+                # reaching this tier.
+                emitter._anchor_escaped = True
+                emitter.push_indent()
+                emitter.write_indent()
+                _emit_arg_with_optional_paren_align(args[0])
+                emitter.write(")")
+                emitter.pop_indent()
+        finally:
+            emitter.set_tail_reserve(prev_reserve)
 
-    def emit_p2_greedy() -> None:
-        # P2: two-line paren-aligned comma-packed. Per spec
-        # "Method Call Arguments / Priority 2": break on a
-        # comma as late as possible (pack as many args as fit
-        # on the call line) and continue the rest on a
-        # SINGLE continuation line aligned to the first
-        # column after `(`.
+    def emit_p2_split(split: int) -> None:
+        # P2: two-line paren-aligned comma-packed, with the first
+        # `split` arguments on the call line and the rest on ONE
+        # continuation line aligned to the first column after `(`.
+        # The cascade emits every split and keeps the best balanced
+        # one (0.8.0); see the P2 block there. This function only
+        # lays out the given split — it does not judge it.
         #
-        # The two-line constraint distinguishes P2 from P3
-        # (paren-aligned one-per-line): P2 must fit the
-        # ENTIRE arg list on the call line + one continuation
-        # line, otherwise the wrap engine escalates to P3
-        # (each arg on its own line). This is what the spec
-        # calls out in "Method Call Arguments" as the "two-
-        # line comma-packed form ... fits on exactly two
-        # lines." A pre-0.6 bug allowed N-line packed shapes;
-        # 0.6.0 tightens to two-line strict.
-        #
-        # If P2 would spill onto a third line, `try_priorities`
-        # sees the emission failed the two-line invariant via
-        # `p2_committed_lines > 2` and falls through to
-        # `emit_p3_paren_one_per_line`.
+        # Every argument is emitted inline. An argument that has to
+        # wrap adds a row, and the caller's two-line check rejects
+        # the split. That is the same outcome the pre-0.8.0 greedy
+        # packer reached by breaking before such an argument: the
+        # emission then spilled past two lines and the tier was
+        # rejected, so P2 has only ever committed lists whose
+        # arguments all render on one row.
         emitter.write("(")
         cont_col = emitter.column
-        effective_max = _MAX_LINE - emitter.tail_reserve
-        prev_arg_multi_row = False
-        # Start-of-P2 line count for the two-line check. P2
-        # is committed only if `emitter.line_count -
-        # p2_start_line_count <= 1` (== 0 → all inline on
-        # the call line, == 1 → one continuation line, > 1
-        # → three or more lines, rejected).
-        p2_start_line_count = emitter.line_count
         for index, arg in enumerate(args):
-            if index == 0:
-                operand_start = emitter.line_count
-                _emit_arg_with_optional_paren_align(arg)
-                prev_arg_multi_row = (
-                    emitter.line_count > operand_start
-                )
-                continue
-            if prev_arg_multi_row:
-                # Item 8 invariant for arg lists: the previous
-                # arg's emission introduced newlines (a nested
-                # call / lambda / binary wrapped multi-row),
-                # so force break before this arg. Otherwise
-                # the next arg lands at whatever column the
-                # prior arg's wrap tail ended on, jamming
-                # `arg)` onto the same line as the wrapped
-                # construct's closing.
+            if index == split:
                 emitter.write(",")
                 emitter.newline()
                 emitter.write(" " * cont_col)
-                operand_start = emitter.line_count
-                _emit_arg_with_optional_paren_align(arg)
-                prev_arg_multi_row = (
-                    emitter.line_count > operand_start
-                )
-                continue
-            saved = emitter.snapshot()
-            emitter.write(", ")
-            operand_start = emitter.line_count
-            prev_p4 = emitter._arg_list_p4_fired
-            emitter._arg_list_p4_fired = False
+            elif index > 0:
+                emitter.write(", ")
             _emit_arg_with_optional_paren_align(arg)
-            widths_ok = (
-                emitter.last_lines_max_width(saved[0])
-                <= effective_max
-            )
-            if index == len(args) - 1:
-                # Reserve 1 char of slack on the final arg
-                # for the trailing `)` that follows.
-                #
-                # Asymmetry-justification: `widths_ok` above is
-                # a multi-line check (`last_lines_max_width`),
-                # while this final-arg check is column-only
-                # (`emitter.column`, the in-progress line's
-                # width). The combined gate is still correct
-                # because the multi-line check has already
-                # rejected any speculative emit whose
-                # intermediate wrapped line overflows; only the
-                # last line's tail (current column) still needs
-                # to leave room for the `)`. If a future
-                # refactor splits the gate, preserve that
-                # invariant: any intermediate line's width must
-                # be `<= effective_max`, only the final line
-                # needs the `< effective_max` (strict) cap.
-                widths_ok = (
-                    widths_ok
-                    and emitter.column < effective_max
-                )
-            # 0.6.0: reject the packed emission when the
-            # arg's own emission cascaded through arg-list
-            # P4 (leaf-arg wrap) — packing `arg1, deepCall(`
-            # then wrapping deepCall's args produces the
-            # "split call on same line as previous arg"
-            # shape (line 1 has `arg1, deepCall(`, line 2
-            # has `<indent>innerArg)`). Same line count as
-            # break-before-then-inline-emit, but the latter
-            # is cleaner. Same detection mechanism as
-            # binary emit's `paren_inner_wrap` — see
-            # `Emitter._arg_list_p4_fired`.
-            arg_wrapped_via_p4 = emitter._arg_list_p4_fired
-            emitter._arg_list_p4_fired = prev_p4 or arg_wrapped_via_p4
-            # 0.7.0: same reasoning as P1's `p1_invalid_wrap`. Packing
-            # this arg onto the call line "fits" only because the arg
-            # itself wrapped internally — every emitted line is under
-            # the cap, so the width check passes and P2 commits a
-            # partial break. Break before the arg instead, which
-            # usually leaves it room to render whole. Arguments that
-            # inherently own multiple rows are exempt.
-            arg_invalid_wrap = (
-                emitter.line_count > operand_start
-                and not _arg_owns_its_rows(arg)
-            )
-            # Patched in place rather than escalating the whole
-            # candidate, which is what P1 and P3 do. That asymmetry
-            # is safe because of the caller's two-line cap
-            # (`p2_line_count <= 1`) combined with its width check:
-            # if moving the argument to the continuation line still
-            # leaves it wrapping, the emission spills to a second
-            # continuation line and the cap rejects the whole tier;
-            # if it fits but overflows, the width check rejects it.
-            # Either way the cascade escalates. So the only P2
-            # outputs that survive are two lines and within budget —
-            # there is no locally-patched shape that slips through.
-            if not widths_ok or arg_wrapped_via_p4 or arg_invalid_wrap:
-                emitter.restore(saved)
-                emitter._arg_list_p4_fired = prev_p4
-                emitter.write(",")
-                emitter.newline()
-                emitter.write(" " * cont_col)
-                operand_start = emitter.line_count
-                _emit_arg_with_optional_paren_align(arg)
-                emitter._arg_list_p4_fired = (
-                    prev_p4 or emitter._arg_list_p4_fired
-                )
-            prev_arg_multi_row = (
-                emitter.line_count > operand_start
-            )
         emitter.write(")")
 
     # Closure-shared out-parameter: emit_p3 records whether
@@ -10777,13 +11126,13 @@ def _emit_argument_list(
             opener_ok = True
             if saved[0] < len(emitter._lines):
                 opener_ok = (
-                    len(emitter._lines[saved[0]]) <= _MAX_LINE
+                    len(emitter._lines[saved[0]]) <= emitter.line_limit
                 )
             # The closer line — the in-progress line at the
             # end of P1 emit, containing `})` plus tail
             # context the parent will append.
             closer_ok = (
-                emitter.column + emitter.tail_reserve <= _MAX_LINE
+                emitter.column + emitter.tail_reserve <= emitter.line_limit
             )
             if opener_ok and closer_ok:
                 _fire_wrap_overflow_advisory(
@@ -10848,7 +11197,7 @@ def _emit_argument_list(
             # its own entry: `emit_p1` is expected to unwind any
             # `tail_reserve` it adjusts, but the cap should not
             # depend on that expectation holding.
-            effective_max = _MAX_LINE - emitter.tail_reserve
+            effective_max = emitter.line_limit - emitter.tail_reserve
             emit_p1()
             stayed_inline = emitter.line_count == saved[0]
             if not (
@@ -10914,7 +11263,7 @@ def _emit_argument_list(
             # dangling, so the partial break this rejects does
             # not arise there.
             saved = emitter.snapshot()
-            effective_max = _MAX_LINE - emitter.tail_reserve
+            effective_max = emitter.line_limit - emitter.tail_reserve
             emit_p1()
             if (
                 p1_invalid_wrap[0]
@@ -10929,6 +11278,60 @@ def _emit_argument_list(
                         emit_p4_single_arg_paren_defer,
                     ],
                 )
+                if single_arg_binary:
+                    # A lone operator expression whose P1 failed only
+                    # because its last row could not also hold the `)`:
+                    # the expression packed that row without knowing a
+                    # `)` follows. Retry P1 with the `)` reserved, and
+                    # keep it when it fits in no more rows than P4.
+                    # P4 puts the call and its `(` alone on the first
+                    # row with all the weight below it, so at equal
+                    # rows the argument starting after `(` is the
+                    # balanced shape:
+                    #
+                    #     fail("Unexpectedly succeeded in adding record: "
+                    #          + testData);
+                    #
+                    # rather than
+                    #
+                    #     fail(
+                    #         "Unexpectedly succeeded in adding record: " + testData);
+                    p4_rows = emitter.line_count - saved[0]
+                    emitter.restore(saved)
+                    p1_close_reserve[0] = 1
+                    try:
+                        emit_p1()
+                    finally:
+                        p1_close_reserve[0] = 0
+                    # Keep it only in the shape it is for: every
+                    # continuation row an operator under the
+                    # argument's first column. An operand that broke
+                    # internally (a chain, a nested call) leaves rows
+                    # that start elsewhere, and P4 handles those.
+                    arg_col = len(saved[1]) + 1
+                    continuation = emitter._lines[saved[0] + 1:] + [
+                        emitter._current
+                    ]
+                    operator_rows = all(
+                        len(row) - len(row.lstrip(" ")) == arg_col
+                        and row.lstrip(" ").split(" ", 1)[0]
+                        in _BINARY_OP_PRECEDENCE
+                        for row in continuation
+                    )
+                    if not (
+                        operator_rows
+                        and emitter.last_lines_max_width(saved[0])
+                        <= effective_max
+                        and emitter.line_count - saved[0] <= p4_rows
+                    ):
+                        emitter.restore(saved)
+                        try_priorities(
+                            emitter,
+                            [
+                                emit_p4_single_arg_block_indent,
+                                emit_p4_single_arg_paren_defer,
+                            ],
+                        )
     else:
         # Multi-arg cascade — manual snapshot/restore because
         # P2's two-line constraint (per spec "Method Call
@@ -10955,7 +11358,7 @@ def _emit_argument_list(
         #     line at the line-start-col + 4 anchor. Spec
         #     C1 emit-and-warn fallback.
         initial = emitter.snapshot()
-        effective_max = _MAX_LINE - emitter.tail_reserve
+        effective_max = emitter.line_limit - emitter.tail_reserve
         # P1. Reset the arg-list-P4 flag before the speculative
         # emit so the post-emit check detects only P4 firings
         # caused by THIS emit_p1(), not sticky True from a prior
@@ -11028,21 +11431,83 @@ def _emit_argument_list(
         # enclosing construct, so the cascade goes straight to
         # P3's one-arg-per-line column. See
         # `_is_nested_or_chained_call`.
+        #
+        # 0.8.0 balanced P2. The split is no longer "as late as
+        # possible": every split that fits on two lines is emitted,
+        # and the one whose two rows carry the closest amount of text
+        # after the `(` wins, ties going to the longer call line.
+        # Measuring from the `(` rather than the line start is
+        # deliberate — the continuation row is paren-aligned, so its
+        # indent says nothing about how the CALL is balanced:
+        #
+        #     // 0.7.x, latest split
+        #     SzRecord record = new SzRecord("CUSTOMERS", "REC-001", "NAME+DOB",
+        #                                    null);
+        #     // 0.8.0, closest balance
+        #     SzRecord record = new SzRecord("CUSTOMERS", "REC-001",
+        #                                    "NAME+DOB", null);
+        #
+        # If even the best split leaves the continuation row under
+        # `_P2_BALANCE_MIN_RATIO` of the call row, P2 is lopsided and
+        # the list goes to P3, one argument per line. A continuation
+        # row that is the HEAVIER one never counts as lopsided. P2b is skipped
+        # in that case: P2 fitting means the paren-align column has
+        # room, which is exactly the case P2b is not for. Two-argument
+        # lists are exempt — their only split IS the P3 shape.
+        p2_lopsided_split: int | None = None
         if not _is_nested_or_chained_call(node):
             p2_snap = emitter.snapshot()
-            emit_p2_greedy()
-            p2_line_count = emitter.line_count - p2_snap[0]
-            p2_fits = (
-                emitter.last_lines_max_width(p2_snap[0])
-                <= effective_max
-                and p2_line_count <= 1
-            )
-            if p2_fits:
-                _fire_wrap_overflow_advisory(
-                    emitter, node, cascade_start, "argument list"
+            p2_cont_col = emitter.column + 1
+            p2_best: tuple[tuple[int, int], int, int, int] | None = None
+            for split in range(1, len(args)):
+                emit_p2_split(split)
+                # The parent's tail reserve (the statement's `;`, say)
+                # lands on the continuation row only, so the call row
+                # gets the full limit. Charging it to both rows is
+                # what made the 0.7.x greedy packer reject a call row
+                # that ended its comma in column 80 and drop the whole
+                # list to P3.
+                if (
+                    emitter.line_count - p2_snap[0] == 1
+                    and len(emitter._lines[p2_snap[0]]) <= emitter.line_limit
+                    and len(emitter._current) <= effective_max
+                ):
+                    call_row = len(emitter._lines[p2_snap[0]]) - p2_cont_col
+                    # Count what the parent appends (the `;` of the
+                    # statement, say) — the row is judged as it reads.
+                    cont_row = (
+                        len(emitter._current)
+                        - p2_cont_col
+                        + emitter.tail_reserve
+                    )
+                    key = (abs(call_row - cont_row), -call_row)
+                    if p2_best is None or key < p2_best[0]:
+                        p2_best = (key, split, call_row, cont_row)
+                emitter.restore(p2_snap)
+            if p2_best is not None:
+                _, split, call_row, cont_row = p2_best
+                # Only a short TAIL is lopsided. A continuation row
+                # heavier than the call row is a long last argument
+                # (an assertion message, a ternary) after short
+                # leading ones, which reads naturally as P2; P3 would
+                # just stack the short arguments above it.
+                balanced = (
+                    len(args) == 2
+                    or cont_row >= _P2_BALANCE_MIN_RATIO * call_row
                 )
-                return
-            emitter.restore(p2_snap)
+                if balanced:
+                    emit_p2_split(split)
+                    emitter._balanced_p2_span = (
+                        node.start_byte, node.end_byte
+                    )
+                    _fire_wrap_overflow_advisory(
+                        emitter, node, cascade_start, "argument list"
+                    )
+                    return
+                p2_lopsided_split = split
+        if p2_lopsided_split is None and not _is_nested_or_chained_call(
+            node
+        ):
             # 0.7.0 — spec priority 2b ("P4-packed" here for
             # historical reasons): the other member of the two-line
             # greedy family, with ZERO arguments on the call line.
@@ -11105,6 +11570,14 @@ def _emit_argument_list(
             )
             return
         emitter.restore(p3_snap)
+        # A lopsided P2 is still better than P4: it fit, and P3 was
+        # only preferred for balance.
+        if p2_lopsided_split is not None:
+            emit_p2_split(p2_lopsided_split)
+            _fire_wrap_overflow_advisory(
+                emitter, node, cascade_start, "argument list"
+            )
+            return
         # P4 (block+4 one-per-line) — spec C1 fallback,
         # commits unconditionally.
         emit_p4_multi_arg()
@@ -11343,6 +11816,58 @@ def _emit_method_chain_wrapped(
         _emit_node(emitter, source, name)
         _emit_node(emitter, source, args)
 
+    # 0.8.0: comments between segments. Tree-sitter makes a comment
+    # that follows `.add(KEY, 50)` a child of the NEXT segment, sitting
+    # between that segment's receiver and its `.`:
+    #
+    #     builder.add(KEY_ONE, 50)  // Short delay
+    #            // Missing other properties
+    #            .add(KEY_TWO, 100)
+    #
+    # `emit_segment` writes only the name and arguments, so every such
+    # comment was silently deleted. Each segment's leading comments are
+    # now written just before that segment starts its row: one that sat
+    # on the previous segment's source row stays there as a trailing
+    # comment, any other gets its own row at the segment's dot column.
+    #
+    # The layout is chosen with the comments left out — the same as a
+    # statement's trailing comment, which is written after the
+    # statement and never measured — and then emitted again with them
+    # in place, so a long comment cannot move the chain to a different
+    # shape. A `//` comment ends its row, so the shapes that keep
+    # segments on one row (P1, the greedy same-method packing) are not
+    # candidates, and a comment on a segment that a shape keeps inline
+    # rules that shape out.
+    gap_comments: dict[int, list[Node]] = {}
+    for seg in segments:
+        leading: list[Node] = []
+        for child in seg.children:
+            if child.type == ".":
+                break
+            if child.type in ("line_comment", "block_comment"):
+                leading.append(child)
+        if leading:
+            gap_comments[seg.id] = leading
+    place_comments = [False]
+
+    def emit_gap_comments(seg: Node, col: int) -> None:
+        if not place_comments[0]:
+            return
+        for comment in gap_comments.get(seg.id, ()):
+            prev = comment.prev_sibling
+            if (
+                prev is not None
+                and comment.start_point[0] == prev.end_point[0]
+            ):
+                emitter.write("  ")
+            else:
+                emitter.newline()
+                emitter.write(" " * col)
+            _emit_node(emitter, source, comment)
+
+    def inline_has_comments(*inline: Node) -> bool:
+        return any(seg.id in gap_comments for seg in inline)
+
     # When emit_p1 runs, this list records "did a segment's emit
     # introduce newlines because the wrap engine had to break
     # something to fit (vs. because the source itself was
@@ -11572,6 +12097,7 @@ def _emit_method_chain_wrapped(
             emit_seg_track_wrap(segments[1])
             wrap_from = 2
         for seg in segments[wrap_from:]:
+            emit_gap_comments(seg, first_dot_col)
             emitter.newline()
             emitter.write(" " * first_dot_col)
             emitter.write(".")
@@ -11644,6 +12170,7 @@ def _emit_method_chain_wrapped(
             emit_seg_track_wrap(segments[0])
             wrap_from = 1
         for seg in segments[wrap_from:]:
+            emit_gap_comments(seg, tail_col)
             emitter.newline()
             emitter.write(" " * tail_col)
             emitter.write(".")
@@ -11669,6 +12196,7 @@ def _emit_method_chain_wrapped(
             emit_segment(segments[0])
             wrap_from = 1
         for seg in segments[wrap_from:]:
+            emit_gap_comments(seg, p3_col)
             emitter.newline()
             emitter.write(" " * p3_col)
             emitter.write(".")
@@ -11761,115 +12289,157 @@ def _emit_method_chain_wrapped(
     # it's legitimately multi-line (e.g. a head that is itself
     # another chain). P2 / P3 commit by width — their newlines
     # are deliberate.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
     saved = emitter.snapshot()
-    emit_p1()
-    p1_fits = (
-        emitter.last_lines_max_width(saved[0]) <= effective_max
-        and not p1_segment_break_seen[0]
-    )
-    if p1_fits:
+
+    def shape_fits(since: int) -> bool:
+        # Only the row still open has the statement's trailing
+        # context (`;`, `);`) ahead of it, so only that row is
+        # charged `tail_reserve`; a finished row may use the full
+        # limit. Charging every row made an 80-column row inside a
+        # block lambda's body count as overflow, which switched the
+        # chain to a deeper shape on one pass and back on the next.
+        return (
+            max(
+                (len(row) for row in emitter._lines[since:]), default=0
+            ) <= emitter.line_limit
+            and emitter.column <= effective_max
+        )
+
+    def choose_shape() -> Callable[[], None]:
+        """Run the shape cascade; return the shape it committed."""
+        if not gap_comments:
+            emit_p1()
+        p1_fits = not gap_comments and (
+            shape_fits(saved[0])
+            and not p1_segment_break_seen[0]
+        )
+        if p1_fits:
+            return emit_p1
+        emitter.restore(saved)
+
+        # 0.5.0 item 2b: try emit_p2_greedy_dot_aligned BEFORE the
+        # standard P2 (one-per-line dot-aligned) when all chain
+        # segments call the same method name AND the chain has an
+        # explicit receiver. Same-method chains
+        # (`sb.append(a).append(b)…`) benefit from horizontal
+        # density; mixed-name chains (`.builder().setReader().get()`)
+        # keep the one-per-line shape via P2. Headless same-name
+        # chains (`getX().getX().getX()` — extremely unusual) also
+        # keep one-per-line because the canonical motivation
+        # (builder pattern with named receiver) doesn't apply.
+        # No `not chain_is_sole_arg` clause here, unlike the P3F and P2
+        # tiers below: `chain_is_sole_arg` is only ever assigned inside
+        # `if chain_is_positional_arg and head is None`, so it cannot be
+        # True while `head is not None` holds. Including it read as
+        # though headless sole-argument chains were being excluded from
+        # this tier too, when they can never reach it.
+        if (
+            head is not None
+            and not gap_comments
+            and _chain_segments_share_method_name(source, segments)
+        ):
+            greedy_saved = emitter.snapshot()
+            emit_p2_greedy_dot_aligned()
+            if shape_fits(greedy_saved[0]):
+                return emit_p2_greedy_dot_aligned
+            emitter.restore(greedy_saved)
+
+        # 0.7.0 removed the 0.6.0 "P1F" factory-chain tier, which sat
+        # here and packed receiver + factory + FIRST CHAIN onto line 1
+        # (`Factory.make(a).step1(b)` with `.step2(c)` aligned under
+        # `.step1`'s dot) whenever the receiver was a PascalCase
+        # identifier and the chain had 3+ segments.
+        #
+        # That violates the pack-all-or-nothing principle: the
+        # all-on-one-line shape is only available when the WHOLE chain
+        # fits. Once it does not, the correct break point is the first
+        # chain continuation dot — not "as many segments as happen to
+        # fit". P1F produced a line whose content was determined purely
+        # by where 80 characters ran out, which is also why the same
+        # idiom rendered two ways depending on whether segment 1 fit:
+        #
+        #     this.env = SzCoreEnvironment.newBuilder().instanceName(x)
+        #                                              .settings(y)
+        #
+        # rather than the canonical form the source already had:
+        #
+        #     this.env = SzCoreEnvironment.newBuilder()
+        #                                 .instanceName(x)
+        #                                 .settings(y)
+        #
+        # Falling straight through to P2F (`emit_p2`: receiver +
+        # factory on line 1, every remaining segment one per line at
+        # the first dot's column) restores that.
+
+        # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
+        # cascade. Fires when the whole chain is wrapped in a
+        # grouping paren (paren_expr_col set). Tried BEFORE the
+        # standard P2 (block+4-agnostic dot-align) because the
+        # paren-indent shape is preferred when we're inside a
+        # grouping paren — Q-CHAIN-5 confirms outer-paren-indent
+        # + 4 for the chain-tail. Falls through to P2 if the
+        # paren-indent shape overflows or Q-CHAIN-4 backoff
+        # triggers.
+        if (
+            not chain_is_sole_arg
+            and emitter.paren_expr_col is not None
+            and not (
+                head is not None
+                and head.type != "object_creation_expression"
+                and inline_has_comments(segments[0])
+            )
+        ):
+            p3f_saved = emitter.snapshot()
+            emit_p3f_paren_indent()
+            p3f_fits = (
+                shape_fits(p3f_saved[0])
+                and not p3f_segment_wrapped[0]
+            )
+            if p3f_fits:
+                return emit_p3f_paren_indent
+            emitter.restore(p3f_saved)
+
+        p2_saved = emitter.snapshot()
+        p2_inline = (
+            (segments[0],) if head is not None else (segments[1],)
+        )
+        if not chain_is_sole_arg and not inline_has_comments(*p2_inline):
+            emit_p2()
+            p2_fits = (
+                shape_fits(p2_saved[0])
+                and not p2_segment_wrapped[0]
+            )
+            if p2_fits:
+                return emit_p2
+            emitter.restore(p2_saved)
+        emit_p3()
+        # Method-chain wrap site advisory uses the first segment
+        # (or head, if present) as the source position — the
+        # earliest token of the chain is the most useful jump
+        # target for the developer fixing an overflow.
+        advisory_anchor = head if head is not None else segments[0]
+        _fire_wrap_overflow_advisory(
+            emitter, advisory_anchor, p2_saved[0], "method chain"
+        )
+        return emit_p3
+
+    if not gap_comments:
+        choose_shape()
         return
+    # Comments present: choose the shape with them left out, then
+    # emit that shape again with them in place (see `gap_comments`).
+    chosen = choose_shape()
     emitter.restore(saved)
-
-    # 0.5.0 item 2b: try emit_p2_greedy_dot_aligned BEFORE the
-    # standard P2 (one-per-line dot-aligned) when all chain
-    # segments call the same method name AND the chain has an
-    # explicit receiver. Same-method chains
-    # (`sb.append(a).append(b)…`) benefit from horizontal
-    # density; mixed-name chains (`.builder().setReader().get()`)
-    # keep the one-per-line shape via P2. Headless same-name
-    # chains (`getX().getX().getX()` — extremely unusual) also
-    # keep one-per-line because the canonical motivation
-    # (builder pattern with named receiver) doesn't apply.
-    # No `not chain_is_sole_arg` clause here, unlike the P3F and P2
-    # tiers below: `chain_is_sole_arg` is only ever assigned inside
-    # `if chain_is_positional_arg and head is None`, so it cannot be
-    # True while `head is not None` holds. Including it read as
-    # though headless sole-argument chains were being excluded from
-    # this tier too, when they can never reach it.
-    if (
-        head is not None
-        and _chain_segments_share_method_name(source, segments)
-    ):
-        greedy_saved = emitter.snapshot()
-        emit_p2_greedy_dot_aligned()
-        if emitter.last_lines_max_width(greedy_saved[0]) <= effective_max:
-            return
-        emitter.restore(greedy_saved)
-
-    # 0.7.0 removed the 0.6.0 "P1F" factory-chain tier, which sat
-    # here and packed receiver + factory + FIRST CHAIN onto line 1
-    # (`Factory.make(a).step1(b)` with `.step2(c)` aligned under
-    # `.step1`'s dot) whenever the receiver was a PascalCase
-    # identifier and the chain had 3+ segments.
-    #
-    # That violates the pack-all-or-nothing principle: the
-    # all-on-one-line shape is only available when the WHOLE chain
-    # fits. Once it does not, the correct break point is the first
-    # chain continuation dot — not "as many segments as happen to
-    # fit". P1F produced a line whose content was determined purely
-    # by where 80 characters ran out, which is also why the same
-    # idiom rendered two ways depending on whether segment 1 fit:
-    #
-    #     this.env = SzCoreEnvironment.newBuilder().instanceName(x)
-    #                                              .settings(y)
-    #
-    # rather than the canonical form the source already had:
-    #
-    #     this.env = SzCoreEnvironment.newBuilder()
-    #                                 .instanceName(x)
-    #                                 .settings(y)
-    #
-    # Falling straight through to P2F (`emit_p2`: receiver +
-    # factory on line 1, every remaining segment one per line at
-    # the first dot's column) restores that.
-
-    # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
-    # cascade. Fires when the whole chain is wrapped in a
-    # grouping paren (paren_expr_col set). Tried BEFORE the
-    # standard P2 (block+4-agnostic dot-align) because the
-    # paren-indent shape is preferred when we're inside a
-    # grouping paren — Q-CHAIN-5 confirms outer-paren-indent
-    # + 4 for the chain-tail. Falls through to P2 if the
-    # paren-indent shape overflows or Q-CHAIN-4 backoff
-    # triggers.
-    if (
-        not chain_is_sole_arg
-        and emitter.paren_expr_col is not None
-    ):
-        p3f_saved = emitter.snapshot()
-        emit_p3f_paren_indent()
-        p3f_fits = (
-            emitter.last_lines_max_width(p3f_saved[0])
-            <= effective_max
-            and not p3f_segment_wrapped[0]
+    place_comments[0] = True
+    chosen()
+    if chosen is emit_p3:
+        _fire_wrap_overflow_advisory(
+            emitter,
+            head if head is not None else segments[0],
+            saved[0],
+            "method chain",
         )
-        if p3f_fits:
-            return
-        emitter.restore(p3f_saved)
-
-    p2_saved = emitter.snapshot()
-    if not chain_is_sole_arg:
-        emit_p2()
-        p2_fits = (
-            emitter.last_lines_max_width(p2_saved[0])
-            <= effective_max
-            and not p2_segment_wrapped[0]
-        )
-        if p2_fits:
-            return
-        emitter.restore(p2_saved)
-    emit_p3()
-    # Method-chain wrap site advisory uses the first segment
-    # (or head, if present) as the source position — the
-    # earliest token of the chain is the most useful jump
-    # target for the developer fixing an overflow.
-    advisory_anchor = head if head is not None else segments[0]
-    _fire_wrap_overflow_advisory(
-        emitter, advisory_anchor, p2_saved[0], "method chain"
-    )
-
 
 def _emit_method_invocation(
     emitter: Emitter, source: bytes, node: Node
@@ -11945,6 +12515,19 @@ def _emit_method_invocation(
     # for no line-length gain: 19 extra advisories, measured against
     # the 305-advisory baseline in place when the comparison was run.
     object_node = node.child_by_field_name("object")
+    if any(
+        child.type in ("line_comment", "block_comment")
+        and child.start_byte < name_node.start_byte
+        for child in node.children
+    ):
+        # `receiver // why` then `.method()` on the next row: the
+        # single-call path keeps the call on one row, where a `//`
+        # comment cannot sit, and it used to drop the comment.
+        raise NotImplementedError(
+            "a comment between a call's receiver and its `.` is not "
+            "yet supported — it would be dropped. Move it above the "
+            "statement."
+        )
     if object_node is not None:
         name_text = _node_source_text(source, name_node)
         trailing = 1 + len(name_text) + 1
@@ -12044,7 +12627,7 @@ def _emit_variable_declarator_with_array_rhs(
     writes after this emitter returns.
     """
     is_new_type_array = _rhs_is_new_type_array(value)
-    effective_max_with_semi = _MAX_LINE - emitter.tail_reserve - 1
+    effective_max_with_semi = emitter.line_limit - emitter.tail_reserve - 1
 
     # Priority 1: inline all — force array inline. The `+ 1` in
     # `effective_max_with_semi` accounts for the trailing `;`
@@ -12221,7 +12804,7 @@ def _emit_variable_declarator(
     #       expression wrap, etc.), with the ladder probe and the
     #       overflow backtrack that (1) deliberately declines to
     #       guess at.
-    effective_max = _MAX_LINE - emitter.tail_reserve
+    effective_max = emitter.line_limit - emitter.tail_reserve
 
     # 0.6.0: array-literal RHS gets its own cascade per the
     # spec's "Array initializers" section. Priority 2 is
@@ -12298,6 +12881,21 @@ def _emit_variable_declarator(
         and not emitter._chain_ladder_fired
     )
     if inline_fits:
+        # 0.8.0 balance rule: a clean inline shape that had to WRAP
+        # the value gives way to a break at `=` that puts the whole
+        # value on one balanced row. See `_try_balanced_eq_break`.
+        if emitter.line_count > saved[0]:
+            inline_is_p2 = _inline_is_balanced_p2(
+                emitter, saved[0], value
+            )
+            emitter.restore(saved)
+            if not _try_balanced_eq_break(
+                emitter, source, value, "=", extra_tail=1,
+                inline_is_p2=inline_is_p2,
+            ):
+                emitter.write(" = ")
+                with _extra_tail_reserve(emitter, 1):
+                    _emit_node(emitter, source, value)
         # Hand both flags back as found, for the reason the Step 3
         # commit states at length below: the resets above are
         # local measurement devices, and a declarator nested
@@ -12428,8 +13026,8 @@ def _emit_variable_declarator(
     # and 2 above compute the same budget via `<=
     # effective_max`; this check keeps Step 3 consistent.
     inline_overflow = (
-        emitter.last_lines_max_width(saved[0]) > _MAX_LINE
-        or emitter.column + 1 + emitter.tail_reserve > _MAX_LINE
+        emitter.last_lines_max_width(saved[0]) > emitter.line_limit
+        or emitter.column + 1 + emitter.tail_reserve > emitter.line_limit
     )
     if (
         inline_laddered
@@ -12511,6 +13109,19 @@ def _emit_variable_declarator(
         return
     # Backtrack and emit break-at-`=` even though the value
     # itself will wrap on the continuation line.
+    #
+    # 0.8.0 (#52): when the inline shape merely OVERFLOWS, the break
+    # is kept only if it narrows the widest row. The break adds an
+    # indent level to every wrapped row of the value, so for a value
+    # whose overflow comes from a wrapped row — an unsplittable
+    # literal among concatenated operands, an over-long statement
+    # in a block lambda's body — breaking makes the overflow worse
+    # and costs a line. (A value that overflows on the `=` row
+    # itself, such as one long atomic identifier, does narrow, and
+    # keeps the break.) An ORPHANED inline shape still takes the
+    # break unconditionally: there the break is a repair, not a
+    # width bet.
+    inline_widest = _widest_row(emitter, saved[0], 1)
     emitter.restore(saved)
     emitter.newline()
     emitter.push_indent()
@@ -12519,6 +13130,18 @@ def _emit_variable_declarator(
     with _extra_tail_reserve(emitter, 1):
         _emit_node(emitter, source, value)
     emitter.pop_indent()
+    if (
+        not inline_orphan
+        and _widest_row(emitter, saved[0], 1) >= inline_widest
+    ):
+        # Re-emit the inline shape. It neither orphaned (tested
+        # above) nor needs its ladder evidence: the flag is handed
+        # back as found just below, as on every exit.
+        emitter.restore(saved)
+        emitter.write(" = ")
+        with _extra_tail_reserve(emitter, 1):
+            _emit_node(emitter, source, value)
+        emitter._anchor_escaped = prev_escaped
     # Unlike `_anchor_escaped`, which deliberately accumulates across
     # this backtrack (an escape anywhere under the value is evidence
     # the enclosing construct needs), the ladder flag is a PER-
@@ -12689,19 +13312,273 @@ _NODE_EMITTERS: Final[dict[str, EmitterFn]] = {
 }
 
 
+# A `//` comment whose text starts with one of these is Javadoc
+# snippet markup (JEP 413): it shapes how `{@snippet file=…}` renders
+# the demo code it sits in.
+_SNIPPET_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"//\s*@(?:start|end|highlight|replace|link)\b"
+)
+
+# One token of a markup comment: a `@tag`, or an attribute with an
+# optional value. A quoted value is one token, so a word inside
+# `regex="…"` is never read as an attribute name.
+_SNIPPET_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"@(?P<tag>\w+)"
+    r"|(?P<name>\w+)(?:\s*=\s*(?P<value>\"[^\"]*\"|'[^']*'|[^\s\"']+))?"
+)
+
+# Never wrapped when they carry snippet markup, and given a fresh
+# width when they sit inside a region: the nodes that own a row of
+# their own. A nested statement recomputes its width, so a tagged
+# `if` header is exempt while the statements of its body are not.
+_SNIPPET_ROW_OWNERS: Final[frozenset[str]] = frozenset({
+    "local_variable_declaration",
+    "field_declaration",
+    "expression_statement",
+    "return_statement",
+    "throw_statement",
+    "yield_statement",
+    "break_statement",
+    "continue_statement",
+    "if_statement",
+    "for_statement",
+    "enhanced_for_statement",
+    "while_statement",
+    "do_statement",
+    "try_statement",
+    "try_with_resources_statement",
+    "catch_clause",
+    "finally_clause",
+    "switch_expression",
+    "switch_rule",
+    "synchronized_statement",
+    "labeled_statement",
+    "explicit_constructor_invocation",
+})
+
+# Wide enough that no wrap decision ever fires.
+_SNIPPET_UNLIMITED: Final[int] = 1 << 20
+
+
+def _snippet_tags(text: str) -> list[tuple[str, dict[str, str | None]]]:
+    """The markup tags in a `//` comment, each with its attributes.
+
+    `[]` for a comment that is not snippet markup. A comment may
+    carry several tags (`// @replace regex="x" replacement="" @highlight
+    regex="y"`); attribute values keep their quotes stripped and are
+    `None` for a bare attribute such as `@end region`.
+    """
+    if not _SNIPPET_TAG_RE.match(text):
+        return []
+    tags: list[tuple[str, dict[str, str | None]]] = []
+    for match in _SNIPPET_TOKEN_RE.finditer(text, 2):
+        if match.group("tag") is not None:
+            tags.append((match.group("tag"), {}))
+        elif tags:
+            value = match.group("value")
+            if value is not None and value[:1] in ("\"", "'"):
+                value = value[1:-1]
+            tags[-1][1][match.group("name")] = value
+    return tags
+
+
+class _SnippetLayout:
+    """Where Javadoc snippet markup changes the width limit.
+
+    `{@snippet file=… region=…}` renders the code between
+    `// @start region=…` and its `@end` with the region's common
+    indent stripped, so the 80 columns that matter are counted from
+    the region's indent, not from the left margin: a statement
+    inside a region is measured against `_MAX_LINE` plus that
+    indent. The indent is the output indent of the `@start` comment,
+    recorded as the comment is emitted — before anything inside the
+    region — because it may differ from the source indent.
+
+    A row that carries markup (a trailing `// @highlight …`, a
+    `{  // @link …` on a block's opening row, or the statement after
+    an own-row tag ending in `:`) is never wrapped: the tag applies
+    to its row, so a wrap would highlight or replace only part of
+    the statement — `@replace regex="if.*" replacement="..."` would
+    leave the `if` body's rows behind in the rendered snippet.
+    """
+
+    __slots__ = ("regions", "bases", "unlimited")
+
+    def __init__(self, tree: Tree) -> None:
+        # (first byte, last byte, @start comment's first byte) of
+        # each outermost `@start` region. An inner region is cut out
+        # with its own, deeper indent stripped, so the outer region
+        # is the one whose rendered rows are widest.
+        self.regions: list[tuple[int, int, int]] = []
+        self.bases: dict[int, int] = {}
+        self.unlimited: set[tuple[int, int]] = set()
+        comments: list[Node] = []
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "line_comment":
+                comments.append(node)
+            else:
+                stack.extend(reversed(node.children))
+        # Open regions, innermost last: (name, @start comment or
+        # None for a region opened by @highlight/@replace/@link).
+        open_regions: list[tuple[str | None, Node | None]] = []
+        for comment in comments:
+            text = comment.text.decode("utf-8")
+            tags = _snippet_tags(text)
+            for tag, attrs in tags:
+                if tag == "end":
+                    self._close(open_regions, attrs.get("region"), comment)
+                elif "region" in attrs:
+                    open_regions.append((
+                        attrs["region"],
+                        comment if tag == "start" else None,
+                    ))
+            if any(tag not in ("start", "end") for tag, _ in tags):
+                owner = self._tagged_row_owner(comment, text)
+                if owner is not None:
+                    self.unlimited.add((owner.start_byte, owner.end_byte))
+
+    def _close(
+        self,
+        open_regions: list[tuple[str | None, Node | None]],
+        name: str | None,
+        end: Node,
+    ) -> None:
+        """Close the region an `@end` names, or the innermost one."""
+        index = len(open_regions) - 1
+        if name is not None:
+            while index >= 0 and open_regions[index][0] != name:
+                index -= 1
+        if index < 0:
+            return
+        start = open_regions.pop(index)[1]
+        if start is not None and not any(s for _, s in open_regions):
+            self.regions.append(
+                (start.start_byte, end.end_byte, start.start_byte)
+            )
+
+    @staticmethod
+    def _tagged_row_owner(comment: Node, text: str) -> Node | None:
+        """The row-owning node whose row a markup comment tags."""
+        prev = comment.prev_sibling
+        if prev is not None and prev.end_point[0] == comment.start_point[0]:
+            if prev.type in _SNIPPET_ROW_OWNERS:
+                return prev
+            owner = comment.parent
+            while owner is not None and owner.type not in _SNIPPET_ROW_OWNERS:
+                owner = owner.parent
+            return owner
+        if text.rstrip().endswith(":"):
+            target = comment.next_named_sibling
+            while target is not None and target.type in (
+                "line_comment", "block_comment"
+            ):
+                target = target.next_named_sibling
+            if target is not None and target.type in _SNIPPET_ROW_OWNERS:
+                return target
+        return None
+
+    def limit_for(self, emitter: Emitter, node: Node) -> int:
+        """The width `node` is measured against."""
+        if node.type == "line_comment":
+            for _, _, key in self.regions:
+                if key == node.start_byte:
+                    self.bases[key] = 4 * emitter.indent_level
+        elif (node.start_byte, node.end_byte) in self.unlimited:
+            return _SNIPPET_UNLIMITED
+        for first, last, key in self.regions:
+            if first < node.start_byte < last and key in self.bases:
+                return _MAX_LINE + self.bases[key]
+        return _MAX_LINE
+
+
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     """Dispatch a single node to its registered emitter.
 
     Raises `NotImplementedError` for node types not yet handled,
     which is the explicit "this construct isn't supported yet"
     signal during incremental rollout.
+
+    In a file with Javadoc snippet markup, a row-owning node (and a
+    comment) is emitted against the width `_SnippetLayout` gives it.
     """
     handler = _NODE_EMITTERS.get(node.type)
     if handler is None:
         raise NotImplementedError(
             f"No emitter registered for node type {node.type!r}"
         )
-    handler(emitter, source, node)
+    layout = emitter.snippet_layout
+    if layout is None or (
+        node.type not in _SNIPPET_ROW_OWNERS
+        and node.type != "line_comment"
+    ):
+        handler(emitter, source, node)
+        return
+    saved = emitter.line_limit
+    emitter.line_limit = layout.limit_for(emitter, node)
+    try:
+        handler(emitter, source, node)
+    finally:
+        emitter.line_limit = saved
+
+
+class CommentLossError(RuntimeError):
+    """Raised when formatting would lose comment text.
+
+    Not a `NotImplementedError` refusal: a refusal is the
+    formatter cleanly declining a construct it knows it does not
+    handle, while a lost comment is an emitter bug that silently
+    deleted the developer's words. `format_file.py` reports it as
+    an error, leaves the file untouched and exits non-zero.
+    """
+
+
+def _comment_words(tree: Tree) -> collections.Counter[str]:
+    """Multiset of the words in every comment of `tree`.
+
+    Words, not whole comments, because the formatter legitimately
+    re-flows comment text (javadoc and long `//` comments) and
+    re-indents block-comment rows; only whitespace and the comment
+    markers change. Stripping `//`, `/*`, `*/` and each row's
+    leading `*` leaves the words the developer wrote, which must
+    all survive.
+    """
+    words: collections.Counter[str] = collections.Counter()
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "line_comment":
+            words.update(node.text.decode("utf-8")[2:].split())
+        elif node.type == "block_comment":
+            body = node.text.decode("utf-8")[2:-2]
+            for row in body.splitlines():
+                words.update(row.strip().lstrip("*").split())
+        else:
+            stack.extend(node.children)
+    return words
+
+
+def _check_comments_preserved(before: Tree, after: bytes) -> None:
+    """Raise `CommentLossError` when `after` drops comment words.
+
+    The last line of defence against an emitter that skips a
+    comment child it does not expect — a comment inside a control
+    statement header or between method-chain segments has been
+    silently deleted this way. Whatever the cause, the formatter
+    must never write output that has lost comment text.
+    """
+    lost = _comment_words(before) - _comment_words(parse_source(after))
+    if lost:
+        sample = ", ".join(
+            repr(word) for word in sorted(lost.elements())[:12]
+        )
+        raise CommentLossError(
+            f"formatting would delete comment text "
+            f"({sum(lost.values())} words: {sample}); the file was "
+            f"left unchanged. This is a formatter bug — please "
+            f"report it with the file."
+        )
 
 
 def format_source(
@@ -12741,6 +13618,9 @@ def format_source(
             "garbled. Fix the syntax error in the input first."
         )
     emitter = Emitter()
+    layout = _SnippetLayout(tree)
+    if layout.regions or layout.unlimited:
+        emitter.snippet_layout = layout
     _emit_node(emitter, source, tree.root_node)
     if warnings_out is not None:
         # Deduplicate by source position — speculative emit cascades
@@ -12755,7 +13635,9 @@ def format_source(
                 continue
             seen.add(key)
             warnings_out.append(warning)
-    return emitter.finish()
+    formatted = emitter.finish()
+    _check_comments_preserved(tree, formatted)
+    return formatted
 
 
 def print_warnings(
