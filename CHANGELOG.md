@@ -215,6 +215,36 @@ states the rule; fixtures `snippet_markup/01` to `04` cover it.
 
 ### Fixed
 
+**A block lambda's body could flip its chain's layout on every
+other save.** When a method chain checked whether a shape fit, it
+charged the statement's trailing `;` to every row, including the
+rows of a block lambda's body. An 80-column row in the body (legal
+on its own) therefore counted as overflow, and the chain switched to
+a dot-aligned shape that pushed the whole body 16 columns right and
+wrapped most of it. The next save saw the now-wrapped body, found
+everything fit, and put the chain back on one row:
+
+```java
+// first save (0.7.1)
+scheduledTask.getBackingTasks()
+             .forEach(task -> {
+                    TaskGroup taskGroup = task.getTaskGroup();
+
+// second save
+scheduledTask.getBackingTasks().forEach(task -> {
+    TaskGroup taskGroup = task.getTaskGroup();
+```
+
+Only the row still open is now charged the trailing context; a
+finished row may use all 80 columns. Relatedly, the statements inside
+a block lambda were charged the enclosing call's `);` reserve, so
+they wrapped a column or two earlier than the same statements in a
+plain block. They now format exactly as they would in a plain block.
+Across the five-repo corpus every file is now stable on a second
+pass (`AbstractSchedulingService` in data-mart-replicator was not),
+43 files change (90 of 114 changed places get shorter), and no row
+newly exceeds 80.
+
 **The formatter deleted comments in control-statement headers and
 between method-chain segments.** Each of these emitters wrote its
 construct from grammar fields only and skipped the comments sitting

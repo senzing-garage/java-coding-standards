@@ -1619,6 +1619,12 @@ list.forEach(x -> {
 Body inside braces follows standard block rules. Statements
 indented +4 from the lambda's anchor.
 
+A statement in the body formats exactly as it would in a plain
+block at the same indent. The `);` (or other text) that follows
+the lambda's closing `}` belongs to that row only, so body rows
+may use all 80 columns, and a body row that fits never changes how
+the enclosing call or chain wraps.
+
 ### Lambda inside a method call — wrap structure
 
 When a lambda is one (or one of multiple) arguments to a method

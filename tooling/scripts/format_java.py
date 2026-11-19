@@ -8197,14 +8197,27 @@ def _emit_lambda_expression(
         )
     _emit_node(emitter, source, parameters)
     emitter.write(" -> ")
-    if body.type == "block" and _lambda_uses_chain_cascade_indent(
-        emitter
-    ):
-        _emit_lambda_block_body(emitter, source, body)
-    elif body.type == "block":
+    if body.type != "block":
         _emit_node(emitter, source, body)
-    else:
-        _emit_node(emitter, source, body)
+        return
+    # The body's statements start fresh: the reserve for what follows
+    # the lambda (`);` and the like) belongs to the row holding the
+    # closing `}`, and an enclosing paren's alignment column means
+    # nothing to them. Without this, every body row lost the
+    # enclosing call's reserve and wrapped a column or two early.
+    prev_reserve = emitter.set_tail_reserve(0)
+    prev_align = emitter.set_paren_align_col(None)
+    prev_expr = emitter._paren_expr_col
+    emitter._paren_expr_col = None
+    try:
+        if _lambda_uses_chain_cascade_indent(emitter):
+            _emit_lambda_block_body(emitter, source, body)
+        else:
+            _emit_node(emitter, source, body)
+    finally:
+        emitter.set_tail_reserve(prev_reserve)
+        emitter.set_paren_align_col(prev_align)
+        emitter._paren_expr_col = prev_expr
 
 
 def _lambda_uses_chain_cascade_indent(emitter: Emitter) -> bool:
@@ -12218,12 +12231,26 @@ def _emit_method_chain_wrapped(
     effective_max = emitter.line_limit - emitter.tail_reserve
     saved = emitter.snapshot()
 
+    def shape_fits(since: int) -> bool:
+        # Only the row still open has the statement's trailing
+        # context (`;`, `);`) ahead of it, so only that row is
+        # charged `tail_reserve`; a finished row may use the full
+        # limit. Charging every row made an 80-column row inside a
+        # block lambda's body count as overflow, which switched the
+        # chain to a deeper shape on one pass and back on the next.
+        return (
+            max(
+                (len(row) for row in emitter._lines[since:]), default=0
+            ) <= emitter.line_limit
+            and emitter.column <= effective_max
+        )
+
     def choose_shape() -> Callable[[], None]:
         """Run the shape cascade; return the shape it committed."""
         if not gap_comments:
             emit_p1()
         p1_fits = not gap_comments and (
-            emitter.last_lines_max_width(saved[0]) <= effective_max
+            shape_fits(saved[0])
             and not p1_segment_break_seen[0]
         )
         if p1_fits:
@@ -12253,7 +12280,7 @@ def _emit_method_chain_wrapped(
         ):
             greedy_saved = emitter.snapshot()
             emit_p2_greedy_dot_aligned()
-            if emitter.last_lines_max_width(greedy_saved[0]) <= effective_max:
+            if shape_fits(greedy_saved[0]):
                 return emit_p2_greedy_dot_aligned
             emitter.restore(greedy_saved)
 
@@ -12305,8 +12332,7 @@ def _emit_method_chain_wrapped(
             p3f_saved = emitter.snapshot()
             emit_p3f_paren_indent()
             p3f_fits = (
-                emitter.last_lines_max_width(p3f_saved[0])
-                <= effective_max
+                shape_fits(p3f_saved[0])
                 and not p3f_segment_wrapped[0]
             )
             if p3f_fits:
@@ -12320,8 +12346,7 @@ def _emit_method_chain_wrapped(
         if not chain_is_sole_arg and not inline_has_comments(*p2_inline):
             emit_p2()
             p2_fits = (
-                emitter.last_lines_max_width(p2_saved[0])
-                <= effective_max
+                shape_fits(p2_saved[0])
                 and not p2_segment_wrapped[0]
             )
             if p2_fits:
