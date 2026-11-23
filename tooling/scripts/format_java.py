@@ -11664,6 +11664,25 @@ def _chain_segments_share_method_name(
     return True
 
 
+def _has_block_body(node: Node | None) -> bool:
+    """Return True when `node` holds a block lambda body or an
+    anonymous class body — rows indented by indent level rather
+    than from any column the enclosing call was written at."""
+    if node is None:
+        return False
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.type == "class_body" or (
+            n.type == "lambda_expression"
+            and (body := n.child_by_field_name("body")) is not None
+            and body.type == "block"
+        ):
+            return True
+        stack.extend(n.children)
+    return False
+
+
 def _emit_method_chain_wrapped(
     emitter: Emitter,
     source: bytes,
@@ -11805,6 +11824,11 @@ def _emit_method_chain_wrapped(
         ]
         chain_is_sole_arg = len(sibling_args) == 1
 
+    # Set when a segment's args wrap (other than a legitimately
+    # multi-line arg such as a lambda body); `choose_shape` prefers
+    # every shape that keeps all args on their call's row first.
+    args_wrapped = [False]
+
     def emit_segment(seg: Node) -> None:
         name = seg.child_by_field_name("name")
         args = seg.child_by_field_name("arguments")
@@ -11813,8 +11837,14 @@ def _emit_method_chain_wrapped(
                 "method_invocation missing 'name' or "
                 "'arguments' — grammar shape unexpected."
             )
+        before = emitter.line_count
         _emit_node(emitter, source, name)
         _emit_node(emitter, source, args)
+        if (
+            emitter.line_count > before
+            and not _segment_emit_is_legitimately_multi_line(seg)
+        ):
+            args_wrapped[0] = True
 
     # 0.8.0: comments between segments. Tree-sitter makes a comment
     # that follows `.add(KEY, 50)` a child of the NEXT segment, sitting
@@ -12049,40 +12079,45 @@ def _emit_method_chain_wrapped(
                 emitter.write(".")
                 emit_seg_strict(seg)
 
-    # 0.6.0 P2 Q-CHAIN-4 backoff signal. Set to True when any
-    # chain segment's emit inside emit_p2 introduces newlines
-    # that are NOT from a legitimately multi-line source
-    # (multi-row lambda body, multi-row text block, source-
-    # preserved arg list). Consulted at the try_priorities
-    # commit-check to reject P2 even if widths fit — Q-CHAIN-4
-    # says "back off to a shallower tier when a chain method's
-    # own args wrap." The shape produced when P2 emits but a
-    # chain method's args wrap mid-emit is visually confused
-    # (dot-align chain col + deeper args col mixed) — cleaner
-    # to fall through to P4F block+4 (emit_p3) so args AND
-    # chain-tail land at a consistent shallower indent.
+    # 0.8.0 reverses 0.6.0's Q-CHAIN-4 backoff, which rejected P2
+    # whenever a chain method's own args wrapped. Dot-alignment is
+    # the preferred chain shape, and args that wrap under their own
+    # `(` read as part of their call, the way a constructor
+    # receiver's args already did (Q-CHAIN-5):
+    #
+    #     followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString(),
+    #                                         someOtherBuilderArgument,
+    #                                         andAnotherBuilderArg)
+    #                      .resource(ENTITY_RESOURCE_KEY, followUpId)
+    #                      .schedule(true);
+    #
+    # What is still rejected is an args row that sits at or left of
+    # the dot column (the arg list's next-line fallback), which
+    # would cut the chain in two. `p2_segment_wrapped` records the
+    # rows each wrapping segment added, checked once the dot column
+    # is known (a headless chain learns it after `segments[0]`).
     p2_segment_wrapped = [False]
+
+    block_body_wrapped = [False]
 
     def emit_p2() -> None:
         p2_segment_wrapped[0] = False
+        block_body_wrapped[0] = False
+        wrapped_from: list[int] = []
 
         def emit_seg_track_wrap(seg: Node) -> None:
             before = emitter.line_count
             emit_segment(seg)
-            if emitter.line_count > before:
-                # Newlines introduced. Only flag as
-                # wrap-engine-driven (worth backing off) when
-                # the args aren't legitimately multi-line in
-                # source (lambda body / text block / developer-
-                # authored source-preserved layout). Reuses the
-                # same discriminator emit_p1 uses so P2's
-                # backoff decision matches P1's newline-based
-                # rejection.
-                legit = _segment_emit_is_legitimately_multi_line(
-                    seg
-                )
-                if not legit:
-                    p2_segment_wrapped[0] = True
+            if (
+                emitter.line_count > before
+                and not _segment_emit_is_legitimately_multi_line(seg)
+            ):
+                wrapped_from.append(before)
+                if _has_block_body(seg.child_by_field_name("arguments")):
+                    # A block body indents by indent level, not from
+                    # the dot column, so its rows would fall out from
+                    # under the call that wrapped above them.
+                    block_body_wrapped[0] = True
 
         if head is not None:
             _emit_node(emitter, source, head)
@@ -12102,6 +12137,13 @@ def _emit_method_chain_wrapped(
             emitter.write(" " * first_dot_col)
             emitter.write(".")
             emit_seg_track_wrap(seg)
+        rows = emitter._lines + [emitter._current]
+        p2_segment_wrapped[0] = block_body_wrapped[0] or any(
+            len(row) - len(row.lstrip(" ")) <= first_dot_col
+            for before in wrapped_from
+            for row in rows[before + 1:]
+            if row.strip() and not row.lstrip(" ").startswith(".")
+        )
 
     # 0.6.0 P3F/P2C — outer-parenthesized-expression chain
     # cascade. When the entire method chain is wrapped in a
@@ -12429,24 +12471,71 @@ def _emit_method_chain_wrapped(
         p2_inline = (
             (segments[0],) if head is not None else (segments[1],)
         )
-        if not chain_is_sole_arg and not inline_has_comments(*p2_inline):
+        # 0.8.0: every shape that keeps each call's args on its own
+        # row is tried before any shape that wraps them — dot-aligned
+        # (P2), then the head with its first call (P3 head-first),
+        # then the head alone (P3). When every one of those has to
+        # wrap some call's args, the three are tried again with the
+        # args wrapped (for P2, under their own `(`: Q-CHAIN-4
+        # reversed) and the one with the fewest rows wins, ties going
+        # in that same order — so wrapped args under the dots never
+        # cost rows over the ladder, as they do when a block lambda
+        # would be pushed out to the dot column.
+        def emit_p2_wrapped() -> None:
+            # Flagged as a ladder: a fallback shape, so a caller
+            # that can move the chain left (the break at `=`) gets
+            # to try for a shape with no wrapped args first.
+            emitter._chain_ladder_fired = True
             emit_p2()
-            p2_fits = (
-                shape_fits(p2_saved[0])
-                and not p2_segment_wrapped[0]
-            )
-            if p2_fits:
-                return emit_p2
-            emitter.restore(p2_saved)
-        if head is not None and not inline_has_comments(segments[0]):
-            emit_p3_head_first()
+
+        p2_ok = not chain_is_sole_arg and not inline_has_comments(
+            *p2_inline
+        )
+        head_first_ok = head is not None and not inline_has_comments(
+            segments[0]
+        )
+        clean = [
+            (emit_p2, p2_ok, lambda: not p2_segment_wrapped[0]),
+            (
+                emit_p3_head_first,
+                head_first_ok,
+                lambda: not head_first_wrapped[0],
+            ),
+            (emit_p3, True, lambda: True),
+        ]
+        for shape, allowed, shape_ok in clean:
+            if not allowed:
+                continue
+            args_wrapped[0] = False
+            shape()
             if (
                 shape_fits(p2_saved[0])
-                and not head_first_wrapped[0]
+                and shape_ok()
+                and not args_wrapped[0]
             ):
-                return emit_p3_head_first
+                return shape
+            emitter.restore(p2_saved)
+        best: tuple[int, Callable[[], None]] | None = None
+        for shape, allowed, shape_ok in (
+            (emit_p2_wrapped, p2_ok, clean[0][2]),
+            clean[1],
+        ):
+            if not allowed:
+                continue
+            shape()
+            if shape_fits(p2_saved[0]) and shape_ok():
+                rows = emitter.line_count - p2_saved[0]
+                if best is None or rows < best[0]:
+                    best = (rows, shape)
             emitter.restore(p2_saved)
         emit_p3()
+        if best is not None and (
+            not shape_fits(p2_saved[0])
+            or best[0] <= emitter.line_count - p2_saved[0]
+        ):
+            emitter.restore(p2_saved)
+            best[1]()
+            return best[1]
         # Method-chain wrap site advisory uses the first segment
         # (or head, if present) as the source position — the
         # earliest token of the chain is the most useful jump

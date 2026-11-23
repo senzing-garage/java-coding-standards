@@ -243,6 +243,42 @@ dots align. Across the five adopting repositories 98 statements in
 that did not before. The "Method Chains" section states the rule;
 fixture `method_chain_wrap/32` covers it.
 
+**A chain keeps its dots aligned when a call's arguments must
+wrap.** 0.6.0 gave up dot alignment whenever a call in the chain
+had to wrap its own arguments, to avoid mixing the two alignment
+columns, and fell back to continuation indentation with the
+receiver alone. 0.8.0 reverses that: the arguments wrap under their
+own `(` and the dots stay aligned, the same two columns a
+constructor receiver's arguments already used.
+
+```java
+        // 0.7.1
+        followUpScheduler
+            .createTaskBuilder(REFRESH_ENTITY.toString(),
+                               someOtherBuilderArgument,
+                               andAnotherBuilderArg)
+            .resource(ENTITY_RESOURCE_KEY, followUpId)
+            .schedule(true);
+
+        // 0.8.0
+        followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString(),
+                                            someOtherBuilderArgument,
+                                            andAnotherBuilderArg)
+                         .resource(ENTITY_RESOURCE_KEY, followUpId)
+                         .schedule(true);
+```
+
+Every shape that keeps all the arguments on their call's line is
+still tried first. Taken alone, the reversal made 107 statements
+taller, aligning dots whose arguments then wrapped where
+continuation indentation needed no wrap at all. With those shapes
+first, the wrapped shapes are compared by line count, and a call
+holding a block lambda or anonymous class keeps continuation
+indentation, since its body indents from the statement. Across the
+five adopting repositories 18 statements in 7 files change, none
+taller. The "Method Chains" section states the rule; fixture
+`method_chain_wrap/33` covers it.
+
 ### Fixed
 
 **A lone operator-expression argument moved to its own row when the

@@ -2159,6 +2159,28 @@ arguments are not wrapped just to make room for the receiver:
             .longValue();
 ```
 
+**A call whose own arguments must wrap.** When some call in the
+chain does not fit on its line in any of the shapes above, its
+arguments wrap under its own `(`, as in any argument list, and the
+dots stay aligned:
+
+```java
+        followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString(),
+                                            someOtherBuilderArgument,
+                                            andAnotherBuilderArg)
+                         .resource(ENTITY_RESOURCE_KEY, followUpId)
+                         .schedule(true);
+```
+
+A shape that keeps every call's arguments on its own line always
+comes first, even with continuation indentation. Only when each of
+them would have to wrap some call's arguments are the shapes
+compared again with the arguments wrapped; the one with the fewest
+lines wins, aligned dots on a tie. Aligned dots are not used when
+the call that wraps holds a block lambda or an anonymous class: the
+body is indented from the statement, not from the dots, and would
+fall out from under its call.
+
 When the chain is the value of a declaration or of a bare
 assignment, "too far right" is judged only after breaking at `=`,
 which moves the whole chain one indent from the statement and often
