@@ -4,8 +4,7 @@ public class Demo
     {
         boolean somewhatLongFlagName = false;
         somewhatLongFlagName = (somewhatLongFlagName
-            || (result.containsKey("key")
-                && (!Boolean.FALSE.equals(
-                       "a quite long string literal that the developer placed at a low column"))));
+                                || (result.containsKey("key")
+                                    && (!Boolean.FALSE.equals("a quite long string literal that the developer placed at a low column"))));
     }
 }

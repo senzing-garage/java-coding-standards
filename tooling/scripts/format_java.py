@@ -295,6 +295,8 @@ class Emitter:
         "line_limit",
         "snippet_layout",
         "warnings",
+        "overlong_atoms",
+        "overlong_sites",
     )
 
     def __init__(self) -> None:
@@ -321,6 +323,15 @@ class Emitter:
         # after each file so adopters know which spots warrant
         # manual cleanup.
         self.warnings: list[FormatterWarning] = []
+        # 0.8.0: texts of arguments too long to fit within the line
+        # limit at any column, by placeholder index (see
+        # `_emit_overlong_atom`). None disables the placeholders —
+        # `format_source` turns them on.
+        self.overlong_atoms: list[str] | None = None
+        # Source position of each over-long argument's warning, to
+        # its index in `overlong_atoms`: the warning's width is only
+        # known once the text is back in place.
+        self.overlong_sites: dict[tuple[int, int], int] = {}
         # Chars to reserve at the end of the current line for
         # trailing context the wrap candidates can't see — e.g.
         # `) {` after an `if` condition, `);` after a call inside
@@ -3587,6 +3598,10 @@ def _emit_if_statement(
             emitter.last_lines_max_width(tier1_saved[0])
             <= emitter.line_limit - emitter.tail_reserve
             and emitter.line_count == tier1_saved[0]
+            # An over-long argument only LOOKS like it fits (see
+            # `_emit_overlong_atom`); the one-line form is for
+            # statements that really do.
+            and not _holds_overlong_atom(emitter, tier1_saved[0])
         )
         if tier1_fits:
             # Tier 1: `if (cond) STMT;`. The short-circuit
@@ -13615,6 +13630,131 @@ class _SnippetLayout:
         return _MAX_LINE
 
 
+# 0.8.0: an argument that cannot fit within the line limit at ANY
+# column. Every break the wrap engines could make only moves it to
+# another row it still overflows, so they gain nothing — and they
+# used to make things worse, stranding the receiver, breaking at
+# `=` and leaving the argument flush with the chain's dots:
+#
+#     long followUpDelay
+#         = scheduling
+#             .getJsonNumber(
+#             AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER)
+#             .longValue();
+#
+# Such an argument is laid out as a placeholder exactly filling what
+# is left of its row, so nothing else can join that row and no break
+# is spent moving it; `format_source` then puts the text back. Only
+# its own row runs past the limit, and the code around it keeps the
+# shape it would have if the argument fit:
+#
+#     long followUpDelay = scheduling.getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER)
+#                                    .longValue();
+#
+# Only atoms qualify — a name, a dotted name or a literal — since
+# anything with structure has its own break points to try.
+_OVERLONG_ATOM_TYPES: Final[frozenset[str]] = frozenset({
+    "identifier",
+    "field_access",
+    "string_literal",
+    "character_literal",
+    "decimal_integer_literal",
+    "decimal_floating_point_literal",
+    "hex_integer_literal",
+    "class_literal",
+})
+_OVERLONG_BODY_TYPES: Final[frozenset[str]] = frozenset({
+    "class_body",
+    "interface_body",
+    "enum_body",
+    "annotation_type_body",
+    "block",
+    "constructor_body",
+    "switch_block",
+})
+_OVERLONG_MARK_BASE: Final[int] = 0xE000
+_OVERLONG_FILL: Final[str] = "\uf8ff"
+_OVERLONG_PATTERN: Final[re.Pattern[str]] = re.compile(
+    "([\ue000-\uefff])\uf8ff*"
+)
+
+
+def _is_plain_name(node: Node) -> bool:
+    """Return True for `a`, `this`, `a.b.c` — no calls or indexing."""
+    if node.type in ("identifier", "this"):
+        return True
+    if node.type != "field_access":
+        return False
+    obj = node.child_by_field_name("object")
+    return obj is not None and _is_plain_name(obj)
+
+
+def _holds_overlong_atom(emitter: Emitter, since: int) -> bool:
+    """Return True when a row from `since` on holds an over-long
+    argument's placeholder."""
+    return any(
+        _OVERLONG_PATTERN.search(row)
+        for row in emitter._lines[since:] + [emitter._current]
+    )
+
+
+def _emit_overlong_atom(
+    emitter: Emitter, source: bytes, node: Node
+) -> bool:
+    """Emit `node` as an over-long-argument placeholder and return
+    True, or return False to have it emitted normally."""
+    assert emitter.overlong_atoms is not None
+    parent = node.parent
+    if parent is None or parent.type != "argument_list":
+        return False
+    if node.type == "field_access" and not _is_plain_name(node):
+        return False
+    text = _node_source_text(source, node)
+    if "\n" in text:
+        return False
+    depth = 0
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type in _OVERLONG_BODY_TYPES:
+            depth += 1
+        ancestor = ancestor.parent
+    # The shallowest an argument can sit is one continuation step in
+    # from its statement; the 1 is the `,` or `)` that follows it.
+    if 4 * (depth + 1) + len(text) + 1 <= emitter.line_limit:
+        return False
+    room = emitter.line_limit - emitter.column - emitter.tail_reserve - 1
+    if len(text) <= room:
+        return False
+    # Only where it starts its row or follows its own `(`: placed
+    # after another argument it is emitted at its real width, so that
+    # shape overflows and the argument list wraps it onto its own row.
+    before = emitter._current.rstrip()
+    if before.strip() and not before.endswith("("):
+        return False
+    site = (node.start_point[0] + 1, node.start_point[1] + 1)
+    index = emitter.overlong_sites.get(site)
+    if index is None:
+        index = len(emitter.overlong_atoms)
+        emitter.overlong_atoms.append(text)
+        emitter.overlong_sites[site] = index
+    emitter.warnings.append(FormatterWarning(
+        line=site[0],
+        column=site[1],
+        width=emitter.column + len(text) + 1,
+        message=(
+            f"argument is {len(text)} chars and cannot fit within "
+            f"{emitter.line_limit} chars at any position, so its row "
+            "runs past the limit. Shorten it, extract it to a local "
+            "variable, or wrap the region in CSOFF/CSON."
+        ),
+    ))
+    emitter.write(
+        chr(_OVERLONG_MARK_BASE + index)
+        + _OVERLONG_FILL * max(room - 1, 0)
+    )
+    return True
+
+
 def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
     """Dispatch a single node to its registered emitter.
 
@@ -13630,6 +13770,12 @@ def _emit_node(emitter: Emitter, source: bytes, node: Node) -> None:
         raise NotImplementedError(
             f"No emitter registered for node type {node.type!r}"
         )
+    if (
+        node.type in _OVERLONG_ATOM_TYPES
+        and emitter.overlong_atoms is not None
+        and _emit_overlong_atom(emitter, source, node)
+    ):
+        return
     layout = emitter.snippet_layout
     if layout is None or (
         node.type not in _SNIPPET_ROW_OWNERS
@@ -13740,10 +13886,31 @@ def format_source(
             "garbled. Fix the syntax error in the input first."
         )
     emitter = Emitter()
+    decoded = source.decode("utf-8", errors="replace")
+    if not any("\ue000" <= ch <= "\uf8ff" for ch in decoded):
+        emitter.overlong_atoms = []
     layout = _SnippetLayout(tree)
     if layout.regions or layout.unlimited:
         emitter.snippet_layout = layout
     _emit_node(emitter, source, tree.root_node)
+    formatted = emitter.finish()
+    # Finished width of the row each over-long argument landed on.
+    overlong_widths: dict[int, int] = {}
+    if emitter.overlong_atoms:
+        atoms = emitter.overlong_atoms
+        rows = [
+            _OVERLONG_PATTERN.sub(
+                lambda m: atoms[ord(m.group(1)) - _OVERLONG_MARK_BASE],
+                row,
+            )
+            for row in formatted.decode("utf-8").split("\n")
+        ]
+        for row, placed in zip(rows, formatted.decode("utf-8").split("\n")):
+            for m in _OVERLONG_PATTERN.finditer(placed):
+                overlong_widths[ord(m.group(1)) - _OVERLONG_MARK_BASE] = len(
+                    row
+                )
+        formatted = "\n".join(rows).encode("utf-8")
     if warnings_out is not None:
         # Deduplicate by source position — speculative emit cascades
         # can revisit the same arg list under different
@@ -13756,8 +13923,11 @@ def format_source(
             if key in seen:
                 continue
             seen.add(key)
+            index = emitter.overlong_sites.get(key)
+            if index is not None and index in overlong_widths:
+                # Measured on the finished row, as checkstyle will.
+                warning = replace(warning, width=overlong_widths[index])
             warnings_out.append(warning)
-    formatted = emitter.finish()
     _check_comments_preserved(tree, formatted)
     return formatted
 

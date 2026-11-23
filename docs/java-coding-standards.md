@@ -1467,6 +1467,48 @@ A sole exempt argument simply keeps the call line:
     });
 ```
 
+### An argument too long for any column
+
+An argument that is a single name, dotted name or literal, and
+that cannot fit within 80 characters at any column it could be
+moved to, overflows wherever it starts. Breaking only moves it to
+another row it still overflows, so no break is spent on it: no
+break at `=`, no receiver left alone, no `(` left alone above it.
+The code around it is laid out as though the argument just fit, so
+only the argument's own row runs past 80, and anything that would
+follow it on that row moves to the next:
+
+```java
+        long followUpDelay = scheduling.getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER_THAN_BEFORE,
+                                                      someOtherParameter)
+                                       .longValue();
+
+        assertEquals(keySingle, keyDouble,
+                     "Single-source and two-source constructors should produce equal keys");
+```
+
+Such an argument starts its own row when another argument would
+otherwise come before it on the row, so the overflow is never longer
+than the argument forces:
+
+```java
+        long followUpDelay = scheduling.getJsonNumber(someOtherParameter,
+                                                      AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER_THAN_BEFORE)
+                                       .longValue();
+```
+
+The formatter warns about each one. Shorten the name, extract the
+value to a local variable, or, where the line genuinely has to be
+long, wrap the region in `CSOFF`/`CSON`. A statement holding such an
+argument is never collapsed onto its `if` line (Tier 1), because it
+does not fit there. An argument that fits on a row of its own is not
+affected and wraps as usual:
+
+```java
+        doSomethingWithAValue(
+            AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_A_BIT_LONGER);
+```
+
 ### Nested-call wrap
 
 A call that is **embedded** in another expression wraps differently

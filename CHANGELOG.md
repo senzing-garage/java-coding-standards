@@ -279,6 +279,41 @@ five adopting repositories 18 statements in 7 files change, none
 taller. The "Method Chains" section states the rule; fixture
 `method_chain_wrap/33` covers it.
 
+**An argument too long for any column no longer costs breaks.** A
+name, dotted name or literal that cannot fit within 80 characters
+wherever it is placed made the formatter keep breaking in search of
+a fit it could not find: it broke at `=`, left the receiver alone,
+and moved the argument to a row of its own, flush with the chain's
+dots, where it still overflowed. Such an argument now stays where it
+starts, and the code around it is laid out as though it fit, so only
+its own row passes 80. The advisory names the argument instead of
+the wrap engine that gave up:
+
+```java
+        // 0.7.1
+        long followUpDelay
+            = scheduling
+                .getJsonNumber(
+                AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER_THAN_BEFORE)
+                .longValue();
+
+        // 0.8.0
+        long followUpDelay = scheduling.getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER_THAN_BEFORE)
+                                       .longValue();
+```
+
+The overflowing row is wider than before, since the argument no
+longer moves left: across the corpus the 35 affected rows went from
+a median of 88 columns to 95, and one `throw new
+IllegalStateException("Replicator failed …")` went from 2 rows, the
+second 91 wide, to one row of 119. They were checkstyle errors either way, and the fix is in the
+code (a shorter name, a local variable, or `CSOFF`/`CSON`). Across
+the five adopting repositories 29 statements in 14 files change,
+each at least one row shorter, and the number of rows past 80 is
+unchanged. The new "An argument too long for any column" section
+states the rule; fixture `arg_list_wrap/28` covers it, and
+`condition_wrap/09`, whose long string no longer moves, is updated.
+
 ### Fixed
 
 **A lone operator-expression argument moved to its own row when the

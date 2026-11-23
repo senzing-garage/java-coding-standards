@@ -3707,20 +3707,22 @@ class TestFormatterWarnings:
         # multiple indent levels.
         assert len(warnings) == 1
         # Under 0.5.2 F, source-preserve declines when a
-        # shift-up would overflow: this input (source at col
-        # 6, target col deeper) falls through to the wrap
-        # engine, which fires the "argument list could not
-        # fit within 80 chars" advisory. Pinning the wrap-
-        # engine message ensures a regression that re-enabled
-        # the mechanical shift-up (which would fire the older
-        # "source-preserved arg list overflows" message
-        # instead) would be caught.
+        # shift-up would overflow, so this input falls through to
+        # the wrap engine. Under 0.8.0 the literal cannot fit
+        # within 80 chars at any column, so it stays after its
+        # `(` rather than spending a row to overflow anyway, and
+        # the advisory names the argument as the cause. Pinning
+        # that message ensures a regression that re-enabled the
+        # mechanical shift-up (which would fire the older
+        # "source-preserved arg list overflows" message instead)
+        # would be caught.
         for warning in warnings:
             assert warning.line > 0
             assert warning.column > 0
-            assert "argument list" in warning.message
+            assert "argument is 73 chars" in warning.message
             assert (
-                "could not fit within 80 chars" in warning.message
+                "cannot fit within 80 chars at any position"
+                in warning.message
             )
 
     def test_warning_for_binary_wrap_overflow(self) -> None:
