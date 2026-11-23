@@ -4,8 +4,7 @@ public class Demo
         throws Exception
     {
         {
-            boolean usePostgreSQL = Boolean.TRUE
-                .toString()
+            boolean usePostgreSQL = Boolean.TRUE.toString()
                 .equals(
                     System.getProperty("com.senzing.listener.test.postgresql"));
         }

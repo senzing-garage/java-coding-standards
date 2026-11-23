@@ -2138,29 +2138,38 @@ because the segments have different semantics and benefit from
 vertical alignment.
 
 If the chain starts too far right for alignment to fit within
-80 characters, use continuation indentation instead:
+80 characters, use continuation indentation instead. The receiver
+keeps its first call on the first line, and every later segment
+goes on its own line one indent in from the statement:
 
 ```java
-    String result = someVeryLongObjectName
-        .getBuilder()
-        .toString()
-        .trim();
+        followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString())
+            .resource(ENTITY_RESOURCE_KEY, followUpId)
+            .parameter(RefreshEntityHandler.ENTITY_ID_KEY, followUpId)
+            .schedule(true);
+```
+
+The receiver is left alone at the end of its line only when it and
+its first call do not fit on one line together. The first call's
+arguments are not wrapped just to make room for the receiver:
+
+```java
+        long followUpDelay = scheduling
+            .getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY)
+            .longValue();
 ```
 
 When the chain is the value of a declaration or of a bare
 assignment, "too far right" is judged only after breaking at `=`,
 which moves the whole chain one indent from the statement and often
-leaves room to align after all. In those two positions the receiver
-is not left stranded at the end of a line while its own segments sit
-below it:
+leaves room to align after all:
 
 ```java
-    // NOT this — `conn` alone, carrying nothing.
-    java.sql.ResultSet tables = conn
-        .getMetaData()
+    // NOT this — continuation indentation from the `=` line.
+    java.sql.ResultSet tables = conn.getMetaData()
         .getTables(null, "public", "%", new String[] { "TABLE" });
 
-    // This — the head leads its first segment, the rest align.
+    // This — breaking at `=` lets the segments align.
     java.sql.ResultSet tables
         = conn.getMetaData()
               .getTables(null, "public", "%", new String[] { "TABLE" });

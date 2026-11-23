@@ -213,6 +213,36 @@ exactly as before: across the 903-file corpus only the demo files
 change. The standards' new "Javadoc snippet demo code" section
 states the rule; fixtures `snippet_markup/01` to `04` cover it.
 
+**A chain's receiver keeps its first call.** When a method chain
+cannot align its dots, the continuation-indent fallback put the
+receiver alone at the end of its line, carrying nothing, with every
+segment below it. The receiver now keeps its first call on that
+line, and only the later segments go one per line:
+
+```java
+        // 0.7.1
+        followUpScheduler
+            .createTaskBuilder(REFRESH_ENTITY.toString())
+            .resource(ENTITY_RESOURCE_KEY, followUpId)
+            .parameter(RefreshEntityHandler.ENTITY_ID_KEY, followUpId)
+            .schedule(true);
+
+        // 0.8.0
+        followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString())
+            .resource(ENTITY_RESOURCE_KEY, followUpId)
+            .parameter(RefreshEntityHandler.ENTITY_ID_KEY, followUpId)
+            .schedule(true);
+```
+
+The receiver is still left alone when it and its first call do not
+fit on one line together; wrapping the first call's arguments just
+to keep it company reads worse. A declaration or assignment still
+tries breaking at `=` first, which keeps winning when it lets the
+dots align. Across the five adopting repositories 98 statements in
+34 files change, each at least one row shorter; no row passes 80
+that did not before. The "Method Chains" section states the rule;
+fixture `method_chain_wrap/32` covers it.
+
 ### Fixed
 
 **A lone operator-expression argument moved to its own row when the

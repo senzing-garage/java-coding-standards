@@ -12202,6 +12202,31 @@ def _emit_method_chain_wrapped(
             emitter.write(".")
             emit_segment(seg)
 
+    head_first_wrapped = [False]
+
+    def emit_p3_head_first() -> None:
+        # 0.8.0: the ladder without the stranded receiver. The head
+        # keeps its first call on line 1, so a receiver never sits
+        # alone at the end of its row, and the remaining segments
+        # drop to `p3_col` as in `emit_p3`. Tried after P2, when
+        # dot-alignment would push the chain past 80. Flagged as a
+        # ladder like `emit_p3`, so a caller that can move the chain
+        # left (the break at `=`) still gets to try dot-alignment
+        # first.
+        assert head is not None
+        emitter._chain_ladder_fired = True
+        _emit_node(emitter, source, head)
+        emitter.write(".")
+        before = emitter.line_count
+        emit_segment(segments[0])
+        head_first_wrapped[0] = emitter.line_count > before
+        for seg in segments[1:]:
+            emit_gap_comments(seg, p3_col)
+            emitter.newline()
+            emitter.write(" " * p3_col)
+            emitter.write(".")
+            emit_segment(seg)
+
     def emit_p2_greedy_dot_aligned() -> None:
         # 0.5.0 item 2b: same-method method-chain greedy.
         # Pack as many `.METHOD(args)` segments per continuation
@@ -12412,6 +12437,14 @@ def _emit_method_chain_wrapped(
             )
             if p2_fits:
                 return emit_p2
+            emitter.restore(p2_saved)
+        if head is not None and not inline_has_comments(segments[0]):
+            emit_p3_head_first()
+            if (
+                shape_fits(p2_saved[0])
+                and not head_first_wrapped[0]
+            ):
+                return emit_p3_head_first
             emitter.restore(p2_saved)
         emit_p3()
         # Method-chain wrap site advisory uses the first segment
