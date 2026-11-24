@@ -12665,6 +12665,7 @@ def _emit_method_invocation(
             "yet supported — it would be dropped. Move it above the "
             "statement."
         )
+    saved = emitter.snapshot()
     if object_node is not None:
         name_text = _node_source_text(source, name_node)
         trailing = 1 + len(name_text) + 1
@@ -12678,6 +12679,89 @@ def _emit_method_invocation(
         emitter.write(".")
     _emit_node(emitter, source, name_node)
     _emit_node(emitter, source, arguments_node)
+    if (
+        object_node is None
+        or not _is_plain_name(object_node)
+        or not _call_is_whole_value(node)
+        or _single_call_fits(emitter, saved[0])
+        # Args that wrapped own the overflow: their arg list has its
+        # own cascade and advisory, and a break before `.` would not
+        # change the rows that overflow.
+        or emitter.line_count != saved[0]
+    ):
+        return
+    # 0.8.0: the last resort for a single call (`name.m()`,
+    # `this.x.m()`) that does not fit even with its args wrapped —
+    # break before the call's own `.`, which has no other `.` to
+    # align with, so the method goes one indent in from the
+    # statement, as in the chain ladder:
+    #
+    #     this.someReplicationProviderInstance
+    #         .initializeTheConnectionProviderNow();
+    #
+    # Kept only when it fits: a break that still overflows buys
+    # nothing. A declaration or assignment still breaks at `=`
+    # instead when the call then fits on one row (the `=` balance
+    # rule), and keeps this form when it does not.
+    emitter.restore(saved)
+    _emit_node(emitter, source, object_node)
+    emitter.newline()
+    emitter.write(" " * (4 * (emitter.indent_level + 1)))
+    emitter.write(".")
+    _emit_node(emitter, source, name_node)
+    _emit_node(emitter, source, arguments_node)
+    if _single_call_fits(emitter, saved[0]):
+        return
+    # Neither fits: keep the call on one row and say why. The
+    # receiver's own advisory is dropped — it measured only the
+    # receiver and claimed there was nowhere to break, when the
+    # break before `.` was tried and still overflowed.
+    emitter.restore(saved)
+    receiver_warnings = len(emitter.warnings)
+    _emit_node(emitter, source, object_node)
+    del emitter.warnings[receiver_warnings:]
+    emitter.write(".")
+    _emit_node(emitter, source, name_node)
+    _emit_node(emitter, source, arguments_node)
+    _fire_wrap_overflow_advisory(
+        emitter, node, saved[0], "method call",
+        remedy=(
+            f"Even with a break before `.{name_text}`, the call does not "
+            "fit. Shorten the receiver or method name, or extract the "
+            "receiver to a local variable."
+        ),
+    )
+
+
+def _call_is_whole_value(node: Node) -> bool:
+    """Return True when `node` is a whole statement, a `return`
+    value, or the value after `=` — never an operand or argument,
+    where the enclosing wrap engine measures it at speculative
+    positions and must see it overflow to wrap around it."""
+    parent = node.parent
+    if parent is None:
+        return False
+    if parent.type in ("expression_statement", "return_statement"):
+        return True
+    if parent.type == "variable_declarator":
+        return parent.child_by_field_name("value") == node
+    if parent.type == "assignment_expression":
+        return (
+            parent.child_by_field_name("right") == node
+            and parent.parent is not None
+            and parent.parent.type == "expression_statement"
+        )
+    return False
+
+
+def _single_call_fits(emitter: Emitter, since: int) -> bool:
+    """Return True when every row from `since` fits, the open row
+    leaving room for the trailing context still to come."""
+    return (
+        max((len(row) for row in emitter._lines[since:]), default=0)
+        <= emitter.line_limit
+        and emitter.column <= emitter.line_limit - emitter.tail_reserve
+    )
 
 
 def _emit_modifiers(

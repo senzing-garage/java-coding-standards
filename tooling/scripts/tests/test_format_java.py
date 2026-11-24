@@ -3725,6 +3725,38 @@ class TestFormatterWarnings:
                 in warning.message
             )
 
+    def test_warning_for_single_call_that_cannot_fit(self) -> None:
+        # 0.8.0: a single call (`name.m()`, `this.x.m()`) that does
+        # not fit even with a break before its `.` stays on one row
+        # and says so. Before, the receiver's field-access advisory
+        # fired instead, measured only the receiver (82 for a 95-wide
+        # row) and claimed there was nowhere to break; a call with a
+        # short receiver and a long method name fired nothing.
+        src = (
+            b"public class A {\n"
+            b"    void m() {\n"
+            b"        if (a) {\n"
+            b"            if (b) {\n"
+            b"                this.someReplicationProviderInstanceWithAnExtremelyLongNameIndeed.initialize();\n"
+            b"                someReplicationProvider.initializeTheConnectionProviderNowWithAVeryLongMethodName();\n"
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        out = format_java.format_source(src, warnings_out=warnings)
+        rows = [
+            row for row in out.decode().split("\n") if "initialize" in row
+        ]
+        assert [w.width for w in warnings] == [len(row) for row in rows]
+        assert [w.width for w in warnings] == [95, 100]
+        for warning in warnings:
+            assert warning.message.startswith(
+                "method call wrap could not fit within 80 chars"
+            )
+            assert "Even with a break before `.initialize" in warning.message
+
     def test_warning_for_binary_wrap_overflow(self) -> None:
         # Item 11: when the binary cascade commits its C1
         # emit + warn fallback with a line wider than 80

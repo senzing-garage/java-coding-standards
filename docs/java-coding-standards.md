@@ -2244,6 +2244,31 @@ chain whose receiver is long enough to force continuation
 indentation from either column keeps the shorter inline form
 rather than spending a line to reach the same shape.
 
+**A single call.** A call with one `.` — `name.m()` or
+`this.x.m()` — has no other `.` to align with. When it does not fit
+even with its arguments wrapped, break before the call's `.` (never
+before `.x`) and put the method one indent in from the statement:
+
+```java
+                this.someReplicationProviderInstance
+                    .initializeTheConnectionProviderNow();
+```
+
+In a declaration or assignment, break at `=` instead when the call
+then fits on one row. Otherwise the left side keeps the receiver and
+the method breaks before its `.`:
+
+```java
+                someResultValue = someReplicationProviderInstanceName
+                    .getConnectionProviderByKey();
+```
+
+The break applies to a call that is a whole statement, a `return`
+value or the value after `=`. As an operand or an argument, the
+enclosing expression's wrap places it. When even the break does not
+fit, the call stays on one row and the formatter warns, naming the
+call.
+
 ### Breaking at `=` in a declaration or assignment
 
 A declaration and its bare-assignment twin differ only in whether

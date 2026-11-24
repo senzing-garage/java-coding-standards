@@ -314,6 +314,40 @@ unchanged. The new "An argument too long for any column" section
 states the rule; fixture `arg_list_wrap/28` covers it, and
 `condition_wrap/09`, whose long string no longer moves, is updated.
 
+**A single call breaks before its `.` when nothing else fits.** A
+call with one `.` (`name.m()`, `this.x.m()`) that did not fit even
+with its arguments wrapped was left on one row past 80, because only
+chains had a break before `.`. It now breaks there, the method one
+indent in, when that fits:
+
+```java
+        // 0.7.1
+        this.inProgressFollowUpCount.decrementAndGet();
+
+        // 0.8.0
+        this.inProgressFollowUpCount
+            .decrementAndGet();
+```
+
+(Shown at the statement's real depth, 40 columns in, in
+`data-mart-replicator`'s `AbstractSchedulingService`.) A declaration
+or assignment still breaks at `=` first when the call then fits on
+one row. The break applies only to a call that is a whole statement,
+a `return` value or the value after `=`: as an operand or argument,
+the enclosing wrap measures the call at many positions and must see
+it overflow to wrap around it, and an earlier attempt that broke
+there too made 30 statements taller.
+
+When even the break does not fit, the call now gets a "method call"
+advisory measured on the whole row, naming the break that was tried.
+Before, the receiver's "field access" advisory fired instead: it
+measured only the receiver (82 for a 95-column row) and said there
+was nowhere to break. A call with a short receiver and a long method
+name fired nothing. Across the five adopting repositories 2
+statements change, both now within 80, and the 2 misleading "field
+access" advisories are gone. The "Method Chains" section states the
+rule; fixture `method_chain_wrap/34` covers it.
+
 ### Fixed
 
 **A lone operator-expression argument moved to its own row when the
