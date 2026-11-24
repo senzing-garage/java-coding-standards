@@ -88,6 +88,41 @@ def test_changed_file_rewritten(tmp_path: Path) -> None:
     assert "1 modified" in result.stdout
 
 
+def test_comment_loss_fails_and_leaves_the_file_untouched(
+    tmp_path: Path,
+) -> None:
+    # The comment-loss guard is an ERROR, not a refusal: losing a
+    # comment is a formatter bug, so the run fails, and the file is
+    # not written. A tiny sitecustomize makes the formatter drop
+    # every `//` comment in the child process.
+    java = tmp_path / "T.java"
+    original = (
+        "public class T\n{\n    void t()\n    {\n"
+        "        run();  // keep these words\n    }\n}\n"
+    )
+    java.write_text(original, encoding="utf-8")
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(SCRIPTS_DIR)!r})\n"
+        "import format_java\n"
+        "format_java._NODE_EMITTERS['line_comment'] = "
+        "lambda e, s, n: None\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PYTHONPATH": str(hook)}
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS_DIR / "format_file.py"), str(java)],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 1, result.stderr
+    assert "CommentLossError" in result.stderr
+    assert java.read_text(encoding="utf-8") == original
+
+
 def test_refused_file_exits_zero(tmp_path: Path) -> None:
     # A file containing a construct the formatter doesn't yet
     # support (e.g. a module declaration) prints REFUSED on

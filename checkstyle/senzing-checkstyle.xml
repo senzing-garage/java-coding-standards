@@ -10,11 +10,19 @@
     <!-- No tab characters -->
     <module name="FileTabCharacter"/>
 
-    <!-- Line length: 80 characters -->
+    <!-- Line length: 80 characters.
+
+         The last ignorePattern alternative accepts a row whose code
+         ends by column 80 and whose overflow is a trailing // comment:
+         a comment reads with its code row and stays there rather than
+         forcing a re-wrap. It skips string and char literals to find
+         the first real //, so a // inside a literal does not count,
+         and it never matches a row that is only a comment (those are
+         reflowed) or one with a /* */ before the //. -->
     <module name="LineLength">
         <property name="max" value="80"/>
         <property name="ignorePattern"
-                  value="^package.*|^import.*|a href|href|http://|https://|@snippet|static final.*&lt;.*&gt;"/>
+                  value="^package.*|^import.*|a href|href|http://|https://|@snippet|static final.*&lt;.*&gt;|^(?=\s*[^\s/*])(?:[^&quot;'/]|/(?![/*])|&quot;(?:[^&quot;\\]|\\.)*&quot;|'(?:[^'\\]|\\.)*')*?(?&lt;=^.{1,80})\s+//"/>
     </module>
 
     <!-- Allow CSOFF/CSON comments to suppress checks on specific lines -->

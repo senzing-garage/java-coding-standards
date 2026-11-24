@@ -25,9 +25,66 @@ at the end of this document.
   - Lines containing URLs (`http://`, `https://`, `href`)
   - `static final` field declarations with generic type parameters
     (e.g., `Map<String, Set<ConfigOption>>`)
+  - A row whose code fits and whose overflow is a trailing `//`
+    comment (see "Trailing comments" below)
 - Use `// CSOFF` before and `// CSON` after a line to suppress the
   line-length check when breaking the line would harm readability
   (see "Formatted Log and Diagnostic Messages" below).
+
+### Trailing comments
+
+A trailing `//` comment is not counted toward the limit when the
+code before it fits. It reads with its row, so it stays there:
+
+```java
+        Scheduler scheduler = service.createScheduler(false);  // false = primary tasks
+```
+
+Moved above the row, the same comment would read as a description
+of the whole statement ("construct with false for primary tasks"),
+and between the segments of a method chain it would split the
+chain. The formatter therefore never moves a trailing comment and
+never lets one change the code's layout: the code is wrapped
+exactly as it would be without the comment. Whether a long note
+belongs on its own row above is the author's call, made by hand.
+
+The rule covers `//` comments only, after code that ends by column
+80. A row that is only a comment is still reflowed to the limit,
+and a `/* */` comment counts toward the row's length.
+
+### Javadoc snippet demo code
+
+Demo code that a `{@snippet file=… region=…}` tag renders into the
+Javadoc is measured the way readers see it:
+
+- **A snippet region is measured from its own indent.** The
+  rendered snippet strips the region's common indent, so a
+  statement between `// @start region=…` and its `@end` may run
+  80 columns past the indent of the `@start` comment. A region
+  whose `@start` sits at column 12 allows rows to column 92.
+- **A row that carries snippet markup is never wrapped.** A
+  markup tag (`@highlight`, `@replace`, `@link`) applies to its own
+  row, so wrapping the statement would apply it to only part of
+  the code. This covers a trailing tag, a tag on a block's
+  opening row (`} catch (…) {  // @highlight …`) and the statement
+  after an own-row tag that ends in `:`. A nested statement is
+  measured on its own, so only the tagged row is exempt.
+
+```java
+// @start region="register"
+long configId = configMgr.registerConfig(configDefinition, "Added CUSTOMERS data source");  // @highlight regex="configMgr.*"
+
+if (config == configMgr) throw new IllegalStateException("never happens");  // @replace regex="if.*" replacement="..."
+
+// wider than 80 in the rendered snippet and not tagged: wrapped
+JsonObject jsonObject = Json.createReader(new StringReader(result))
+                            .readObject();
+// @end region="register"
+```
+
+Checkstyle does not see these rows: demo sources are added as a
+test source root after the `validate` phase that runs it, so the
+formatter is what holds them to the rule.
 
 ---
 
@@ -327,7 +384,7 @@ combo" for "type" in the existing alignment text.
 
 Annotation arguments wrap per the method-call argument rule
 (priority 1 single-line, priority 2 two-line paren-aligned
-comma-packed, priority 3 paren-aligned one-per-line, priority 4
+balanced, priority 3 paren-aligned one-per-line, priority 4
 next-line single-indented one-per-line). Treat `@Annotation(...)`
 as a call site for wrapping purposes:
 
@@ -859,13 +916,13 @@ INACTIVE("inactive", 0);
 ### Constructor arguments overflow
 
 Arguments follow the method-call argument rule (priority 1
-single-line, priority 2 two-line paren-aligned comma-packed,
+single-line, priority 2 two-line paren-aligned balanced,
 priority 3 paren-aligned one-per-line, priority 4 next-line
 single-indented). Treat the enum constant + its parens like a
 method call for wrapping purposes:
 
 ```java
-// Priority 2 — paren-aligned, comma-packed:
+// Priority 2 — two-line, paren-aligned:
 ACTIVE("longer-active-label", 1, 100,
        List.of("primary", "fallback")),
 
@@ -1080,7 +1137,7 @@ Comparator<String> byLengthDesc = new Comparator<String>() {
 
 Method calls follow their own priority-by-line-length pattern for
 wrapping the argument list. The rules differ from declaration-side
-wrapping in two ways: a compact two-line "comma-packed" form is
+wrapping in two ways: a compact two-line paren-aligned form is
 allowed when the entire argument list fits on two lines, and the
 next-line fallback uses single indentation (4 spaces) rather than
 the double indentation used by method/record declarations.
@@ -1094,16 +1151,64 @@ receiver chain) fits within 80 characters, keep it on one line:
     someVar.someMethod(parameterA, parameterB, parameterC);
 ```
 
-**Priority 2: Two-line, paren-aligned, comma-packed** — if priority 1
+**Priority 2: Two-line, paren-aligned, balanced** — if priority 1
 overflows but the entire argument list fits on **exactly two lines**,
-break on a comma as late as possible (pack as many arguments as fit
-on the call line) and continue the rest on a single continuation
-line aligned to the first column after the opening parenthesis:
+break on the comma that **balances the two lines best** and continue
+the rest on a single continuation line aligned to the first column
+after the opening parenthesis:
 
 ```java
-    someVar.someMethod(parameterA, parameterB1 + parameterB2,
-                       parameterC, parameterD);
+    SzRecord record = new SzRecord("CUSTOMERS", "REC-001",
+                                   "NAME+DOB", null);
 ```
+
+Balance is measured on the text **after the opening parenthesis** on
+each line — the call line's arguments through its trailing comma,
+and the continuation line's arguments through the closing `)` and
+whatever follows it on that line, such as the statement's `;`. The
+indent and the call's prefix do not count: the continuation is
+paren-aligned, so the question is whether the *call* looks balanced,
+not the line. Of the splits that fit, choose the one whose two lines
+are closest in length; on a tie, the call line takes the longer
+half.
+
+Breaking as late as possible (the rule before 0.8.0) is wrong when an
+earlier break balances better:
+
+```java
+    // WRONG — the latest break leaves a stub on the continuation line
+    SzRecord record = new SzRecord("CUSTOMERS", "REC-001", "NAME+DOB",
+                                   null);
+```
+
+**A lopsided priority 2 falls to priority 3.** If even the best
+split leaves the continuation line shorter than **60%** of the call
+line, the argument list is placed one argument per line instead
+(priority 3, below):
+
+```java
+    // WRONG — `true);` is a stub, and no split does better
+    this.saveDemoResult("findInterestingEntitiesByEntityIdDefault", demoResult,
+                        true);
+
+    // CORRECT
+    this.saveDemoResult("findInterestingEntitiesByEntityIdDefault",
+                        demoResult,
+                        true);
+```
+
+Only a short continuation line is lopsided. A continuation line that
+is *longer* than the call line — typically a long last argument such
+as an assertion message or a ternary after short leading arguments —
+stays priority 2:
+
+```java
+    assertEquals(original, parsed,
+                 "Round-trip should work with negative values");
+```
+
+Two-argument calls are exempt from the 60% test, because their
+only priority 2 split is already the priority 3 shape.
 
 Priority 2 is skipped when the call is embedded in another
 expression — as a positional argument of another call, or as the
@@ -1122,21 +1227,21 @@ from the start of the call's line:
         COMMAND_LINE, CONFIG, "--config", List.of());
 ```
 
-This is the zero-arguments-on-the-call-line member of the same greedy
-family as priority 2, which is why it is numbered with it and tried
+This is the zero-arguments-on-the-call-line member of the same
+two-line family as priority 2, which is why it is numbered with it and tried
 immediately after it. The rule for the family is **two lines
 maximum**: zero or more arguments on the call line, and all remaining
 arguments on one continuation line. Priority 2 covers the "one or
 more on the call line" case; priority 2b covers "none on the call
 line". If the arguments will not fit on a single continuation line
-either, the greedy family is exhausted and the cascade falls through
+either, the two-line family is exhausted and the cascade falls through
 to priority 3.
 
 Like priority 2, this priority is skipped when the call is embedded
 in another expression — see [Nested-call wrap](#nested-call-wrap).
 
 **Priority 3: Paren-aligned, one argument per line** — if the
-argument list fits neither two-line greedy shape (priority 2 or 2b),
+argument list fits neither two-line shape (priority 2 or 2b),
 place each argument on its own line, with all arguments left-aligned
 to the first column after the opening parenthesis:
 
@@ -1242,6 +1347,97 @@ asked of every argument at every priority, rather than a
 per-construct judgment about whether a given continuation happens
 to be confusable.
 
+When the argument still has to wrap at priority 4, its operator
+rows line up with the start of the argument, in the column its
+sibling arguments occupy. The leading operator is what marks the
+row as a continuation: no argument can begin with `+`, `&&`, `||`
+or `>`, so the operator does the work an extra indent would. This
+is the original Java Code Conventions' rule of aligning a wrapped
+operator with the beginning of its expression. It is not
+governing-paren alignment (a multi-argument call's `(` is not a
+governing paren; see "What does NOT count as a governing `(`"),
+and it applies only to an argument that starts its own row:
+
+```java
+                        throw new RuntimeException(
+                            multilineFormat(
+                                "Failed to read JSON initialization "
+                                + "file: " + initFile,
+                                "",
+                                "Cause: " + e.getMessage()));
+
+                    assertTrue(
+                        message.contains("file")
+                        || message.contains("not found")
+                        || message.contains("does not exist"),
+                        "Exception message should indicate file issue");
+```
+
+A lone operator expression goes on its own row only when it has
+to. If it can start right after the `(`, with every continuation
+row an operator under its first operand, in no more rows than
+moving it to a row of its own, it does. When the rows must be
+lopsided, the leading row carries the weight, not the overflow
+row; a call name and `(` alone on the first row is the most
+lopsided shape there is:
+
+```java
+                    fail("Unexpectedly succeeded in adding record: "
+                         + testData);
+
+                    sourceStats.setEntityCount(sourceStats.getEntityCount()
+                                               + 1);
+```
+
+not
+
+```java
+                    fail(
+                        "Unexpectedly succeeded in adding record: " + testData);
+```
+
+A lone argument that has to go on its own row (priority 4)
+follows the same rule:
+
+```java
+            throw new IllegalArgumentException(
+                "The specified target object does not implement any interfaces "
+                + "to proxy.  class=[ " + targetObject.getClass().getName()
+                + " ], targetObject=[ " + targetObject + " ]");
+```
+
+An extra +4 indent is not used because it says the wrong thing
+when the first operand itself wraps. A comparison against a
+wrapped receiver chain would put its operator in the column of
+the chain's `.` rows, as if it were another chain segment. Flush,
+it sits with the start of the chain, which is what it compares:
+
+```java
+        assertTrue(
+            leisurely
+                .getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY)
+                .longValue()
+            > AbstractSchedulingService.DEFAULT_FOLLOW_UP_DELAY,
+            "LEISURELY should have longer delay than default");
+```
+
+When an operand is too long for any row (usually a string
+literal), the concatenation stays packed in this column and only
+that operand's row overflows, so the formatter flags it for a
+hand split. It does not move to a deeper column or put each
+operand on its own row, because neither removes the overflow:
+
+```java
+                    assertEquals(
+                        0,
+                        (retriedCount2 - retriedCount1),
+                        "Number of retried operations (" + retriedCount1
+                        + " vs " + retriedCount2
+                        + ") unexpectedly changed for the annotated method declared in "
+                        + method.getDeclaringClass().getSimpleName() + ": "
+                        + method.toString());
+```
+
 This applies to any argument complex enough to wrap — a nested
 call, a lambda, an object creation, or a compound expression such
 as a long string concatenation. It does not affect simple
@@ -1271,6 +1467,48 @@ A sole exempt argument simply keeps the call line:
     });
 ```
 
+### An argument too long for any column
+
+An argument that is a single name, dotted name or literal, and
+that cannot fit within 80 characters at any column it could be
+moved to, overflows wherever it starts. Breaking only moves it to
+another row it still overflows, so no break is spent on it: no
+break at `=`, no receiver left alone, no `(` left alone above it.
+The code around it is laid out as though the argument just fit, so
+only the argument's own row runs past 80, and anything that would
+follow it on that row moves to the next:
+
+```java
+        long followUpDelay = scheduling.getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER_THAN_BEFORE,
+                                                      someOtherParameter)
+                                       .longValue();
+
+        assertEquals(keySingle, keyDouble,
+                     "Single-source and two-source constructors should produce equal keys");
+```
+
+Such an argument starts its own row when another argument would
+otherwise come before it on the row, so the overflow is never longer
+than the argument forces:
+
+```java
+        long followUpDelay = scheduling.getJsonNumber(someOtherParameter,
+                                                      AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER_THAN_BEFORE)
+                                       .longValue();
+```
+
+The formatter warns about each one. Shorten the name, extract the
+value to a local variable, or, where the line genuinely has to be
+long, wrap the region in `CSOFF`/`CSON`. A statement holding such an
+argument is never collapsed onto its `if` line (Tier 1), because it
+does not fit there. An argument that fits on a row of its own is not
+affected and wraps as usual:
+
+```java
+        doSomethingWithAValue(
+            AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_A_BIT_LONGER);
+```
+
 ### Nested-call wrap
 
 A call that is **embedded** in another expression wraps differently
@@ -1292,7 +1530,7 @@ which a lambda is not, and rule 3 requires the chain's parent to
 be an argument list, which a lambda displaces.
 
 A **block-bodied lambda is opaque**. Its statements stand at their
-own indent and share their line with nothing, so the greedy tiers
+own indent and share their line with nothing, so the two-line tiers
 read perfectly well there:
 
 ```java
@@ -1309,7 +1547,7 @@ narrower: it governs the chain tail only when the chain is the
 already broken out onto its own line. A chain that is one of
 several arguments keeps its ordinary tail layout.
 
-In those positions the priority 2 comma-packed form reads badly,
+In those positions the priority 2 two-line form reads badly,
 because the reader must track a half-packed argument list and the
 enclosing construct at the same time. Three rules apply.
 
@@ -1325,8 +1563,8 @@ at single indentation from the start of the enclosing call's line:
             .build());
 ```
 
-**Rule 2 — skip the greedy tiers (priority 2 and 2b).** Within an
-embedded call's own argument list, neither two-line greedy tier is
+**Rule 2 — skip the two-line tiers (priority 2 and 2b).** Within an
+embedded call's own argument list, neither two-line tier is
 used; the cascade goes priority 1 → priority 3 → priority 4. This
 keeps the argument list a single readable column:
 
@@ -1445,6 +1683,12 @@ list.forEach(x -> {
 
 Body inside braces follows standard block rules. Statements
 indented +4 from the lambda's anchor.
+
+A statement in the body formats exactly as it would in a plain
+block at the same indent. The `);` (or other text) that follows
+the lambda's closing `}` belongs to that row only, so body rows
+may use all 80 columns, and a body row that fits never changes how
+the enclosing call or chain wraps.
 
 ### Lambda inside a method call — wrap structure
 
@@ -1936,29 +2180,60 @@ because the segments have different semantics and benefit from
 vertical alignment.
 
 If the chain starts too far right for alignment to fit within
-80 characters, use continuation indentation instead:
+80 characters, use continuation indentation instead. The receiver
+keeps its first call on the first line, and every later segment
+goes on its own line one indent in from the statement:
 
 ```java
-    String result = someVeryLongObjectName
-        .getBuilder()
-        .toString()
-        .trim();
+        followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString())
+            .resource(ENTITY_RESOURCE_KEY, followUpId)
+            .parameter(RefreshEntityHandler.ENTITY_ID_KEY, followUpId)
+            .schedule(true);
 ```
+
+The receiver is left alone at the end of its line only when it and
+its first call do not fit on one line together. The first call's
+arguments are not wrapped just to make room for the receiver:
+
+```java
+        long followUpDelay = scheduling
+            .getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY)
+            .longValue();
+```
+
+**A call whose own arguments must wrap.** When some call in the
+chain does not fit on its line in any of the shapes above, its
+arguments wrap under its own `(`, as in any argument list, and the
+dots stay aligned:
+
+```java
+        followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString(),
+                                            someOtherBuilderArgument,
+                                            andAnotherBuilderArg)
+                         .resource(ENTITY_RESOURCE_KEY, followUpId)
+                         .schedule(true);
+```
+
+A shape that keeps every call's arguments on its own line always
+comes first, even with continuation indentation. Only when each of
+them would have to wrap some call's arguments are the shapes
+compared again with the arguments wrapped; the one with the fewest
+lines wins, aligned dots on a tie. Aligned dots are not used when
+the call that wraps holds a block lambda or an anonymous class: the
+body is indented from the statement, not from the dots, and would
+fall out from under its call.
 
 When the chain is the value of a declaration or of a bare
 assignment, "too far right" is judged only after breaking at `=`,
 which moves the whole chain one indent from the statement and often
-leaves room to align after all. In those two positions the receiver
-is not left stranded at the end of a line while its own segments sit
-below it:
+leaves room to align after all:
 
 ```java
-    // NOT this — `conn` alone, carrying nothing.
-    java.sql.ResultSet tables = conn
-        .getMetaData()
+    // NOT this — continuation indentation from the `=` line.
+    java.sql.ResultSet tables = conn.getMetaData()
         .getTables(null, "public", "%", new String[] { "TABLE" });
 
-    // This — the head leads its first segment, the rest align.
+    // This — breaking at `=` lets the segments align.
     java.sql.ResultSet tables
         = conn.getMetaData()
               .getTables(null, "public", "%", new String[] { "TABLE" });
@@ -1969,44 +2244,156 @@ chain whose receiver is long enough to force continuation
 indentation from either column keeps the shorter inline form
 rather than spending a line to reach the same shape.
 
+**A single call.** A call with one `.` — `name.m()` or
+`this.x.m()` — has no other `.` to align with. When it does not fit
+even with its arguments wrapped, break before the call's `.` (never
+before `.x`) and put the method one indent in from the statement:
+
+```java
+                this.someReplicationProviderInstance
+                    .initializeTheConnectionProviderNow();
+```
+
+In a declaration or assignment, break at `=` instead when the call
+then fits on one row. Otherwise the left side keeps the receiver and
+the method breaks before its `.`:
+
+```java
+                someResultValue = someReplicationProviderInstanceName
+                    .getConnectionProviderByKey();
+```
+
+The break applies to a call that is a whole statement, a `return`
+value or the value after `=`. As an operand or an argument, the
+enclosing expression's wrap places it. When even the break does not
+fit, the call stays on one row and the formatter warns, naming the
+call.
+
 ### Breaking at `=` in a declaration or assignment
 
 A declaration and its bare-assignment twin differ only in whether
-the left-hand side carries a type, and they wrap the same way. The
-value stays on the `=` line whenever every row it emits fits within
-80 characters and the value kept its clean shape:
+the left-hand side carries a type, and they wrap the same way. When
+the statement does not fit on one line there are two shapes to
+choose from: keep the value on the `=` line and let it wrap, or
+break before `=` and give the value its own continuation line. Which
+one wins depends on whether the value fits on ONE row after the
+break.
+
+**1. The value fits on one row after `=`: break at `=`.** A value on
+one row reads better than the same value wrapped, so the `=` break
+wins over any inline wrap of an operator, a ternary, a split string,
+a priority 2b or priority 3 argument list, or a two-argument call:
 
 ```java
-    Object cachedEntity = engine.getNativeApi()
-                                .getEntityByRecordId(dataSource, recordId);
+    long elapsedDiff
+        = this.getLastBeginTime() - that.getLastBeginTime() - adjustmentNanos;
 
-    this.cachedEntityAB = engine.getNativeApi()
+    String recordSource
+        = JsonUtilities.getString(recordObject, "DATA_SOURCE_CODE");
+
+    TemporaryDataCache tdc
+        = new TemporaryDataCache(new ByteArrayInputStream(data));
+
+    // WRONG — the value wraps although it fits on one row after `=`
+    String recordSource = JsonUtilities.getString(recordObject,
+                                                  "DATA_SOURCE_CODE");
+```
+
+There are two exceptions, both for a **short left-hand side**. The
+left-hand-side line and the `= value;` line are measured without
+their indent, and when the first is much shorter than the second
+the `=` break is lopsided, so the value stays on the `=` line in a
+balanced wrap instead:
+
+- **A balanced priority 2 call of three or more arguments** stays
+  on the `=` line when the left-hand side is under **40%** of the
+  `= value;` line:
+
+  ```java
+      // 9 / 72 = 12% — keep the balanced priority 2 wrap
+      Task task = new Task("ACTION", new TreeMap<>(),
+                           new TreeSet<>(), groupName, true);
+
+      // 23 / 56 = 41% — break at `=`
+      CrossMatchKey keyDouble
+          = new CrossMatchKey("TEST", "TEST", "NAME_DOB", "JOHN");
+  ```
+
+  The call must be the whole value: a cast or any other operator in
+  front of it does not count, so `(Instant) method.invoke(null,
+  sourceText, locatorValue, null)` breaks at `=`.
+
+- **A method chain** stays on the `=` line, dot-aligned, when the
+  left-hand side is under **50%** of the `= value;` line; otherwise
+  the whole chain goes on one row after `=`:
+
+  ```java
+      // 14 / 65 = 22% — keep the dot-aligned chain
+      long leaseTime = pooledConnection.getCurrentLeaseHandler()
+                                       .getLeaseTimeMillis();
+
+      // 19 / 58 = 33% — a builder reads best one step per line
+      JsonObject settings = Json.createObjectBuilder()
+                                .add("TEST", "value")
+                                .build();
+
+      // 32 / 48 = 67% — break at `=`
+      SzRelatedEntity oldRelatedEntity
+          = this.getOldRelatedEntities().get(myRelatedId);
+  ```
+
+**2. The value does not fit on one row after `=`: keep it on the `=`
+line.** The value wraps in place whenever every row it emits fits
+within 80 characters and the value kept its clean shape. An argument
+list that wraps to its own `+4` block indent is clean:
+
+```java
+    boolean r = Boolean.FALSE.equals(
+        resultMap.get(someLongerKeyName).getProcessedValue());
+
+    Object cachedEntity = engine.getNativeApi()
                                 .getEntityByRecordId(dataSource, recordId);
 ```
 
-Breaking at `=` is what recovers horizontal space when that fails.
 Give the left-hand side its own line when the value's first row or
 any of its continuation rows would pass 80 characters, or when a
 chain value could only fit by falling back to continuation
 indentation — the dangling-receiver shape the chain section above
-rejects:
+rejects. The value then wraps beneath the `=`:
 
 ```java
     Object entityForThisRecord
         = engine.getNativeApi().getEntityByRecordId(dataSource, recordId);
 
-    this.entityForThisRecord
-        = engine.getNativeApi().getEntityByRecordId(dataSource, recordId);
+    DeleteMessageRequest deleteMessageRequest
+        = DeleteMessageRequest.builder()
+                              .queueUrl(this.getSqsUrl())
+                              .receiptHandle(receiptHandle)
+                              .build();
 ```
 
-This is about the chain shape specifically. An argument list that
-wraps to its own `+4` block indent is NOT a reason to break at `=`
-— the value still begins on the `=` line, and its arguments take
-the indent beneath:
+**3. Never break at `=` to make things worse.** When the value
+overflows 80 characters either way (an unsplittable string literal,
+say), the `=` break is taken only if it makes the widest row
+narrower. Otherwise it costs a line and an indent level for nothing,
+and the value stays on the `=` line:
 
 ```java
-    boolean ready = Boolean.FALSE.equals(
-        resultMap.get(key).getProcessedValue());
+    IllegalStateException exception = assertThrows(
+        IllegalStateException.class,
+        () -> {
+            options.setSQSInfoUri(sqsUri);
+        },
+        "Should throw IllegalStateException when SQS conflicts with RabbitMQ URI");
+```
+
+The same holds for a block lambda: its body is anchored to the
+statement, so breaking at `=` only pushes the body right.
+
+```java
+    Task<TaskResult> execTask = () -> {
+        return new TaskResult(currentTask, timers);
+    };
 ```
 
 Each statement is judged on its own. Two neighboring declarations
@@ -2479,16 +2866,21 @@ mechanical rule, not a partial wrap.
 
 ### Method-call priority 2 — "exactly two lines" definition
 
-The two-line, paren-aligned, comma-packed form applies when the
+The two-line, paren-aligned form applies when the
 entire argument list — from after the call's opening `(` through
 and including the closing `)` — spans **exactly two source lines**.
 The call's `methodName(` ends the first line; the closing `)`
 ends the second line.
 
-The break point is the **latest comma** at which both resulting
+The break point is the comma, among those at which both resulting
 lines fit ≤80 characters (paren-aligned continuation column on
-the second line). If no such comma exists, priority 2 does not
-apply and the formatter promotes to priority 3 (one arg per line).
+the second line), that **balances the two lines best**, measured
+on the text after the opening `(` — see
+[Method Call Arguments](#method-call-arguments). If no such comma
+exists, priority 2 does not apply and the formatter promotes to
+priority 2b, then priority 3 (one arg per line). If the best comma
+leaves the continuation line under 60% of the call line, priority
+2 is lopsided and the formatter goes straight to priority 3.
 
 **Edge-case clarifications:**
 
@@ -2496,12 +2888,13 @@ apply and the formatter promotes to priority 3 (one arg per line).
   context requires) counts as part of the second line.
 - A call with exactly two arguments where neither fits with the
   other on the first line is still priority 2 (mechanically, the
-  comma-packed form with the break landing on the only comma).
+  two-line form with the break landing on the only comma). The 60%
+  lopsidedness test does not apply to it.
 - When BOTH priority 2's two-line shape AND priority 3's
   one-per-line shape would fit, the formatter chooses priority 2
-  (higher priority). Priority 3 only applies when two-line
-  doesn't fit.
-- When the comma-packed second line lands exactly at 80
+  (higher priority) unless priority 2 is lopsided. Otherwise
+  priority 3 only applies when two-line doesn't fit.
+- When the second line lands exactly at 80
   characters (including the closing `);`), it counts as fitting
   — priority 2 applies.
 
@@ -2597,6 +2990,25 @@ of code and `//`, then a single space after `//`:
 
 ```java
 balance -= fee;  // strip transaction fee
+```
+
+A side comment on a control-statement header or on a method-chain
+segment stays on that row. Because a `//` comment ends its row,
+a header that carries one takes the Allman brace, and a chain with
+comments between its segments puts one segment on each row:
+
+```java
+for (String record = engine.getRedoRecord();  // @highlight regex="record.*"
+     record != null;
+     record = engine.getRedoRecord())  // @highlight regex="record.*"
+{
+    engine.processRedoRecord(record);
+}
+
+JsonObject task = Json.createObjectBuilder()
+                      .add("str", "str1")  // single value
+                      // remaining properties omitted
+                      .build();
 ```
 
 **Inline `/* */` comments** (typically used as parameter
@@ -3524,8 +3936,19 @@ try (FileInputStream in = new FileInputStream(input);
 ```
 
 Single-line resource → same-line brace. Multi-line condition
-(single resource that wraps via break-on-`=`, or any
-multi-resource form) → Allman brace on its own line.
+(a single resource that wraps, whether at `=` or inside its
+value, or any multi-resource form) → Allman brace on its own
+line:
+
+```java
+        try (java.sql.ResultSet triggers = stmt.executeQuery(
+            "SELECT tgname, pg_get_triggerdef(oid) as triggerdef "
+            + "FROM pg_trigger " + "WHERE tgrelid = '" + tableName
+            + "'::regclass " + "AND NOT tgisinternal"))
+        {
+            x();
+        }
+```
 
 ---
 

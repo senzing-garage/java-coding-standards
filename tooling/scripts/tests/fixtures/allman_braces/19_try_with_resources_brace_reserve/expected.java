@@ -5,7 +5,8 @@ public class Demo
     {
         try {
             try (InputStream is
-                     = cls.getResourceAsStream(POM_PROPERTIES_PATH)) {
+                     = cls.getResourceAsStream(POM_PROPERTIES_PATH))
+            {
                 props.load(is);
             }
         } catch (IOException e) {

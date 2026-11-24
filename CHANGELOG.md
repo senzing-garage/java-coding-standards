@@ -10,6 +10,583 @@ and this project adheres to
 
 ## [Unreleased]
 
+Release in progress (0.8.0). Defects and spec gaps found while
+adopting 0.7.1 in `data-mart-replicator`. This is a minor release
+because it changes normative rules in the standards, not just the
+formatter's conformance to them.
+
+### Changed
+
+**Method-call priority 2 splits for balance, not as late as
+possible.** Of the two-line, paren-aligned splits that fit, the one
+whose two lines carry the closest amount of text *after the `(`*
+wins, ties going to the call line. The indent and the call's prefix
+are not counted, so it is the call that is balanced, not the line.
+
+```java
+// 0.7.1 — latest comma that fits
+SzRecord record = new SzRecord("CUSTOMERS", "REC-001", "NAME+DOB",
+                               null);
+
+// 0.8.0 — best balanced comma
+SzRecord record = new SzRecord("CUSTOMERS", "REC-001",
+                               "NAME+DOB", null);
+```
+
+If even the best split leaves the continuation line under 60% of
+the call line, priority 2 is lopsided and the list goes to priority
+3, one argument per line (skipping priority 2b). A continuation
+line that is *longer* than the call line is never lopsided — a long
+last argument such as an assertion message stays priority 2 — and
+two-argument calls are exempt.
+
+```java
+// 0.7.1
+this.saveDemoResult("findInterestingEntitiesByEntityIdDefault", demoResult,
+                    true);
+
+// 0.8.0
+this.saveDemoResult("findInterestingEntitiesByEntityIdDefault",
+                    demoResult,
+                    true);
+```
+
+Across the four-repo, 504-file corpus this re-splits about 355
+calls, moves 55 to priority 3 and shortens 23 (below); lines over
+80 and advisories are unchanged and a second pass changes nothing.
+Fixtures `arg_list_wrap/25` and `/26` cover the two rules;
+`explicit_constructor_invocation/01` and one unit test had locked in
+the latest-comma split and are updated.
+
+**Breaking at `=` is chosen for balance
+([#52](https://github.com/senzing-garage/java-coding-standards/issues/52)).**
+0.7.x kept a value on the `=` line whenever its wrapped rows fit,
+however lopsided, and broke at `=` whenever they did not, even when
+the break made the statement wider. 0.8.0 compares the two shapes:
+
+- **If the value fits on one row after `=`, break at `=`.** This
+  replaces any inline wrap of an operator, a ternary, a split
+  string, a priority 2b or 3 argument list, or a two-argument call.
+  There are two exceptions, both for a short left-hand side
+  (measured without indent against the `= value;` line). A balanced
+  priority 2 call of three or more arguments stays inline under
+  40%, and a dot-aligned method chain stays inline under 50%.
+- **Otherwise the value stays on the `=` line** if it wraps cleanly
+  there, as before.
+- **Breaking at `=` never makes things wider.** When the value
+  overflows either way, the break is kept only if it narrows the
+  widest row.
+
+```java
+// 0.7.1
+String recordSource = JsonUtilities.getString(recordObject,
+                                              "DATA_SOURCE_CODE");
+AsyncResult<TaskResult> result = this.workerPool.execute(
+    execTask);
+
+// 0.8.0
+String recordSource
+    = JsonUtilities.getString(recordObject, "DATA_SOURCE_CODE");
+AsyncResult<TaskResult> result
+    = this.workerPool.execute(execTask);
+
+// 0.8.0 — unchanged: balanced call or chain under a short left side
+Task task = new Task("ACTION", new TreeMap<>(),
+                     new TreeSet<>(), groupName, true);
+long leaseTime = pooledConnection.getCurrentLeaseHandler()
+                                 .getLeaseTimeMillis();
+
+// 0.7.1 — the break buys nothing; the literal overflows either way
+IllegalStateException exception
+    = assertThrows(
+        IllegalStateException.class,
+        () -> {
+            options.setSQSInfoUri(sqsUri);
+        },
+        "Should throw IllegalStateException when SQS conflicts with RabbitMQ URI");
+
+// 0.8.0
+IllegalStateException exception = assertThrows(
+    IllegalStateException.class,
+    () -> {
+        options.setSQSInfoUri(sqsUri);
+    },
+    "Should throw IllegalStateException when SQS conflicts with RabbitMQ URI");
+```
+
+A block lambda no longer breaks at `=` either (`Task<TaskResult>
+execTask = () -> {` stays on one line): the break only pushed its
+body right.
+
+Across the corpus, measured on top of the priority 2 change above:
+
+- 784 inline wraps become an `=` break;
+- 13 two-call chains move from dot-aligned to one row after `=`;
+- 28 statements lose a useless `=` break.
+
+A second pass changes nothing. Checkstyle-visible lines over 80 go
+from 1120 to 1128; all eight are trailing `// @highlight` snippet
+markers in `sz-sdk-java` demos. The formatter does not count a
+trailing comment's width, so those lines were only under 80 before
+by accident.
+
+Fixtures `assignment_wrap/09_eq_break_balance`,
+`assignment_wrap/10_eq_break_never_widens` and
+`method_chain_wrap/30_eq_break_chain_balance` cover the rule.
+`assignment_wrap/05` (renamed
+`05_declaration_wraps_value_like_assignment`) and
+`condition_wrap/09` are updated. `arg_list_wrap/26` and
+`method_chain_wrap/25` get inputs the `=` break cannot reach, so
+they still test what they were written for. The standards'
+"Breaking at `=`" section is rewritten; its old example of a value
+kept on the `=` line, `boolean ready = Boolean.FALSE.equals(…)`,
+now breaks at `=` and is replaced.
+
+**A trailing `//` comment may run past 80 when the code fits.**
+The shared checkstyle `LineLength` rule gains an `ignorePattern`
+alternative for a row whose code (outside string and char
+literals) ends by column 80 and whose overflow is a trailing `//`
+comment. The formatter keeps such a comment beside its row and no
+longer measures it: the `=` break decision counted it, so a long
+comment could change how the code wrapped, and the chain wrap
+reported an overflow that was only the comment. Moving the comment
+above the row was considered and rejected; it changes what the
+comment appears to describe, and inside a method chain it splits
+the chain:
+
+```java
+// earlier on this branch: the comment counted, which moved the
+// `=` break, and it was still a checkstyle error
+JsonObject config = Json
+    .createObjectBuilder()
+    .add(AbstractSchedulingService.CONCURRENCY_KEY, 1)  // Single thread to force serialization
+    .add(AbstractSchedulingService.POSTPONED_TIMEOUT_KEY, 100)
+    .build();
+
+// 0.8.0: the layout the code gets without the comment; checkstyle passes
+JsonObject config
+    = Json.createObjectBuilder()
+          .add(AbstractSchedulingService.CONCURRENCY_KEY, 1)  // Single thread to force serialization
+          .add(AbstractSchedulingService.POSTPONED_TIMEOUT_KEY, 100)
+          .build();
+```
+
+(0.7.1 deleted a comment between chain segments; see "Fixed".)
+
+Across the five adopting repositories this clears 25 LineLength
+errors, all in `data-mart-replicator` tests, and changes the layout
+of that one statement. A row that is only a comment, a `//` inside
+a string literal, and code that itself passes 80 are still errors.
+
+**Javadoc snippet demo code is measured as it is rendered.** The
+formatter wrapped `sz-sdk-java`'s demo code to 80 columns from the
+left margin, although `{@snippet}` renders it with the region's
+indent stripped, and it wrapped rows that carry markup, which
+broke the markup: a tag applies to its own row, so after the wrap
+it sat on the statement's last row only, where its regex often no
+longer matched. 123 tagged rows in the demos were split this way.
+Now:
+
+- a statement inside a `// @start region=…` region is measured from
+  the indent of its `@start` comment, so the 80 columns are the
+  rendered snippet's;
+- a row that carries a `@highlight`, `@replace` or `@link` tag
+  (trailing, on a block's opening row, or the statement after an
+  own-row tag ending in `:`) is never wrapped.
+
+```java
+// 0.7.1 — `long.*` matches nothing on the tagged row
+long configId = configMgr.registerConfig(
+    configDefinition, "Added CUSTOMERS data source");  // @highlight regex="long.*"
+
+// 0.8.0
+long configId = configMgr.registerConfig(configDefinition, "Added CUSTOMERS data source");  // @highlight regex="long.*"
+```
+
+Formatting `sz-sdk-java`'s demos from before their 0.5.1 adoption,
+the rows of rendered snippets that differ from what the authors
+wrote (ignoring indentation) drop from 1134 to 377. What remains is
+ordinary normalization (Tier 1 `if`, argument lists packed when
+they fit, alignment padding removed) and untagged rows wider than
+80 in the rendered snippet. Files without snippet markup format
+exactly as before: across the 903-file corpus only the demo files
+change. The standards' new "Javadoc snippet demo code" section
+states the rule; fixtures `snippet_markup/01` to `04` cover it.
+
+**A chain's receiver keeps its first call.** When a method chain
+cannot align its dots, the continuation-indent fallback put the
+receiver alone at the end of its line, carrying nothing, with every
+segment below it. The receiver now keeps its first call on that
+line, and only the later segments go one per line:
+
+```java
+        // 0.7.1
+        followUpScheduler
+            .createTaskBuilder(REFRESH_ENTITY.toString())
+            .resource(ENTITY_RESOURCE_KEY, followUpId)
+            .parameter(RefreshEntityHandler.ENTITY_ID_KEY, followUpId)
+            .schedule(true);
+
+        // 0.8.0
+        followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString())
+            .resource(ENTITY_RESOURCE_KEY, followUpId)
+            .parameter(RefreshEntityHandler.ENTITY_ID_KEY, followUpId)
+            .schedule(true);
+```
+
+The receiver is still left alone when it and its first call do not
+fit on one line together; wrapping the first call's arguments just
+to keep it company reads worse. A declaration or assignment still
+tries breaking at `=` first, which keeps winning when it lets the
+dots align. Across the five adopting repositories 98 statements in
+34 files change, each at least one row shorter; no row passes 80
+that did not before. The "Method Chains" section states the rule;
+fixture `method_chain_wrap/32` covers it.
+
+**A chain keeps its dots aligned when a call's arguments must
+wrap.** 0.6.0 gave up dot alignment whenever a call in the chain
+had to wrap its own arguments, to avoid mixing the two alignment
+columns, and fell back to continuation indentation with the
+receiver alone. 0.8.0 reverses that: the arguments wrap under their
+own `(` and the dots stay aligned, the same two columns a
+constructor receiver's arguments already used.
+
+```java
+        // 0.7.1
+        followUpScheduler
+            .createTaskBuilder(REFRESH_ENTITY.toString(),
+                               someOtherBuilderArgument,
+                               andAnotherBuilderArg)
+            .resource(ENTITY_RESOURCE_KEY, followUpId)
+            .schedule(true);
+
+        // 0.8.0
+        followUpScheduler.createTaskBuilder(REFRESH_ENTITY.toString(),
+                                            someOtherBuilderArgument,
+                                            andAnotherBuilderArg)
+                         .resource(ENTITY_RESOURCE_KEY, followUpId)
+                         .schedule(true);
+```
+
+Every shape that keeps all the arguments on their call's line is
+still tried first. Taken alone, the reversal made 107 statements
+taller, aligning dots whose arguments then wrapped where
+continuation indentation needed no wrap at all. With those shapes
+first, the wrapped shapes are compared by line count, and a call
+holding a block lambda or anonymous class keeps continuation
+indentation, since its body indents from the statement. Across the
+five adopting repositories 18 statements in 7 files change, none
+taller. The "Method Chains" section states the rule; fixture
+`method_chain_wrap/33` covers it.
+
+**An argument too long for any column no longer costs breaks.** A
+name, dotted name or literal that cannot fit within 80 characters
+wherever it is placed made the formatter keep breaking in search of
+a fit it could not find: it broke at `=`, left the receiver alone,
+and moved the argument to a row of its own, flush with the chain's
+dots, where it still overflowed. Such an argument now stays where it
+starts, and the code around it is laid out as though it fit, so only
+its own row passes 80. The advisory names the argument instead of
+the wrap engine that gave up:
+
+```java
+        // 0.7.1
+        long followUpDelay
+            = scheduling
+                .getJsonNumber(
+                AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER_THAN_BEFORE)
+                .longValue();
+
+        // 0.8.0
+        long followUpDelay = scheduling.getJsonNumber(AbstractSchedulingService.FOLLOW_UP_DELAY_KEY_THAT_IS_MUCH_LONGER_THAN_BEFORE)
+                                       .longValue();
+```
+
+The overflowing row is wider than before, since the argument no
+longer moves left: across the corpus the 35 affected rows went from
+a median of 88 columns to 95, and one `throw new
+IllegalStateException("Replicator failed …")` went from 2 rows, the
+second 91 wide, to one row of 119. They were checkstyle errors either way, and the fix is in the
+code (a shorter name, a local variable, or `CSOFF`/`CSON`). Across
+the five adopting repositories 29 statements in 14 files change,
+each at least one row shorter, and the number of rows past 80 is
+unchanged. The new "An argument too long for any column" section
+states the rule; fixture `arg_list_wrap/28` covers it, and
+`condition_wrap/09`, whose long string no longer moves, is updated.
+
+**A single call breaks before its `.` when nothing else fits.** A
+call with one `.` (`name.m()`, `this.x.m()`) that did not fit even
+with its arguments wrapped was left on one row past 80, because only
+chains had a break before `.`. It now breaks there, the method one
+indent in, when that fits:
+
+```java
+        // 0.7.1
+        this.inProgressFollowUpCount.decrementAndGet();
+
+        // 0.8.0
+        this.inProgressFollowUpCount
+            .decrementAndGet();
+```
+
+(Shown at the statement's real depth, 40 columns in, in
+`data-mart-replicator`'s `AbstractSchedulingService`.) A declaration
+or assignment still breaks at `=` first when the call then fits on
+one row. The break applies only to a call that is a whole statement,
+a `return` value or the value after `=`: as an operand or argument,
+the enclosing wrap measures the call at many positions and must see
+it overflow to wrap around it, and an earlier attempt that broke
+there too made 30 statements taller.
+
+When even the break does not fit, the call now gets a "method call"
+advisory measured on the whole row, naming the break that was tried.
+Before, the receiver's "field access" advisory fired instead: it
+measured only the receiver (82 for a 95-column row) and said there
+was nowhere to break. A call with a short receiver and a long method
+name fired nothing. Across the five adopting repositories 2
+statements change, both now within 80, and the 2 misleading "field
+access" advisories are gone. The "Method Chains" section states the
+rule; fixture `method_chain_wrap/34` covers it.
+
+### Fixed
+
+**A lone operator-expression argument moved to its own row when the
+`)` did not fit.** Laying the argument out after the `(`, the
+expression did not know a `)` followed it, so it kept its last
+operand on a row the `)` then pushed past 80. The whole shape was
+rejected and the argument moved to a row of its own, leaving the
+call name alone above it:
+
+```java
+// 0.7.1
+fail(
+    "Unexpectedly succeeded in adding record: " + testData);
+
+// 0.8.0
+fail("Unexpectedly succeeded in adding record: "
+     + testData);
+```
+
+The argument now starts after the `(` whenever that fits with the `)`
+reserved, every continuation row is an operator under the argument,
+and it takes no more rows than the argument on its own row. When the
+rows must be lopsided, the leading row carries the weight. Across the
+five-repo corpus 31 statements change in 17 files, none grows, and no
+row newly exceeds 80.
+
+**A block lambda's body could flip its chain's layout on every
+other save.** When a method chain checked whether a shape fit, it
+charged the statement's trailing `;` to every row, including the
+rows of a block lambda's body. An 80-column row in the body (legal
+on its own) therefore counted as overflow, and the chain switched to
+a dot-aligned shape that pushed the whole body 16 columns right and
+wrapped most of it. The next save saw the now-wrapped body, found
+everything fit, and put the chain back on one row:
+
+```java
+// first save (0.7.1)
+scheduledTask.getBackingTasks()
+             .forEach(task -> {
+                    TaskGroup taskGroup = task.getTaskGroup();
+
+// second save
+scheduledTask.getBackingTasks().forEach(task -> {
+    TaskGroup taskGroup = task.getTaskGroup();
+```
+
+Only the row still open is now charged the trailing context; a
+finished row may use all 80 columns. Relatedly, the statements inside
+a block lambda were charged the enclosing call's `);` reserve, so
+they wrapped a column or two earlier than the same statements in a
+plain block. They now format exactly as they would in a plain block.
+Across the five-repo corpus every file is now stable on a second
+pass (`AbstractSchedulingService` in data-mart-replicator was not),
+43 files change (90 of 114 changed places get shorter), and no row
+newly exceeds 80.
+
+**The formatter deleted comments in control-statement headers and
+between method-chain segments.** Each of these emitters wrote its
+construct from grammar fields only and skipped the comments sitting
+between them, so the comments were silently removed:
+
+- a comment between a header's `)` and its `{` in `if`, `for`,
+  enhanced `for`, `while`, `switch`, `synchronized`, `try` and
+  try-with-resources;
+- a comment after a clause of a `for` header;
+- a trailing or own-line comment between method-chain segments.
+
+They are now kept where they were written. A header that carries a
+comment takes the Allman brace, a `for` header with a clause comment
+puts one clause on each row, and a chain with comments puts one
+segment on each row (its shape is chosen with the comments left
+out, as for a statement's trailing comment):
+
+```java
+// 0.7.1
+for (String record = engine.getRedoRecord();
+     record != null;
+     record = engine.getRedoRecord()) {
+
+builder.add(DELAY_KEY, 50)
+       .add(CONCURRENCY_KEY, 1)
+       .build();
+
+// 0.8.0
+for (String record = engine.getRedoRecord();  // @highlight regex="record.*"
+     record != null;
+     record = engine.getRedoRecord())  // @highlight regex="record.*"
+{
+
+builder.add(DELAY_KEY, 50)  // short delay so tasks get picked up
+       .add(CONCURRENCY_KEY, 1)  // single thread to force serialization
+       .build();
+```
+
+Two rarer positions are refused, leaving the file untouched, instead
+of being dropped: a comment between `else` and its branch, and one
+between a single call's receiver and its `.`.
+
+Across the five-repo corpus, 16 comments were lost this way: 2 Javadoc
+snippet `@highlight` tags in sz-sdk-java (0.5.1 adoption) and 14 chain
+comments in data-mart-replicator's 0.7.1 adoption working tree. With
+the fix, 903 corpus files format with exactly those 5 files changing.
+
+**A guard now refuses to write output that lost comment text.**
+`format_source` compares the words of every comment in the input
+with those in the output (re-flow changes only whitespace and comment
+markers, so words must all survive) and raises `CommentLossError` if
+any are missing. `format_file.py` reports it as an error, exits 1 and
+leaves the file unchanged. It is the backstop for any position still
+unhandled.
+
+- New fixtures `comment_preservation/11_method_chain_segment_comments`,
+  `12_control_header_side_comments` and
+  `13_for_header_clause_comments`.
+
+**A priority 2 call line ending in column 80 dropped the whole list
+to priority 3.** The statement's `;` was reserved on the call line
+as well as on the continuation line, so a call line whose trailing
+comma landed in column 80 was rejected and the list fell to one
+argument per line (or to priority 2b), although the `;` never lands
+there. The reserve now applies to the continuation line only:
+
+```java
+// 0.7.1
+this.ids = Set.of(entityId1,
+                  entityId2,
+                  … one per line …
+                  entityId7);
+
+// 0.8.0
+this.ids = Set.of(entityId1, entityId2, entityId3, entityId4,
+                  entityId5, entityId6, entityId7);
+```
+
+**A concatenation with an operand too long for any row is no
+longer exploded one operand per row, and the closing `)` is
+counted.**
+
+When a wrapped concatenation could not fit because one operand (a
+long string literal) is wider than any row, the formatter fell back
+to one operand per row. That never removed the overflow, since the
+literal's own row still overflowed, so the chain only got taller.
+It now keeps the packed layout whenever one operand per row would
+overflow as many rows. Likewise an argument's concatenation no
+longer moves from its own column to a deeper `block + 4` column
+that offers no more room. The overflowing row is still flagged for
+a hand split:
+
+```java
+// 0.7.1 — at a 24-column indent: 11 rows, widest 85
+assertEquals(
+    0,
+    (retriedCount2 - retriedCount1),
+    "Number of retried operations ("
+        + retriedCount1
+        + " vs "
+        + retriedCount2
+        + ") unexpectedly changed for annotated method from "
+        + method.getDeclaringClass().getSimpleName()
+        + ": "
+        + method.toString());
+
+// 0.8.0 — 8 rows; only the literal's row is over (81)
+assertEquals(
+    0,
+    (retriedCount2 - retriedCount1),
+    "Number of retried operations (" + retriedCount1
+    + " vs " + retriedCount2
+    + ") unexpectedly changed for annotated method from "
+    + method.getDeclaringClass().getSimpleName()
+    + ": " + method.toString());
+```
+
+The packed layout exposed two closers that were never reserved, so
+a row could pack to exactly 80 and the closer pushed it to 81: the
+`)` after a lone argument when no argument layout fits, and the `)`
+that ends a `try (` resource header. The resource's own fit check
+had been one column strict, which hid the missing `)` on one-row
+headers; it is now exact, so a header of exactly 80 still fits.
+Fixtures `binary_wrap/07`, `binary_wrap/08` and `allman_braces/22`.
+
+**A wrapped single-resource `try (` header puts its `{` on its own
+row.** The standards already required this for any multi-line try
+condition, but the formatter applied it only to several resources.
+A single resource that wraps, at `=` or inside its value, now gets
+the Allman brace like a wrapped `if`:
+
+```java
+// 0.7.1
+try (InputStream is
+         = cls.getResourceAsStream(POM_PROPERTIES_PATH)) {
+    props.load(is);
+}
+
+// 0.8.0
+try (InputStream is
+         = cls.getResourceAsStream(POM_PROPERTIES_PATH))
+{
+    props.load(is);
+}
+```
+
+**Wrapped operators in an argument stay aligned with the argument
+([#53](https://github.com/senzing-garage/java-coding-standards/issues/53)).**
+
+When a binary-expression argument of a multi-argument call wraps,
+its `+`, `&&`, `||`, arithmetic and comparison rows stay in the
+argument's own column, as in 0.7.1. A lone argument placed on its
+own row now does the same. 0.7.1 indented those operator rows +4,
+and here, because the literal's row overflowed, also put one
+operand per row:
+
+```java
+// 0.7.1
+throw new IllegalArgumentException(
+    "The specified target object does not implement any interfaces "
+        + "to proxy.  class=[ "
+        + targetObject.getClass().getName()
+        + " ], targetObject=[ "
+        + targetObject
+        + " ]");
+
+// 0.8.0
+throw new IllegalArgumentException(
+    "The specified target object does not implement any interfaces "
+    + "to proxy.  class=[ " + targetObject.getClass().getName()
+    + " ], targetObject=[ " + targetObject + " ]");
+```
+
+For an argument among siblings, an extra +4 indent was tried
+during 0.8.0 and dropped: the leading operator already marks the
+row as a continuation, because no argument can begin with one, and
+the +4 column put a comparison operator under the `.` rows of a
+wrapped receiver chain, as if it were another segment. The
+standards now state the rule and the reason. Across the five
+adopting repositories the +4 version added 38 rows and 3 new rows
+over 80, all string literals sized for the 0.7.1 column. Making
+lone arguments flush as well changes about 100 files there.
+
 ## [0.7.1] - 2026-10-21
 
 Bug-fix release. One defect, found while adopting 0.7.0 in

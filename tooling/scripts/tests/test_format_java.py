@@ -644,10 +644,9 @@ class TestFormatSourceSubset:
         # paren-aligned, comma-packed)": when P1 single-line
         # would overflow 80 chars, pack as many args as fit on
         # the call line and align the continuation to the
-        # column right after `(`. Greedy packing — args go on
-        # the call line until adding the next one would push
-        # the line past 80; remaining args land at the paren-
-        # aligned continuation column.
+        # column right after `(`. Since 0.8.0 the split is the
+        # best balanced one, measured on the text after `(`,
+        # not the latest one that fits.
         src = (
             b"class A {\n"
             b"    void m() {\n"
@@ -657,20 +656,19 @@ class TestFormatSourceSubset:
             b"}\n"
         )
         out = format_java.format_source(src)
-        # The `(` lands at column 46, so continuation is at
-        # column 47 (46 leading spaces + the arg). The first
-        # three args (firstArg, secondArg, thirdArg) pack
-        # onto the call line; fourthArg breaks to the
-        # continuation.
+        # The continuation sits at 46 leading spaces, one past
+        # the `(`. The latest split (three args, then
+        # `fourthArg);`) is 30 chars against 11; splitting
+        # after `secondArg` is 20 against 21, the closest.
         assert out == (
             b"class A\n"
             b"{\n"
             b"    void m()\n"
             b"    {\n"
             b"        String r = svc.callSomeLongMethodName("
-            b"firstArg, secondArg, thirdArg,\n"
+            b"firstArg, secondArg,\n"
             b"                                              "
-            b"fourthArg);\n"
+            b"thirdArg, fourthArg);\n"
             b"    }\n"
             b"}\n"
         )
@@ -681,7 +679,8 @@ class TestFormatSourceSubset:
         # would exceed 80 chars, line-break before the arg.
         # The arg lands at `(indent_level + 1) * 4` (single-
         # indent past the statement start); the closing `)`
-        # stays on the arg's last line.
+        # stays on the arg's last line. A binary arg's operator
+        # rows line up with the arg (0.8.0).
         src = (
             b"class A {\n"
             b"    void m(Object x) {\n"
@@ -704,7 +703,7 @@ class TestFormatSourceSubset:
             b"            throw new IllegalArgumentException(\n"
             b'                "Cannot specify a secondary value'
             b' when "\n'
-            b'                    + "the primary value is null.'
+            b'                + "the primary value is null.'
             b' primary=[ " + x + " ]");\n'
             b"        }\n"
             b"    }\n"
@@ -3708,21 +3707,55 @@ class TestFormatterWarnings:
         # multiple indent levels.
         assert len(warnings) == 1
         # Under 0.5.2 F, source-preserve declines when a
-        # shift-up would overflow: this input (source at col
-        # 6, target col deeper) falls through to the wrap
-        # engine, which fires the "argument list could not
-        # fit within 80 chars" advisory. Pinning the wrap-
-        # engine message ensures a regression that re-enabled
-        # the mechanical shift-up (which would fire the older
-        # "source-preserved arg list overflows" message
-        # instead) would be caught.
+        # shift-up would overflow, so this input falls through to
+        # the wrap engine. Under 0.8.0 the literal cannot fit
+        # within 80 chars at any column, so it stays after its
+        # `(` rather than spending a row to overflow anyway, and
+        # the advisory names the argument as the cause. Pinning
+        # that message ensures a regression that re-enabled the
+        # mechanical shift-up (which would fire the older
+        # "source-preserved arg list overflows" message instead)
+        # would be caught.
         for warning in warnings:
             assert warning.line > 0
             assert warning.column > 0
-            assert "argument list" in warning.message
+            assert "argument is 73 chars" in warning.message
             assert (
-                "could not fit within 80 chars" in warning.message
+                "cannot fit within 80 chars at any position"
+                in warning.message
             )
+
+    def test_warning_for_single_call_that_cannot_fit(self) -> None:
+        # 0.8.0: a single call (`name.m()`, `this.x.m()`) that does
+        # not fit even with a break before its `.` stays on one row
+        # and says so. Before, the receiver's field-access advisory
+        # fired instead, measured only the receiver (82 for a 95-wide
+        # row) and claimed there was nowhere to break; a call with a
+        # short receiver and a long method name fired nothing.
+        src = (
+            b"public class A {\n"
+            b"    void m() {\n"
+            b"        if (a) {\n"
+            b"            if (b) {\n"
+            b"                this.someReplicationProviderInstanceWithAnExtremelyLongNameIndeed.initialize();\n"
+            b"                someReplicationProvider.initializeTheConnectionProviderNowWithAVeryLongMethodName();\n"
+            b"            }\n"
+            b"        }\n"
+            b"    }\n"
+            b"}\n"
+        )
+        warnings: list[format_java.FormatterWarning] = []
+        out = format_java.format_source(src, warnings_out=warnings)
+        rows = [
+            row for row in out.decode().split("\n") if "initialize" in row
+        ]
+        assert [w.width for w in warnings] == [len(row) for row in rows]
+        assert [w.width for w in warnings] == [95, 100]
+        for warning in warnings:
+            assert warning.message.startswith(
+                "method call wrap could not fit within 80 chars"
+            )
+            assert "Even with a break before `.initialize" in warning.message
 
     def test_warning_for_binary_wrap_overflow(self) -> None:
         # Item 11: when the binary cascade commits its C1
@@ -5871,6 +5904,66 @@ class TestCatchHeaderComments:
         assert "// ordinary" in out
 
 
+class TestCommentLossGuard:
+    """`format_source` refuses to return output that lost comment
+    words, whatever emitter dropped them.
+
+    Before 0.8.0, comments in control-statement headers and between
+    method-chain segments were silently deleted; the guard is the
+    backstop for any position still unhandled.
+    """
+
+    _SRC = (
+        "public class T\n{\n    void t()\n    {\n"
+        "        run(); // keep these words\n"
+        "    }\n}\n"
+    ).encode()
+
+    def test_dropped_comment_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An emitter that drops a comment trips the guard."""
+        monkeypatch.setitem(
+            format_java._NODE_EMITTERS,
+            "line_comment",
+            lambda emitter, source, node: None,
+        )
+        with pytest.raises(
+            format_java.CommentLossError, match="'keep'"
+        ):
+            format_java.format_source(self._SRC)
+
+    def test_reflow_is_not_loss(self) -> None:
+        """Re-flowing a long comment changes only whitespace and
+        markers, so the words survive and nothing is raised."""
+        words = " ".join(["word"] * 30)
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            f"        // {words}\n"
+            "        run();\n    }\n}\n"
+        ).encode()
+        out = format_java.format_source(src).decode()
+        assert out.count("word") == 30
+
+    def test_comment_between_else_and_branch_is_refused(self) -> None:
+        src = (
+            "public class T\n{\n    void t(boolean a)\n    {\n"
+            "        if (a) {\n            x();\n        } else // why\n"
+            "        {\n            y();\n        }\n    }\n}\n"
+        ).encode()
+        with pytest.raises(NotImplementedError, match="`else`"):
+            format_java.format_source(src)
+
+    def test_comment_before_single_call_dot_is_refused(self) -> None:
+        src = (
+            "public class T\n{\n    void t()\n    {\n"
+            "        receiver // why\n            .run();\n"
+            "    }\n}\n"
+        ).encode()
+        with pytest.raises(NotImplementedError, match="receiver"):
+            format_java.format_source(src)
+
+
 class TestDeclarationMatchesAssignmentTwin:
     """`Type x = RHS` and its bare twin `x = RHS` must settle on
     the same shape.
@@ -6943,3 +7036,142 @@ class TestEnumConstantReservesItsSeparator:
         assert widest > 80, out
         assert warnings, "a row that cannot fit must warn"
         assert warnings[0].width == widest, (warnings[0].width, widest)
+
+
+class TestSnippetLayout:
+    """Javadoc snippet markup in demo code: regions are measured from
+    their own indent, and a row that carries a markup tag is never
+    wrapped. The fixtures under `snippet_markup/` cover the emitted
+    shapes; these pin the markup parsing they depend on.
+    """
+
+    @staticmethod
+    def _layout(body: str) -> format_java._SnippetLayout:
+        src = "public class T\n{\n    void t()\n    {\n" + body + "    }\n}\n"
+        return format_java._SnippetLayout(format_java.parse_source(
+            src.encode()
+        ))
+
+    def test_tags_and_quoted_attributes(self) -> None:
+        """Several tags per comment; a quoted value is one token, so a
+        `region` inside a regex is not a region attribute."""
+        tags = format_java._snippet_tags(
+            '// @replace regex="region = " replacement=""'
+            ' @highlight region type=italic'
+        )
+        assert tags == [
+            ("replace", {"regex": "region = ", "replacement": ""}),
+            ("highlight", {"region": None, "type": "italic"}),
+        ]
+
+    def test_ordinary_comment_is_not_markup(self) -> None:
+        assert format_java._snippet_tags("// see @highlight docs") == []
+        assert format_java._snippet_tags("// @param is not markup") == []
+
+    def test_named_end_closes_its_own_region(self) -> None:
+        """`@end region="outer"` closes the `@start`, not the
+        highlight region opened inside it, which a bare `@end`
+        closes: `b()` is inside the region and `c()` is not."""
+        body = (
+            '        // @start region="outer"\n'
+            '        // @highlight region="hl"\n'
+            "        a();\n"
+            "        // @end\n"
+            "        b();\n"
+            '        // @end region="outer"\n'
+            "        c();\n"
+        )
+        layout = self._layout(body)
+        assert len(layout.regions) == 1
+        first, last, _ = layout.regions[0]
+        src = body.encode()
+        offset = len(b"public class T\n{\n    void t()\n    {\n")
+        assert first < offset + src.index(b"b();") < last
+        assert last < offset + src.index(b"c();")
+
+    def test_only_the_outermost_start_region_is_kept(self) -> None:
+        layout = self._layout(
+            '        // @start region="outer"\n'
+            '        // @start region="inner"\n'
+            "        a();\n"
+            '        // @end region="inner"\n'
+            '        // @end region="outer"\n'
+        )
+        assert len(layout.regions) == 1
+
+    def test_unbalanced_end_is_ignored(self) -> None:
+        layout = self._layout(
+            '        // @end region="nothing"\n        a();\n'
+        )
+        assert layout.regions == []
+
+    def test_file_without_markup_keeps_the_plain_emitter(self) -> None:
+        """No markup means no layout: every non-demo file formats
+        exactly as before."""
+        layout = self._layout("        a();  // an ordinary comment:\n")
+        assert not layout.regions and not layout.unlimited
+
+
+class TestTrailingLineComments:
+    """A trailing `//` comment is kept beside its row, not in it, so it
+    never changes the code's layout and may run past the limit. The
+    shared checkstyle LineLength `ignorePattern` accepts such a row
+    when its code fits.
+    """
+
+    @staticmethod
+    def _format(body: str) -> tuple[str, list[format_java.FormatterWarning]]:
+        src = "class T\n{\n    void m()\n    {\n" + body + "    }\n}\n"
+        warnings: list[format_java.FormatterWarning] = []
+        out = format_java.format_source(src.encode(), warnings_out=warnings)
+        return out.decode(), warnings
+
+    def test_overflowing_comment_stays_on_its_row(self) -> None:
+        """The `=` decision measured the comment and broke the chain
+        differently than it would without it; it no longer does."""
+        chain = (
+            "        JsonObject config = Json\n"
+            "            .createObjectBuilder()\n"
+            "            .add(AbstractSchedulingService.CONCURRENCY_KEY, 1){}\n"
+            "            .add(AbstractSchedulingService.POSTPONED_TIMEOUT_KEY, 100)\n"
+            "            .build();\n"
+        )
+        comment = "  // Single thread to force serialization"
+        with_comment, warnings = self._format(chain.format(comment))
+        without, _ = self._format(chain.format(""))
+        assert with_comment.replace(comment, "") == without
+        assert comment + "\n" in with_comment
+        assert warnings == []
+
+    def test_simple_statement_keeps_its_comment_and_layout(self) -> None:
+        out, warnings = self._format(
+            "        Scheduler scheduler = service.createScheduler(false);"
+            "  // false = primary tasks\n"
+        )
+        assert (
+            "        Scheduler scheduler = service.createScheduler(false);"
+            "  // false = primary tasks\n"
+        ) in out
+        assert warnings == []
+
+    def test_code_after_a_trailing_comment_is_refused(self) -> None:
+        emitter = format_java.Emitter()
+        emitter.write("x();  ")
+        emitter.write_trailing_line_comment("// note")
+        assert emitter.column == len("x();")
+        emitter.write("  ")
+        with pytest.raises(ValueError):
+            emitter.write("y();")
+
+    def test_restore_drops_a_speculative_comment(self) -> None:
+        emitter = format_java.Emitter()
+        emitter.write("a();")
+        emitter.newline()
+        saved = emitter.snapshot()
+        emitter.write("b();  ")
+        emitter.write_trailing_line_comment("// gone")
+        emitter.newline()
+        emitter.restore(saved)
+        emitter.write("c();  ")
+        emitter.write_trailing_line_comment("// kept")
+        assert emitter.finish() == b"a();\nc();  // kept\n"
